@@ -440,9 +440,10 @@ The report checks the `archives/`, `partitions/`, `runtime/`, `meta/` and
 `--verify-hashes` hashes the listed files; a plain run only checks names and
 presence. Absolute `/tmp/.../car-dump-*` paths in a sums file are normalized
 to capture-relative paths; every hash target must resolve inside the capture
-root (`../` and symlink escapes are rejected). Map-looking archives/images
-are warnings by default; `--reject-maps` turns them into failures. Exit 0/1
-with a JSON report.
+root (`../` and symlink escapes are rejected), and every archive, partition
+and `critical.tar` must be listed in a sums file (`unlisted`). Map-looking
+archives/images are warnings by default; `--reject-maps` turns them into
+failures. Exit 0/1 with a JSON report.
 
 ## Parallel runs and suites
 

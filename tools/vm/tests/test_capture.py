@@ -55,6 +55,7 @@ class CaptureTests(unittest.TestCase):
         self.assertEqual(report['partitions'], ['p1-boot-a.img'])
         self.assertEqual(report['hash_entries'], 4)
         self.assertEqual(report['hashes_verified'], 0)
+        self.assertEqual(report['unlisted'], [])
         self.assertEqual(report['warnings'], [])
 
     def test_missing_required_file(self) -> None:
@@ -92,11 +93,12 @@ class CaptureTests(unittest.TestCase):
         (self.root / 'archives/navi2-nonmap.tar').write_bytes(b'navi-nonmap')
         (self.root / 'archives/navi-map.tar').write_bytes(b'map')
         (self.root / 'meta/SHA256SUMS.navi2').write_text(
-            f'{digest(b"navi-nonmap")}  ./archives/navi2-nonmap.tar\n')
+            f'{digest(b"navi-nonmap")}  ./archives/navi2-nonmap.tar\n'
+            f'{digest(b"map")}  ./archives/navi-map.tar\n')
         report = check_capture(self.root, verify_hashes=True)
         self.assertTrue(report['ok'], report['problems'])
-        self.assertEqual(report['hash_entries'], 5)
-        self.assertEqual(report['hashes_verified'], 5)
+        self.assertEqual(report['hash_entries'], 6)
+        self.assertEqual(report['hashes_verified'], 6)
         self.assertTrue(any('navi-map.tar' in warning
                             for warning in report['warnings']))
         strict = check_capture(self.root, verify_hashes=True, reject_maps=True)
@@ -113,6 +115,14 @@ class CaptureTests(unittest.TestCase):
         self.assertTrue(report['ok'], report['problems'])
         self.assertEqual(report['missing'], [])
         self.assertEqual(report['hashes_verified'], 5)
+
+    def test_unlisted_archive_is_rejected(self) -> None:
+        (self.root / 'archives/extra.tar').write_bytes(b'extra')
+        report = check_capture(self.root)
+        self.assertFalse(report['ok'])
+        self.assertEqual(report['unlisted'], ['archives/extra.tar'])
+        self.assertIn('unlisted artifact: archives/extra.tar',
+                      '\n'.join(report['problems']))
 
     def test_hash_target_cannot_escape_root(self) -> None:
         outside = self.root.parent / 'outside.txt'

@@ -85,8 +85,8 @@ def check_capture(root: Path, verify_hashes: bool = False,
         return {
             'ok': False, 'root': str(root), 'archives': [], 'partitions': [],
             'runtime_files': 0, 'hash_entries': 0, 'hashes_verified': 0,
-            'missing': [], 'mismatched': [], 'problems': ['capture root is not a directory'],
-            'warnings': [],
+            'missing': [], 'mismatched': [], 'unlisted': [],
+            'problems': ['capture root is not a directory'], 'warnings': [],
         }
     for name in SUBDIRS:
         if not (root / name).is_dir():
@@ -117,6 +117,7 @@ def check_capture(root: Path, verify_hashes: bool = False,
         problems.extend(f'rejected map data: {warning}' for warning in map_warnings)
 
     entries: list[tuple[str, str]] = []
+    covered: set[str] = set()
     missing: list[str] = []
     mismatched: list[str] = []
     verified = 0
@@ -125,6 +126,7 @@ def check_capture(root: Path, verify_hashes: bool = False,
         entries, sum_problems = parse_sums(sums)
         problems.extend(sum_problems)
         for expected, rel in entries:
+            covered.add(rel)
             target = _target(root, rel, problems)
             if target is None:
                 continue
@@ -142,6 +144,7 @@ def check_capture(root: Path, verify_hashes: bool = False,
         problems.extend(navi_problems)
         navi_entries = len(extra)
         for expected, rel in extra:
+            covered.add(rel)
             target = _target(root, rel, problems)
             if target is None:
                 continue
@@ -153,6 +156,13 @@ def check_capture(root: Path, verify_hashes: bool = False,
                 if file_sha256(target) != expected:
                     mismatched.append(rel)
 
+    expected = {f'archives/{name}' for name in archives}
+    expected.update(f'partitions/{name}' for name in partitions)
+    if (root / 'critical/critical.tar').is_file():
+        expected.add('critical/critical.tar')
+    unlisted = sorted(expected - covered)
+    problems.extend(f'unlisted artifact: {rel}' for rel in unlisted)
+
     return {
         'ok': not problems and not missing and not mismatched,
         'root': str(root),
@@ -163,6 +173,7 @@ def check_capture(root: Path, verify_hashes: bool = False,
         'hashes_verified': verified,
         'missing': sorted(set(missing)),
         'mismatched': sorted(set(mismatched)),
+        'unlisted': unlisted,
         'problems': problems,
         'warnings': warnings,
     }
