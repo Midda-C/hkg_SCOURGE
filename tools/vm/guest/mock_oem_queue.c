@@ -6,8 +6,8 @@
  * mock_oem_queue - lab OEM handler for the dmengine SysV queue.
  *
  * Uses key 0xd54, reads mtype 0x48 events and optionally sends one mtype
- * 0x36 command. It logs event codes/fields only; it does not implement the
- * vendor AppDMClient policy or FUMO session semantics.
+ * 0x36 command with int32 code, int64 fields and optional text. It logs event
+ * codes/fields only; it does not implement the vendor AppDMClient policy.
  */
 #define _GNU_SOURCE
 #include <signal.h>
@@ -42,6 +42,9 @@ int main(int argc, char **argv)
     int send_code = argc > 1 ? atoi(argv[1]) : -1;
     const char *log_path = argc > 2 ? argv[2] : "/tmp/mock-oem.log";
     int seconds = argc > 3 ? atoi(argv[3]) : 20;
+    long long field1 = argc > 4 ? atoll(argv[4]) : 0;
+    long long field2 = argc > 5 ? atoll(argv[5]) : 0;
+    const char *text = argc > 6 ? argv[6] : "";
     int id = msgget(QUEUE_KEY, IPC_CREAT | 0666);
     FILE *log;
     int events = 0;
@@ -62,12 +65,16 @@ int main(int argc, char **argv)
         memset(&command, 0, sizeof(command));
         command.mtype = CMD_TYPE;
         memcpy(command.data, &send_code, sizeof(send_code));
+        memcpy(command.data + 8, &field1, sizeof(field1));
+        memcpy(command.data + 16, &field2, sizeof(field2));
+        strncpy((char *)command.data + 32, text, DATA_SIZE - 32 - 1);
         if (msgsnd(id, &command, DATA_SIZE, 0) < 0) {
             perror("msgsnd");
             fclose(log);
             return 1;
         }
-        fprintf(log, "MOCK_OEM_SENT code=%d\n", send_code);
+        fprintf(log, "MOCK_OEM_SENT code=%d field1=%lld field2=%lld text=%s\n",
+                send_code, field1, field2, text);
         fflush(log);
     }
     printf("MOCK_OEM_READY id=%d send=%d\n", id, send_code);

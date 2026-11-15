@@ -847,6 +847,34 @@ The scenario requires the mock command send, the MOF bus name, dmengine event
 OEM side of the queue protocol; it does not implement AppDMClient policy or
 complete an HTTP FUMO update.
 
+## dmengine FUMO HTTP exchange (Mode C)
+
+```sh
+python3 -B launch.py run --kernel compat --profile research \
+  --scenario dmengine-fumo-http --payload payload/tweaks-vm --timeout 240
+```
+
+Runs the real dmengine with a lab DMCDEVINFO segment, lab tree/config and a
+lab `/update` state, brings loopback up and starts the loopback mock DM
+server. It then sends OEM command code 0 with field1=1, the session-start
+command recovered from dmengine's receive dispatch.
+
+The engine must log `[dmc_startFumoSession] sesstionType = [0]`,
+`Triggering DM session`, `Open connection to DM server,
+http://127.0.0.1:8002/dm/message` and `Performing HTTP POST`. The mock server
+records the request:
+
+```text
+MOCK_DM_REQUEST method=POST path=/dm/message
+  content_type=application/vnd.syncml.dm+wbxml content_length=907
+  body_prefix=02a4016a1d2d2f2f53594e434d4c...
+```
+
+The mock returns an empty 200, so dmengine aborts the session with 0x6303.
+This proves the real client-side exchange (session trigger, loopback HTTP,
+WBXML SyncML POST and no production address), not a completed update. A real
+run passes all six checks.
+
 ## dmengine startup (Mode C)
 
 ```sh
