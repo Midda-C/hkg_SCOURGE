@@ -1317,6 +1317,32 @@ enters success state `90`. The result is lab-supplied and the package is
 structural; no physical install is claimed. A real run passes all twenty-three
 checks.
 
+## dmengine FUMO multi-component invalid result (Mode C, negative)
+
+```sh
+python3 -B launch.py run --kernel compat --profile research \
+  --scenario dmengine-fumo-download-update-multi-invalid-result --payload payload/tweaks-vm --timeout 380
+```
+
+Same multi-component `DownloadAndUpdate` flow, but the lab OEM reports the
+invalid result `0`:
+
+```text
+MOCK_DM_MULTIDP bytes=291 components=2 updates=3
+event to OEM handler = [77] strData = [/update//lab-fumo]
+VDMC_FUMO_updateReport] result = [0]
+validateResultCode - invalid result code (0). using UNDEFINED(409) instead.
+VDM_FUMO_triggerReportSession(0)
+Set state, 70
+Set state, 10
+DM session complete
+```
+
+The engine remaps the result to `409`, reports the failure and returns to idle
+without success state `90`. The result is lab-supplied and the package is
+structural; no physical install is claimed. A real run passes all twenty-four
+checks.
+
 ## dmengine startup (Mode C)
 
 ```sh

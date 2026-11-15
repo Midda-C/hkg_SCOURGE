@@ -511,7 +511,9 @@ kill "$DM_PID" "$OEM_PID" "$DLOK_PID" "$RESULT_PID" "$SERVER_PID" 2>/dev/null ||
 sleep 1
 kill -9 "$DM_PID" "$OEM_PID" "$DLOK_PID" "$RESULT_PID" "$SERVER_PID" 2>/dev/null || true
 if [ "$MODE" = combinedmulti ]; then
-    if [ "$RESULT_CODE" = 200 ]; then
+    if [ "$INVALID_RESULT" = 1 ]; then
+        echo 'HARNESS_CHECK dmengine-fumo-download-update-multi-invalid-result PASS'
+    elif [ "$RESULT_CODE" = 200 ]; then
         echo 'HARNESS_CHECK dmengine-fumo-download-update-multi PASS'
     else
         echo 'HARNESS_CHECK dmengine-fumo-download-update-multi-failure PASS'

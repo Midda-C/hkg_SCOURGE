@@ -154,6 +154,10 @@ VM-validated (vendor kernel):
   (`dmengine-fumo-download-update-multi-failure`): the same 291-byte package
   plus `DownloadAndUpdate`, with OEM result 500; the engine reports the failure
   and never enters success state 90
+- FUMO multi-component invalid result
+  (`dmengine-fumo-download-update-multi-invalid-result`): OEM result 0 is
+  remapped to `UNDEFINED(409)`; the engine reports the failure and never sets
+  state 90
 - device-model regression (`device-model`): asserts Q35 host bridge, SDHCI
   root, ICH9 LPC/SATA and no virtio; substrate only, not captured BXT hardware
 - AppDMClient fota callback (`dmclient-fota-events`): `/fotaInterface`

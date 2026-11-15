@@ -37,6 +37,7 @@ SCENARIO_NAMES = ('boot', 'usb-discovery', 'dbus-ready', 'dmclient-events',
                   'dmengine-fumo-download-update-multi',
                   'dmengine-fumo-resume-multi',
                   'dmengine-fumo-download-update-multi-failure',
+                  'dmengine-fumo-download-update-multi-invalid-result',
                   'device-model',
                   'dmclient-fota-events',
                   'recovery-repeat-update')
@@ -169,6 +170,10 @@ echo 'HARNESS_CHECK recovery-no-space PASS'
         return (VM / 'probes' / 'dmengine-fumo-resume-multi.sh').read_text()
     if name == 'dmengine-fumo-download-update-multi-failure':
         return ('export FUMO_MODE=combinedmulti FUMO_RESULT=500\n' +
+                (VM / 'probes' / 'dmengine-fumo-download.sh').read_text())
+    if name == 'dmengine-fumo-download-update-multi-invalid-result':
+        return ('export FUMO_MODE=combinedmulti FUMO_RESULT=0 '
+                'FUMO_INVALID_RESULT=1\n' +
                 (VM / 'probes' / 'dmengine-fumo-download.sh').read_text())
     if name == 'device-model':
         return (VM / 'probes' / 'device-model.sh').read_text()

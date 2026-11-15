@@ -1206,6 +1206,13 @@ items beyond that.
   without state 90. `dmengine-fumo-download-update-multi-failure` asserts the
   multi marker, handoff, failure result and absence of success. Real run PASS
   with twenty-three checks; 3 new tests; 592 tests (75 skipped); doctor green.
+- **2026-11-15 — Multi-component invalid result**: the 291-byte
+  `DownloadAndUpdate` flow receives OEM result 0. `validateResultCode` remaps
+  it to `UNDEFINED(409)`; the engine reports through a DM session, transitions
+  state 70 -> 10 and never enters success state 90.
+  `dmengine-fumo-download-update-multi-invalid-result` asserts the multi
+  marker, remap, failure report and absence of success. Real run PASS with
+  twenty-four checks; 3 new tests; 595 tests (75 skipped); doctor green.
 - **2026-11-15 — FUMO bad-signature boundary**: the mock flips one bit in
   the lab HMAC trailer. The engine still downloads the 184-byte object, posts
   the install notification and advances to state 40. `check-dp --key` rejects
