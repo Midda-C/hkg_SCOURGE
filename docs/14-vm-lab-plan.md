@@ -1059,6 +1059,10 @@ items beyond that.
   event 66 after a MOF-bus-aware `recvDM_01`. Real run PASS with six checks.
   AppDMClient policy/HTTP update remains the gate. 3 new tests; 505 tests
   (75 skipped); doctor green.
+- **2026-11-15 — device-model regression**: `device-model` asserts the QEMU
+  Q35 host bridge, SDHCI root (`mmcblk0`), ICH9 LPC/SATA and no virtio in the
+  vendor kernel. Real run PASS; 3 new tests; 508 tests (75 skipped); doctor
+  green. Documented as substrate coverage, not BXT equivalence.
 - **2026-11-15 — NAS import verified**: 9.4 GB preservation copy complete;
   all archives, partitions, runtime files and the navi2 archive match.
   `meta/SOURCE.txt` was finalized after the original manifest, so its one

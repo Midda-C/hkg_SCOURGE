@@ -739,6 +739,23 @@ corrupted manifest hash are each rejected. It restores both files, re-verifies
 the baseline and requires nine checks. The base stick is untouched; the
 overlay is discarded after the run.
 
+## Device-model regression (Mode V)
+
+```sh
+python3 -B launch.py run --profile research --scenario device-model \
+  --timeout 120
+```
+
+Asserts the QEMU substrate the vendor harness relies on:
+
+- `8086:29c0` Q35 host bridge
+- `1b36:0007` SDHCI controller with `mmcblk0` as the mounted root disk
+- `8086:2918` ICH9 LPC and `8086:2922` SATA
+- no `1af4:` virtio devices in the vendor kernel
+
+A real run passes all six checks. This is substrate regression coverage, not
+equivalence with the captured BXT PCI topology.
+
 ## MOF notification codec
 
 ```sh

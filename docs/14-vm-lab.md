@@ -86,6 +86,8 @@ VM-validated (vendor kernel):
 - dmengine OEM queue handler (`dmengine-oem-queue`): lab SysV client sends a
   type-0x36 command and receives event 66 after `recvDM_01`; no AppDMClient
   policy or HTTP FUMO update
+- device-model regression (`device-model`): asserts Q35 host bridge, SDHCI
+  root, ICH9 LPC/SATA and no virtio; substrate only, not captured BXT hardware
 - dmengine OEM queue codec (`dmengine-queue`): encode/decode the 1048-byte
   SysV command/event message (key 0xd54, mtype 0x36/0x48) and parse
   `strace -xx` queue logs; the AppDMClient event source remains the session
