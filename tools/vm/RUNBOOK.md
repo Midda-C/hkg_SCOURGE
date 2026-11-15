@@ -1266,6 +1266,31 @@ The lab OEM result is supplied by the probe; the package is structural, so no
 physical install or firmware-success is claimed. A real run passes all
 twenty-two checks.
 
+## dmengine FUMO multi-component resume (Mode C)
+
+```sh
+python3 -B launch.py run --kernel compat --profile research \
+  --scenario dmengine-fumo-resume-multi --payload payload/tweaks-vm --timeout 340
+```
+
+The mock serves a 64/291 partial of the two-component/three-update DP with
+`Accept-Ranges` and `ETag: "lab-dp-291"`. The engine retries with the Range
+header and completes the download:
+
+```text
+MOCK_DM_DD method=GET path=/package.bin object=/object.bin object_bytes=291
+MOCK_DM_PARTIAL method=GET path=/object.bin bytes=64 total=291
+MOCK_DM_RESUME method=GET path=/object.bin offset=64 bytes=227 total=291
+DL resume: got offset=64, eTag=<"lab-dp-291">, isIgnoreMissingETag=0
+Object: size=291 len=227, offset=64, eTag=<"lab-dp-291">
+DL session complete
+Set state, 40
+MOCK_DM_NOTIFY path=/notify bytes=11 body=900 Success
+```
+
+The mock returns the remaining 227 bytes with 206. A real run passes all seven
+checks. No install is claimed.
+
 ## dmengine startup (Mode C)
 
 ```sh

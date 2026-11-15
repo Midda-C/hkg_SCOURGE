@@ -34,7 +34,8 @@ SCENARIO_NAMES = ('boot', 'usb-discovery', 'dbus-ready', 'dmclient-events',
                   'dmengine-fumo-resume-restart',
                   'dmengine-fumo-resume-noetag',
                   'dmengine-fumo-download-multi',
-                  'dmengine-fumo-download-update-multi', 'device-model',
+                  'dmengine-fumo-download-update-multi',
+                  'dmengine-fumo-resume-multi', 'device-model',
                   'dmclient-fota-events',
                   'recovery-repeat-update')
 
@@ -162,6 +163,8 @@ echo 'HARNESS_CHECK recovery-no-space PASS'
     if name == 'dmengine-fumo-download-update-multi':
         return ('export FUMO_MODE=combinedmulti\n' +
                 (VM / 'probes' / 'dmengine-fumo-download.sh').read_text())
+    if name == 'dmengine-fumo-resume-multi':
+        return (VM / 'probes' / 'dmengine-fumo-resume-multi.sh').read_text()
     if name == 'device-model':
         return (VM / 'probes' / 'device-model.sh').read_text()
     if name == 'vendor-esinit-fixture':

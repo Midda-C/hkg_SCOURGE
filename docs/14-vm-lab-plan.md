@@ -1192,6 +1192,13 @@ items beyond that.
   `dmengine-fumo-download-update-multi` asserts the multi marker, combined
   command, handoff, result 200 and completion. Real run PASS with twenty-two
   checks; 3 new tests; 586 tests (75 skipped); doctor green.
+- **2026-11-15 — Multi-component resume**: the mock serves a 64/291 partial
+  of the two-component/three-update object with `Accept-Ranges` and ETag
+  `lab-dp-291`. The engine sends `Range: bytes=64-` / `If-Range`, receives the
+  remaining 227 bytes with 206, completes the DL session and advances state
+  30 -> 40. `dmengine-fumo-resume-multi` asserts the offset/eTag, 206 request,
+  completion and notification. Real run PASS with seven checks; 3 new tests;
+  589 tests (75 skipped); doctor green.
 - **2026-11-15 — FUMO bad-signature boundary**: the mock flips one bit in
   the lab HMAC trailer. The engine still downloads the 184-byte object, posts
   the install notification and advances to state 40. `check-dp --key` rejects

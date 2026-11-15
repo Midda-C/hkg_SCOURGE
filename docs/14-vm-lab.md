@@ -146,6 +146,10 @@ VM-validated (vendor kernel):
   (`dmengine-fumo-download-update-multi`): the same 291-byte object plus
   `DownloadAndUpdate`, update handoff (event 77) and lab result 200 leading to
   state 90 -> idle
+- FUMO multi-component resume (`dmengine-fumo-resume-multi`): a 64/291 partial
+  with ETag `lab-dp-291` makes the engine send `Range: bytes=64-`; the mock
+  returns the remaining 227 bytes with 206 and the download completes
+  (state 40, install notification)
 - device-model regression (`device-model`): asserts Q35 host bridge, SDHCI
   root, ICH9 LPC/SATA and no virtio; substrate only, not captured BXT hardware
 - AppDMClient fota callback (`dmclient-fota-events`): `/fotaInterface`
