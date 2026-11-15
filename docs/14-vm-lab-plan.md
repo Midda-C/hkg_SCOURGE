@@ -1092,6 +1092,12 @@ items beyond that.
   package, the 407, the abort and that no download occurs. Server MD5 auth is
   the next blocker. Real run PASS with eleven checks; 3 new tests; 518 tests
   (75 skipped); doctor green.
+- **2026-11-15 — server-auth attempt documented**: the client's md5 digest
+  changes per session and does not match known `lab`/`lab-secret`/nonce
+  candidates; auth-none Cred/Chal and MinServerAuth/auth-type overrides did
+  not remove the 407. The negative auth-gate scenario remains the tested
+  boundary; the next step needs a captured server challenge/response or
+  deeper RE of `SESS_prepareChallenge`.
 - **2026-11-15 — NAS import verified**: 9.4 GB preservation copy complete;
   all archives, partitions, runtime files and the navi2 archive match.
   `meta/SOURCE.txt` was finalized after the original manifest, so its one
