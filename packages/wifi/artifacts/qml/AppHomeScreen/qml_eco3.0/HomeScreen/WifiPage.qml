@@ -718,7 +718,7 @@ Item {
                 x: 0
                 y: 318
                 width: 570
-                height: 96
+                height: 120
                 radius: 14
                 color: "#1B1B1B"
                 border.color: root.apActive ? "#2E7D32" : "#333333"
@@ -733,12 +733,22 @@ Item {
                 }
                 QText {
                     x: 24
-                    y: 48
+                    y: 44
                     text: root.apActive
                           ? (root.apSsid + "  \u00b7  " + root.apClients + " client(s)")
                           : "Not running"
                     font.pixelSize: 24
                     color: root.apActive ? "#4CAF50" : "#FFFFFF"
+                }
+                QText {
+                    x: 24
+                    y: 78
+                    text: "Key: " + (root.carplayPsk ? root.carplayPsk : "(not set)")
+                    font.pixelSize: 24
+                    textBold: true
+                    color: "#FFFFFF"
+                    width: 520
+                    elide: Text.ElideRight
                 }
             }
 

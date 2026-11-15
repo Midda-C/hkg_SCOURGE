@@ -289,6 +289,7 @@ log "HU backup: $BACKUP_HU"
 
 # ---- rootfs rw ---------------------------------------------------------
 . "$PAYLOAD/lib/install_io.sh"
+io_capture_qml "$QML_DIR" "$USB_DIR/qml_before" || log "WARNING: QML before-snapshot unavailable"
 io_init || fail "cannot identify root mount"
 trap 'io_restore_root || true' EXIT
 trap 'exit 130' INT
@@ -487,15 +488,25 @@ if [ -d "$PAYLOAD/tzdata/zoneinfo" ]; then
 fi
 
 set_conf_key() {
+(
     ck="$1"
     cv="$2"
     cf="$3"
-    awk -v k="$ck" -v v="$cv" '
-        BEGIN { done = 0 }
-        index($0, k "=") == 1 { print k "=" v; done = 1; next }
-        { print }
-        END { if (!done) print k "=" v }
-    ' "$cf" > "$cf.tmp.$$" && mv -f "$cf.tmp.$$" "$cf"
+    tmp=$(mktemp "$cf.tmp.XXXXXX") || fail "cannot prepare config migration"
+    trap 'rm -f "$tmp"' EXIT
+    done_key=0
+    while IFS= read -r line || [ -n "$line" ]; do
+        case "$line" in
+            "$ck="*) printf '%s=%s\n' "$ck" "$cv"; done_key=1 ;;
+            *) printf '%s\n' "$line" ;;
+        esac
+    done < "$cf" > "$tmp" || fail "cannot write config migration"
+    if [ "$done_key" = 0 ]; then
+        printf '%s=%s\n' "$ck" "$cv" >> "$tmp" || fail "cannot append config migration"
+    fi
+    chmod 600 "$tmp" || fail "cannot protect config migration"
+    mv -f "$tmp" "$cf" || fail "cannot activate config migration"
+) || fail "configuration migration failed"
 }
 
 # Migrate the v1 configuration in place. Only the exact legacy pair is
@@ -603,6 +614,7 @@ for base in qml_eco3.0 new_qml qml_genesis; do
 done
 
 # Clear QML caches.
+io_capture_qml "$QML_DIR" "$USB_DIR/qml_after" || log "WARNING: QML after-snapshot unavailable"
 rm -rf /root/.cache/qtshadercache 2>/dev/null || true
 rm -rf /root/.cache/AppHomeScreen 2>/dev/null || true
 rm -rf /tmp/qmlcache 2>/dev/null || true

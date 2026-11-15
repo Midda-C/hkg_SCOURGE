@@ -248,7 +248,7 @@ grep -q 'TWEAKS_PAYLOAD_260128' "$Q/HomeScreen/QHMI_HomeScreenMain_Advanced.qml"
 grep -q 'TweaksPage' "$Q/HomeScreen/QHMI_HomeScreenMain_Advanced.qml"
 grep -q 'tweaksTile2' "$Q/HomeScreen/QHMI_HomeScreenMain_Advanced.qml"
 if [ "$EXPECT_GLOBAL" = 1 ]; then
-    grep -q 'property var slot: firstEmptySlot' "$Q/HomeScreen/QHMI_HomeScreenMain_Advanced.qml"
+    grep -q 'property var slot: root.firstEmptySlot' "$Q/HomeScreen/QHMI_HomeScreenMain_Advanced.qml"
     if grep -q 'tweaksTargetPage' "$Q/HomeScreen/QHMI_HomeScreenMain_Advanced.qml"; then
         echo "old per-page helper leaked into $KIND" >&2
         exit 1

@@ -1,0 +1,28 @@
+# SPDX-FileCopyrightText: 2026 The SCOURGE Project contributors
+# SPDX-License-Identifier: AGPL-3.0-only
+# Wifi1b profile — place at the USB root as iphone_wifi.txt or wifi.txt,
+# then press "Import USB" in the WiFi 1b app.
+#
+# Client (station) network:
+ssid=MyHomeWiFi
+psk=MyHomePassword
+# Optional lower-priority client networks: ssid2/psk2 through ssid4/psk4.
+
+# Wireless CarPlay access point.  If omitted, Wifi1b uses
+# IONIQ5-CarPlay-B and a random key.
+carplay_ssid=IONIQ5-CarPlay-B
+carplay_psk=ChangeMe-CarPlay2
+carplay_band=5
+carplay_channel=36
+carplay_hidden=0
+carplay_max_sta=2
+
+# Import never enables WLAN, a mode or SSH.  ssh= is ignored.
+# ssh_port is accepted for compatibility but Wifi1b always uses 2224.
+
+# Optional overrides:
+# carplay_manufacturer=Hyundai
+# carplay_model=Ioniq 5
+# carplay_name=Ioniq 5
+# carplay_id=aa:bb:cc:dd:ee:ff   (exactly six bytes)
+# carplay_btaddr=aa:bb:cc:dd:ee:ff

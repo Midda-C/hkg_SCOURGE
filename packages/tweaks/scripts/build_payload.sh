@@ -27,6 +27,8 @@ echo "== icons =="
 python3 scripts/make_icons.py
 
 echo "== QML artifacts =="
+mkdir -p "$ROOT/out"
+python3 scripts/prepare_bases.py
 python3 scripts/build_artifacts.py
 
 echo "== tzdata =="

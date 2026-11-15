@@ -121,6 +121,7 @@ Item {
     property string blockReason: ""
     property bool preheatPending: false
     property bool preheatRequested: false
+    property bool precondConfirmed: false
     property double preheatRequestedAt: 0
     property int preheatRetries: 0
     property int rawGear: -1
@@ -203,7 +204,9 @@ Item {
         if (socLow)
             w.push("Battery is below 20%.")
         if (tempHigh)
-            w.push("Battery is above 21\u00b0C \u2014 preheating is not needed.")
+            w.push(preheatOn
+                   ? "Battery is above 21\u00b0C \u2014 stopping is still allowed."
+                   : "Start blocked: battery is above 21\u00b0C.")
         if (blockReason)
             w.push("Preheat request blocked: " + blockReason + ".")
         if (doorBlockReason)
@@ -235,6 +238,16 @@ Item {
     function applyStatus(d) {
         heaterState = d.state
         precondRaw = d.precond_raw
+        precondConfirmed = d.precond_confirmed === true
+        // A timeout means the burst went out but the vehicle never confirmed
+        // it. Drop the optimistic request so the switch returns to Off and a
+        // retry starts a new request instead of sending /stop. Ignore a
+        // request younger than 2 s: its POST may still be in flight.
+        if (d.state === "timeout" && preheatRequested &&
+            Date.now() - preheatRequestedAt > 2000) {
+            preheatRequested = false
+            preheatRetries = 0
+        }
         battMin = d.batt_min_c
         battValid = d.batt_valid
         battRaw = d.batt_raw || ""
@@ -372,7 +385,16 @@ Item {
                             reason = "http " + xhr.status
                         }
                     }
-                    if (isPreheat) root.blockReason = reason
+                    if (isPreheat) {
+                        root.blockReason = reason
+                        // The request is finished as soon as the daemon
+                        // answers; do not wait for the 3 s fallback timer.
+                        root.preheatPending = false
+                        root.preheatClearTimer.stop()
+                        // A rejected start must not leave the switch
+                        // optimistically on.
+                        if (xhr.status !== 200) root.preheatRequested = false
+                    }
                     if (isDoor) root.doorBlockReason = reason
                 }
                 refresh()
@@ -383,16 +405,22 @@ Item {
     }
 
     function togglePreheat() {
-        if (!serviceOk || preheatPending || tempHigh) return
+        if (!serviceOk || preheatPending) return
+        // Decide the direction BEFORE touching preheatPending: preheatOn
+        // includes preheatPending, so setting it first made every Start
+        // click take the /stop branch.
+        var wantOn = !preheatOn
+        if (wantOn && tempHigh) return
         preheatPending = true
         preheatRetries = 0
-        if (preheatOn) {
-            preheatRequested = false
-            post("/stop")
-        } else {
+        blockReason = ""
+        if (wantOn) {
             preheatRequested = true
             preheatRequestedAt = Date.now()
             post("/start")
+        } else {
+            preheatRequested = false
+            post("/stop")
         }
         preheatClearTimer.restart()
     }
@@ -416,12 +444,14 @@ Item {
         if (preheatRequested) return "Requested"
         if (heaterState === "starting") return "Starting"
         if (heaterState === "stopping") return "Stopping"
-        if (heaterState === "timeout") return "Not started"
+        if (heaterState === "timeout") return "Not confirmed"
         return "Off"
     }
 
     function heaterSubText() {
         if (preheatPending) return "Sending request\u2026"
+        if (heaterState === "timeout")
+            return "Request sent \u2014 vehicle did not confirm it"
         if (heaterState === "preparing" && etaS > 0)
             return "Battery heater \u00b7 about " + etaS + " s"
         if (heaterPercent >= 0)
@@ -465,7 +495,7 @@ Item {
     Timer {
         interval: 10000
         repeat: true
-        running: root.preheatRequested && !root.heaterActive
+        running: root.preheatRequested && !root.heaterActive && !root.blockReason
         onTriggered: {
             if (root.preheatRetries < 4) {
                 root.preheatRetries++
@@ -800,12 +830,14 @@ Item {
             QText {
                 x: 28
                 y: 36
-                text: root.tempHigh ? "Battery is above 21\u00b0C"
+                text: (root.tempHigh && !root.preheatOn)
+                      ? "Start blocked: battery above 21\u00b0C"
                       : (root.blockReason ? "Blocked: " + root.blockReason
                       : (root.preheatPending ? "Sending request\u2026"
                          : (root.preheatOn ? "On" : "Off")))
                 font.pixelSize: ConstantModel.FONT_SIZE_18
-                color: (root.tempHigh || root.blockReason) ? "#FFB300" : "#7A7A7A"
+                color: ((root.tempHigh && !root.preheatOn) || root.blockReason)
+                       ? "#FFB300" : "#7A7A7A"
             }
 
             BatterySwitch {
@@ -813,7 +845,10 @@ Item {
                 anchors.rightMargin: 24
                 anchors.verticalCenter: parent.verticalCenter
                 checked: root.preheatOn
-                switchEnabled: root.serviceOk && !root.preheatPending && !root.tempHigh
+                // The temperature cutoff blocks starting only; an active
+                // heater must always be stoppable.
+                switchEnabled: root.serviceOk && !root.preheatPending
+                               && (root.preheatOn || !root.tempHigh)
                 onToggled: root.togglePreheat()
             }
         }

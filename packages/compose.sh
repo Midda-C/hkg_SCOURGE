@@ -26,7 +26,7 @@ trap '[ -z "${BATTERY_BUILD:-}" ] || rm -rf "$BATTERY_BUILD"' EXIT
 [ "$TARGET" != "/" ] || { echo "refusing to deploy to /" >&2; exit 1; }
 
 # --- package selection -----------------------------------------------------------
-AVAILABLE="battery wifi tweaks button-gate applauncher dmclient-gate"
+AVAILABLE="battery wifi tweaks wifi1b migrate button-gate applauncher dmclient-gate"
 DEFAULT_ORDER="battery wifi tweaks"
 WIP_STAGES="button-gate applauncher dmclient-gate"
 
@@ -35,6 +35,8 @@ if [ -z "$SELECTION" ]; then
     echo "  battery — Battery tile + preconditioning/charge-door daemon"
     echo "  wifi    — WiFi client / CarPlay AP / SSH (dropbear)"
     echo "  tweaks  — night-mode fixes, auto-DST, OTA block, disclaimer, Reboot app"
+    echo "  wifi1b  — separate CarPlay AP/client app beside WiFi (or standalone)"
+    echo "  migrate — one-way: remove WiFi, keep Battery/Tweaks and rebase Wifi1b"
     echo "  [WIP, signatureless-update research — docs/08; VM-validated, car-pending]"
     echo "  button-gate   — AppScomoDM stubs + drive wrapper + watcher (tools/update-debug)"
     echo "  applauncher   — AppLauncher .sign stubs"
@@ -62,7 +64,7 @@ done
 if [ "${SCOURGE_SKIP_BUILD:-0}" != "1" ]; then
     for pkg in $SELECTED; do
         case "$pkg" in
-        battery|wifi|tweaks)
+        battery|wifi|tweaks|wifi1b|migrate)
             echo "== building package: $pkg"
             if [ "$pkg" = battery ]; then
                 mkdir -p "$HERE/battery/out"
@@ -84,6 +86,9 @@ fi
 STAGE=$(mktemp -d "${TMPDIR:-/tmp}/scourge_compose.XXXXXX")
 trap 'rm -rf "$STAGE"; [ -z "${BATTERY_BUILD:-}" ] || rm -rf "$BATTERY_BUILD"' EXIT
 mkdir -p "$STAGE/combo"
+# Independently manifest the preflight helper; verify it before sourcing on-car.
+cp "$HERE/common/install_io.sh" "$STAGE/combo/install_io.sh"
+(cd "$STAGE" && md5sum combo/install_io.sh > combo/preflight.md5)
 
 stage_pkg() {
     name="$1"
@@ -98,6 +103,11 @@ stage_pkg() {
     cp -f "$src/manifest.md5" "$dst/"
     cp -f "$src/run_stuff.sh" "$dst/stage.sh"
     cp -f "$src/run_stuff_restore.sh" "$dst/restore.sh" 2>/dev/null || true
+    # Unchanged-stage skip data (see the master's stage_skippable) allows a
+    # rebuilt bundle to leave already-installed packages untouched.
+    for extra in skip.map skip.services; do
+        [ ! -f "$HERE/$name/$extra" ] || cp -f "$HERE/$name/$extra" "$dst/$extra"
+    done
     (cd "$dst" && md5sum -c manifest.md5 >/dev/null) || exit 1
     if [ "$name" = tweaks ]; then
         python3 "$HERE/common/check_layout.py" \
@@ -131,7 +141,7 @@ stage_wip() {
 
 for pkg in $SELECTED; do
     case "$pkg" in
-    battery|wifi|tweaks) stage_pkg "$pkg" ;;
+    battery|wifi|tweaks|wifi1b|migrate) stage_pkg "$pkg" ;;
     *) stage_wip "$pkg" ;;
     esac
 done
@@ -168,8 +178,35 @@ MODE="\${SCOURGE_MODE:-all}"
 set -u
 PATH="\${COMBO_PATH:-/bin:/sbin:/usr/bin:/usr/sbin}"
 USB_DIR="\${USB_DIR:-\$(CDPATH= cd -- "\$(dirname "\$0")" && pwd)}"
+STICK_DIR="\${SCOURGE_STICK_DIR:-\$USB_DIR}"
 COMBO="\$USB_DIR/combo"
 RW_DIR="\${COMBO_RW_DIR:-/rw_data/combo}"
+RUNTIME_ROOT="\${COMBO_RUNTIME_ROOT:-/rw_data}"
+# FIRST: reclaim runtime log space.  A full /rw_data makes every later
+# write (including this installer's own state) fail, so truncate the
+# append-only daemon logs and drop stale atomic-write temp files before
+# anything else.  Truncation frees space without deleting restore data.
+for _app in wifi1b battery tweaks; do
+    for _f in daemon.log daemon.log.1 wpa_supplicant.log wpa_supplicant.log.1 \\
+              ssh.log ssh.log.1 dhcpd.log dhcpd.log.1 tweaks_failures.log; do
+        [ ! -f "\$RUNTIME_ROOT/\$_app/\$_f" ] || : > "\$RUNTIME_ROOT/\$_app/\$_f" 2>/dev/null || true
+    done
+    for _f in "\$RUNTIME_ROOT/\$_app"/*.tmp.*; do
+        [ -e "\$_f" ] || continue
+        rm -f "\$_f" 2>/dev/null || true
+    done
+done
+# The standalone layout has no WiFi app.  Delete its /rw_data/wifi
+# leftovers (daemon, dropbear, config, keys, backups) only when the WiFi
+# QML is absent, so a still-installed app is untouched.
+QML_BASE="\${COMBO_QML_DIR:-/app/share/AppHomeScreen/qml_eco3.0}"
+WIFI_PAGE="\$QML_BASE/HomeScreen/WifiPage.qml"
+WIFI_MARKER="\$QML_BASE/HomeScreen/QHMI_HomeScreenMain_Advanced.qml"
+if [ ! -e "\$WIFI_PAGE" ] && \\
+   [ ! -e /etc/systemd/system/wifi-daemon.service ] && \\
+   ! grep -q 'WIFI_PAYLOAD_260128' "\$WIFI_MARKER" 2>/dev/null; then
+    [ ! -d "\$RUNTIME_ROOT/wifi" ] || rm -rf "\$RUNTIME_ROOT/wifi" 2>/dev/null || true
+fi
 mkdir -p "\$RW_DIR" 2>/dev/null || RW_DIR="\$USB_DIR"
 LOG="\$RW_DIR/combo.log"
 : > "\$LOG" 2>/dev/null
@@ -193,6 +230,82 @@ result(){
 STAGES_LOG="\$RW_DIR/stages.log"
 : > "\$STAGES_LOG" 2>/dev/null
 FAILED=""
+
+# --- unchanged-stage skip -----------------------------------------------
+# A stage is skipped only when ALL hold:
+#   1. the packaged digest (manifest + installer) equals the digest recorded
+#      after that stage's last successful install;
+#   2. every curated installed file in its skip.map still md5-matches the
+#      packaged file (and required paths/services still exist);
+#   3. the shared home-screen QML is byte-identical to the last successful
+#      run's recorded output.
+# The ledger lives in /rw_data, so a firmware update or a restore invalidates
+# it. MODE=<package> always reinstalls; skipping applies to MODE=all only.
+LEDGER="\${COMBO_LEDGER_DIR:-/rw_data/combo/installed}"
+QML_BASE="\${COMBO_QML_DIR:-/app/share/AppHomeScreen/qml_eco3.0}"
+QML_FILES="HomeScreen/QHMI_HomeScreenMain_Advanced.qml
+HomeScreen/QHMI_HomeScreenMain_Wide.qml
+HomeScreen/Screen_HomeScreen_AllMenus.qml
+HomeScreen/Screen_HomeScreen_Submenu_Setup.qml
+component/QCustomizedMenuListAllowEmpty.qml
+component/common/Q_ThemeImage.qml"
+md5f(){ "\$MD5SUM_BIN" "\$1" 2>/dev/null | cut -d' ' -f1; }
+qml_digest(){
+    for _q in \$QML_FILES; do
+        [ -f "\$QML_BASE/\$_q" ] || return 1
+        md5f "\$QML_BASE/\$_q"
+    done | "\$MD5SUM_BIN" | cut -d' ' -f1
+}
+stage_digest(){
+    (
+        cat "\$COMBO/\$1/manifest.md5" "\$COMBO/\$1/stage.sh" 2>/dev/null
+        # Owner-supplied SSH keys / WiFi profiles are part of the installed
+        # state: a changed key must re-run the stage, while an identical one
+        # must still skip.
+        case "\$1" in
+        wifi|wifi1b)
+            for _in in authorized_keys wifi.txt iphone_wifi.txt; do
+                [ ! -f "\$USB_DIR/\$_in" ] || cat "\$USB_DIR/\$_in"
+            done ;;
+        esac
+    ) | "\$MD5SUM_BIN" | cut -d' ' -f1
+}
+stage_skippable(){
+    _s=\$1; _d="\$COMBO/\$_s"
+    [ -f "\$_d/skip.map" ] || return 1
+    [ -f "\$LEDGER/\$_s.digest" ] || return 1
+    _want=\$(cat "\$LEDGER/\$_s.digest" 2>/dev/null)
+    [ -n "\$_want" ] && [ "\$_want" = "\$(stage_digest "\$_s")" ] || return 1
+    _qrec=\$(cat "\$LEDGER/final-qml.digest" 2>/dev/null)
+    _qnow=\$(qml_digest)
+    [ -n "\$_qrec" ] && [ -n "\$_qnow" ] && [ "\$_qrec" = "\$_qnow" ] || return 1
+    while IFS='|' read -r _left _dst; do
+        [ -n "\$_left" ] || continue
+        case "\$_left" in \#*) continue ;; esac
+        case "\$_left" in
+        \!*) [ -e "\${_left#!}" ] || return 1; continue ;;
+        esac
+        _rel=\$_left; _cond=0
+        case "\$_left" in \?*) _rel=\${_left#\?}; _cond=1 ;; esac
+        [ "\$_cond" = 0 ] || [ -d "\$(dirname "\$_dst")" ] || continue
+        [ -f "\$_d/\$_rel" ] || continue
+        [ -f "\$_dst" ] || return 1
+        [ "\$(md5f "\$_dst")" = "\$(md5f "\$_d/\$_rel")" ] || return 1
+    done < "\$_d/skip.map"
+    if [ -f "\$_d/skip.services" ]; then
+        while IFS= read -r _unit; do
+            [ -n "\$_unit" ] || continue
+            case "\$_unit" in \#*) continue ;; esac
+            command -v systemctl >/dev/null 2>&1 || return 1
+            systemctl is-active --quiet "\$_unit" 2>/dev/null || return 1
+        done < "\$_d/skip.services"
+    fi
+    return 0
+}
+record_stage_digest(){
+    mkdir -p "\$LEDGER" 2>/dev/null || return 0
+    stage_digest "\$1" > "\$LEDGER/\$1.digest" 2>/dev/null || true
+}
 
 # Audible installer status through the factory micom audio service.  The
 # installer copies its own dbus-send so the call runs in the same SMACK
@@ -254,19 +367,35 @@ run_stage(){
         beep_n 2
         return 1
     fi
+    # Unchanged stage: same packaged bytes as its last successful install and
+    # every installed file/service/UI still matches. MODE=all only; an
+    # explicit MODE=<package> (or restore) always runs the real installer.
+    if [ "\$MODE" = all ] && stage_skippable "\$name"; then
+        { echo "SCOURGE_COMBO_STAGE"; echo "stage=\$name"; echo "status=SKIPPED";
+          echo "reason=unchanged_payload_and_installed_state"; } > "\$stage_result"
+        cp -f "\$stage_result" "\$USB_DIR/\${name}_result.txt" 2>/dev/null || true
+        echo "stage_\$name=status=SKIPPED" >> "\$STAGES_LOG"
+        log "stage \$name skipped: payload and installed state unchanged"
+        return 0
+    fi
     # Per-package installers honor USB_DIR; point them at their own subtree.
     # Forward explicit owner inputs into the WiFi subtree. Do not package
     # credentials in source or leave stale copies after the stage finishes.
-    case "\$name" in wifi)
-        for input in wifi.txt authorized_keys MDNSD_ROOT_ARM; do
+    case "\$name" in wifi|wifi1b)
+        for input in wifi.txt iphone_wifi.txt authorized_keys MDNSD_ROOT_ARM; do
             [ ! -f "\$USB_DIR/\$input" ] || cp -f "\$USB_DIR/\$input" "\$stage_dir/\$input"
         done ;;
     esac
-    USB_DIR="\$stage_dir" /bin/sh "\$script" >> "\$LOG" 2>&1
+    # A WiFi-removal bundle rebuilds the shared QML in its migrate stage, so
+    # Wifi1b must not fail on unknown current bytes or patch them first.
+    _defer=""
+    [ "\$name" = wifi1b ] && [ -f "\$COMBO/migrate/stage.sh" ] && _defer=1
+    USB_DIR="\$stage_dir" SCOURGE_STICK_DIR="\$STICK_DIR" WIFI1B_DEFER_QML="\$_defer" \
+        /bin/sh "\$script" >> "\$LOG" 2>&1
     stage_rc=\$?
     status=\$(sed -n 's/^status=\([^ ]*\).*/\1/p' "\$stage_result" 2>/dev/null | tail -n 1)
     [ ! -f "\$stage_result" ] || cp -f "\$stage_result" "\$USB_DIR/\${name}_result.txt"
-    case "\$name" in wifi) rm -f "\$stage_dir/wifi.txt" "\$stage_dir/authorized_keys" "\$stage_dir/MDNSD_ROOT_ARM" ;; esac
+    case "\$name" in wifi|wifi1b) rm -f "\$stage_dir/wifi.txt" "\$stage_dir/iphone_wifi.txt" "\$stage_dir/authorized_keys" "\$stage_dir/MDNSD_ROOT_ARM" ;; esac
     # A stage that exits 0 with status=REBOOT_REQUIRED succeeded: the WiFi
     # installer reports it when the UI restart could not be verified on the
     # spot.  Only rc=0 plus an accepted status counts; rc=0 with a failure
@@ -274,6 +403,7 @@ run_stage(){
     case "\$stage_rc:\$status" in
         0:OK|0:REBOOT_REQUIRED)
             echo "stage_\$name=status=\$status rc=0" >> "\$STAGES_LOG"
+            [ "\$MODE" = restore ] || record_stage_digest "\$name"
             return 0
             ;;
     esac
@@ -286,14 +416,57 @@ run_stage(){
 # One beep: installer started.
 beep_n 1
 
+# Read-only preflight, before any stage creates backups or changes services.
+MD5SUM_BIN=md5sum
+command -v "\$MD5SUM_BIN" >/dev/null 2>&1 || MD5SUM_BIN=md5sum.coreutils
+if ! (cd "\$USB_DIR" && "\$MD5SUM_BIN" -c combo/preflight.md5) >> "\$LOG" 2>&1; then
+    echo 'preflight=status=FAIL error=helper_manifest' >> "\$STAGES_LOG"
+    result FAIL; beep_n 2; exit 1
+fi
+. "\$COMBO/install_io.sh"
+if ! io_init; then
+    echo 'preflight=status=FAIL error=root_mount_detection' >> "\$STAGES_LOG"
+    result FAIL; beep_n 2; exit 1
+fi
+echo 'preflight=status=OK' >> "\$STAGES_LOG"
+
+# Legacy Wifi1b releases do not speak the shared ownership protocol. A
+# WiFi-removal bundle kills both radio owners itself; any other bundle still
+# refuses to run upstream installers over an active legacy session.
+peer_root="\${COMBO_RUNTIME_ROOT:-/rw_data}/wifi1b"
+peer_active=0
+if [ -f "\$peer_root/wifi1b_daemon" ] &&
+   { [ -f /run/wifi1b/active ] || grep -Eq '"wlan_on"[[:space:]]*:[[:space:]]*true|"mode"[[:space:]]*:[[:space:]]*"(client|carplay)"' "\$peer_root/status.json" 2>/dev/null; }; then
+    peer_active=1
+fi
+if [ "\$MODE" != restore ] && [ "\$peer_active" = 1 ]; then
+    # Both migration and standalone update bundles own the radio lifecycle:
+    # stop the daemon and kill any surviving radio owner instead of asking
+    # the user to turn Wifi1b off manually.
+    log "preflight: forcing Wifi1b/WiFi off"
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl stop wifi1b-daemon.service wifi-daemon.service >> "\$LOG" 2>&1 || true
+    fi
+    for p in /proc/[0-9]*; do
+        exe=\$(readlink "\$p/exe" 2>/dev/null || true)
+        case "\$exe" in
+            */wifi1b_daemon|*/wifi_daemon|*/wifi1b_daemon\ \(deleted\)|*/wifi_daemon\ \(deleted\))
+                kill -TERM "\${p#/proc/}" 2>/dev/null || true ;;
+        esac
+    done
+    rm -f /run/wifi1b/active /run/wifi/active 2>/dev/null || true
+    sleep 2
+    echo 'preflight=status=OK radio_forced_off=1' >> "\$STAGES_LOG"
+fi
+
 case "\$MODE" in
-  all)     for s in $ORDER_SPACES; do run_stage "\$s" "\$COMBO/\$s/stage.sh" || true; done ;;
+  all)     for s in $ORDER_SPACES; do run_stage "\$s" "\$COMBO/\$s/stage.sh" || break; done ;;
 EOF
 
 # restore runs in reverse
 RESTORE_ORDER=$(echo "$SELECTED" | awk '{for(i=NF;i>0;i--) printf "%s%s", $i, (i>1?" ":"")}')
 cat >> "$STAGE/run_stuff.sh" <<EOF
-  restore) for s in $RESTORE_ORDER; do run_stage "restore_\$s" "\$COMBO/\$s/restore.sh" || true; done ;;
+  restore) for s in $RESTORE_ORDER; do run_stage "restore_\$s" "\$COMBO/\$s/restore.sh" || break; done ;;
 EOF
 
 for pkg in $SELECTED; do
@@ -310,6 +483,15 @@ if [ -n "$FAILED" ]; then
     result "FAIL"
     beep_n 3
     exit 1
+fi
+if [ "$MODE" = restore ]; then
+    # File state is back to pre-install: the install ledger must not survive.
+    rm -rf "$LEDGER" 2>/dev/null || true
+elif [ "$MODE" = all ]; then
+    # Only a full-stack run defines the shared QML the skip check compares.
+    mkdir -p "$LEDGER" 2>/dev/null || true
+    qml_now=$(qml_digest 2>/dev/null) || qml_now=""
+    [ -z "$qml_now" ] || printf '%s\n' "$qml_now" > "$LEDGER/final-qml.digest" 2>/dev/null || true
 fi
 result "OK"
 # Five beeps: all requested stages completed successfully.  A short pause

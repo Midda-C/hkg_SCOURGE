@@ -65,6 +65,28 @@ CAN_LOG="$STUB/can.log" "$RW/bin/micom-send" fixed 0x06 0x3f 26 2 2
 grep -q 'SetCANFixedMicomRecv array:byte:0x06,0x3f int32:26 int32:2 int32:2' "$STUB/can.log"
 CAN_LOG="$STUB/can.log" "$RW/bin/micom-send" raw array:byte:0x04,0xa2,0x08,0xff
 grep -q 'SetCANMicomRecv array:byte:0x04,0xa2,0x08,0xff' "$STUB/can.log"
+# Transport classification: a missing reply is normal (the factory senders
+# use no-reply), but a real D-Bus error must reach the caller.
+cat > "$RW/bin/CANService" <<'CANEOF'
+#!/bin/sh
+echo 'Error org.freedesktop.DBus.Error.NoReply: Did not receive a reply.' >&2
+exit 1
+CANEOF
+chmod +x "$RW/bin/CANService"
+CAN_LOG="$STUB/can.log" "$RW/bin/micom-send" raw array:byte:0x00,0xc7,0x08 || {
+    echo "NoReply must still count as queued" >&2; exit 1; }
+cat > "$RW/bin/CANService" <<'CANEOF'
+#!/bin/sh
+echo 'Error org.freedesktop.DBus.Error.ServiceUnknown: no owner' >&2
+exit 1
+CANEOF
+chmod +x "$RW/bin/CANService"
+if CAN_LOG="$STUB/can.log" "$RW/bin/micom-send" raw array:byte:0x00,0xc7,0x08; then
+    echo "ServiceUnknown must exit non-zero" >&2
+    exit 1
+fi
+printf '#!/bin/sh\nexit 0\n' > "$RW/bin/CANService"
+chmod +x "$RW/bin/CANService"
 test -f "$RW/smack_expected"
 [ "$(cat "$RW/smack_expected")" = _ ]
 grep -q "smack_self=_" "$USB/run_stuff_result.txt"

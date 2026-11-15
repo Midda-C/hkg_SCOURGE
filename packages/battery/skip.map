@@ -1,0 +1,15 @@
+# SPDX-FileCopyrightText: 2026 The SCOURGE Project contributors
+# SPDX-License-Identifier: AGPL-3.0-only
+# Curated installed-state check for combo stage skipping (MODE=all only).
+# Format: <payload path relative to the stage dir>|<absolute destination>
+#   ?prefix  = only check when the destination directory exists (installer
+#              would skip the file there too)
+#   !prefix  = the absolute path must exist
+# Shared home-screen QML is covered by the recorded final-QML digest, not here.
+# BatteryTile.qml is excluded: the WiFi stage installs the last copy.
+payload/bin/battery_daemon|/rw_data/battery/battery_daemon
+payload/systemd/battery-daemon.service|/etc/systemd/system/battery-daemon.service
+payload/qml/AppHomeScreen/qml_eco3.0/HomeScreen/BatteryPage.qml|/app/share/AppHomeScreen/qml_eco3.0/HomeScreen/BatteryPage.qml
+payload/qml/AppHomeScreen/qml_eco3.0/component/BatterySwitch.qml|/app/share/AppHomeScreen/qml_eco3.0/component/BatterySwitch.qml
+payload/assets/battery/battery_icon_n.png|/app/share/AppHomeScreen/battery/battery_icon_n.png
+payload/assets/battery/battery_icon_d.png|/app/share/AppHomeScreen/battery/battery_icon_d.png

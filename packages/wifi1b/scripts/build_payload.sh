@@ -1,0 +1,95 @@
+#!/bin/sh
+# SPDX-FileCopyrightText: 2026 The SCOURGE Project contributors
+# SPDX-License-Identifier: AGPL-3.0-only
+# TARGET: Gen5W_L EU 260128
+# Build the Wifi1b USB payload tree.  Run from the wifi1b_app root.
+set -eu
+HERE=$(cd "$(dirname "$0")" && pwd)
+ROOT=$(dirname "$HERE")
+OUT=${1:-"$ROOT/out/usb"}
+DROPBEAR="${SCOURGE_DROPBEAR:?set SCOURGE_DROPBEAR to the owner-supplied static dropbearmulti}"
+
+cd "$ROOT"
+
+echo "== icons =="
+python3 scripts/make_icons1b.py
+
+# First-party components only. Shared QML is additively patched after the
+# canonical Battery/WiFi/Tweaks installers, never from divergent sibling trees.
+
+echo "== daemon =="
+make -C src
+
+echo "== assemble $OUT =="
+rm -rf "$OUT"
+mkdir -p "$OUT/payload/bin" "$OUT/payload/assets/wifi1b" "$OUT/payload/systemd" \
+         "$OUT/payload/qml/AppHomeScreen/qml_eco3.0/HomeScreen" \
+         "$OUT/payload/qml/AppHomeScreen/qml_eco3.0/component" \
+          "$OUT/backup"
+mkdir -p "$OUT/payload/lib"
+cp "$ROOT/../common/install_io.sh" "$OUT/payload/lib/"
+python3 scripts/accepted_qml.py "$OUT/payload/accepted-qml.md5"
+
+cp src/wifi1b_daemon "$OUT/payload/bin/wifi1b_daemon"
+cp src/wifi1b_qmlpatch "$OUT/payload/bin/wifi1b_qmlpatch"
+cp artifacts/assets/wifi1b/*.png "$OUT/payload/assets/wifi1b/"
+cp artifacts/systemd/wifi1b-daemon.service "$OUT/payload/systemd/"
+cp artifacts/systemd/60-wifi1b-foreground.conf "$OUT/payload/systemd/"
+cp artifacts/systemd/60-connman-nodevice.conf "$OUT/payload/systemd/"
+cp artifacts/qml/AppHomeScreen/qml_eco3.0/HomeScreen/Wifi1bPage.qml "$OUT/payload/qml/AppHomeScreen/qml_eco3.0/HomeScreen/"
+cp artifacts/qml/AppHomeScreen/qml_eco3.0/component/Wifi1bTile.qml "$OUT/payload/qml/AppHomeScreen/qml_eco3.0/component/"
+cp artifacts/qml/AppHomeScreen/qml_eco3.0/component/Wifi1bSwitch.qml "$OUT/payload/qml/AppHomeScreen/qml_eco3.0/component/"
+cp artifacts/qml/AppHomeScreen/qml_eco3.0/component/Wifi1bButton.qml "$OUT/payload/qml/AppHomeScreen/qml_eco3.0/component/"
+
+cp "$DROPBEAR" "$OUT/payload/bin/dropbearmulti"
+chmod 755 "$OUT/payload/bin/wifi1b_daemon" "$OUT/payload/bin/wifi1b_qmlpatch" "$OUT/payload/bin/dropbearmulti"
+
+cp wifi1b.txt.sample "$OUT/payload/wifi1b.txt.sample"
+cp wifi1b.txt.sample "$OUT/README-wifi1b.txt"
+printf 'Wifi1b backups are written here by the installer.\n' > "$OUT/backup/README.txt"
+
+cp scripts/run_stuff1b.sh "$OUT/run_stuff.sh"
+cp scripts/run_stuff_restore1b.sh "$OUT/run_stuff_restore.sh"
+# The initial-root loader md5-gates run_stuff.sh.  Change its content on
+# every build so a rebuilt payload actually runs.
+printf '\n# WIFI1B_STANDALONE_STAMP=%s\n' "$(date -u +%Y%m%dT%H%M%SZ 2>/dev/null)-$$" >> "$OUT/run_stuff.sh"
+printf '\n# WIFI1B_RESTORE_STAMP=%s\n' "$(date -u +%Y%m%dT%H%M%SZ 2>/dev/null)-$$" >> "$OUT/run_stuff_restore.sh"
+chmod 755 "$OUT/run_stuff.sh" "$OUT/run_stuff_restore.sh"
+
+cat > "$OUT/README.txt" <<'EOT'
+Wifi1b — static wpa_supplicant + own DHCP + SSH, beside WiFi
+===========================================================
+
+Install WiFi first.  Wifi1b deliberately refuses to patch an unknown
+home screen and does not modify WiFi's page, tile, service, config or status.
+
+Install:
+  1. Copy this USB tree to a FAT/exFAT stick.
+  2. Optional: put iphone_wifi.txt (or wifi.txt) and authorized_keys at the root.
+  3. Plug it in; check run_stuff_result.txt.
+  4. Reboot if the result says REBOOT_REQUIRED.
+
+The installer adds a "WiFi 1b" tile and a separate Wifi1b page.  Wifi1b starts
+idle: importing credentials does not enable WLAN, a mode, or SSH.  Use the
+Wifi1b page to start Client or CarPlay AP.
+
+CarPlay AP defaults:
+  SSID IONIQ5-CarPlay-B, 5 GHz channel 36, country GB
+  static 10.42.0.1/24, own DHCP pool 10.42.0.10-200
+  SSH user wifi1b, key-only, port 2224
+
+Restore:
+  Copy run_stuff_restore.sh over run_stuff.sh and plug it in.  This restores
+  the shared QML to its pre-Wifi1b state and leaves WiFi installed.
+
+Diagnostics:
+  The Wifi1b page's Status/Logs tabs write wifi1b_logs_* bundles to the stick.
+EOT
+
+python3 scripts/package_release.py "$OUT" --metadata-only
+( cd "$OUT" && find payload -type f -print0 | sort -z | xargs -0 md5sum > manifest.md5 )
+python3 scripts/package_release.py "$OUT"
+
+echo "== done =="
+echo "USB tree: $OUT"
+echo "manifest entries: $(wc -l < "$OUT/manifest.md5")"

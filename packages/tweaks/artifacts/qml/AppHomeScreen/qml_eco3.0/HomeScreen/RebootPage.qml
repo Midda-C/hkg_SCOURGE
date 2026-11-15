@@ -24,15 +24,13 @@ Item {
                                ? AppHomeModel.isAtOtherApp : false
     property bool sysPopupShowing: typeof AppHomeModel !== "undefined"
                                     ? AppHomeModel.sysPopupShowing : false
-    readonly property bool driving: typeof AppHomeModel !== "undefined"
-                                    ? AppHomeModel.drivingRestriction : false
 
     visible: requested && !atOtherApp
     focus: visible
     enabled: !sysPopupShowing
     opacity: sysPopupShowing ? 0 : 1
 
-    property string mode: "confirm"       // confirm | pending | blocked | unavailable | error
+    property string mode: "confirm"       // confirm | pending | unavailable | error
     property bool serviceOk: false
     property bool serviceError: false
     property string rebootState: "idle"
@@ -50,13 +48,10 @@ Item {
         homeSeqSeeded = false
         rebootError = ""
         serviceError = false
-        if (rebootState === "rebooting") {
+        if (rebootState === "rebooting")
             mode = "pending"
-        } else if (driving) {
-            mode = "blocked"
-        } else {
+        else
             mode = "confirm"
-        }
         serviceOk = false
         popup.startOpenAnimation()
         refresh()
@@ -101,11 +96,6 @@ Item {
             }
             return
         }
-        if (driving) {
-            mode = "blocked"
-        } else if (mode === "blocked") {
-            mode = "confirm"
-        }
         if (rebootState === "rebooting")
             mode = "pending"
     }
@@ -124,7 +114,7 @@ Item {
                 }
                 serviceOk = false
                 serviceError = true
-                if (mode !== "pending" && !driving)
+                if (mode !== "pending")
                     mode = "unavailable"
             }
         }
@@ -152,10 +142,6 @@ Item {
     }
 
     function confirm() {
-        if (driving) {
-            mode = "blocked"
-            return
-        }
         if (!serviceOk) {
             mode = "unavailable"
             return
@@ -199,8 +185,6 @@ Item {
     }
 
     readonly property string bodyText: {
-        if (mode === "blocked")
-            return TranslationsModel.STR_HOME_POP_TRY_AGAIN_PARKING_VEHICLE
         if (mode === "pending")
             return "Restarting the head unit\u2026\n\nThe screen will return in about a minute."
         if (mode === "error")
@@ -210,14 +194,7 @@ Item {
             return "The restart service is not available. Reinstall Tweaks, or use the reset button."
         if (!serviceOk)
             return "Checking restart service\u2026"
-        return "Restart the head unit?\n\nThis restarts the infotainment system and takes about a minute. Do not restart while driving or during an update."
-    }
-
-    onDrivingChanged: {
-        if (driving && mode === "confirm")
-            mode = "blocked"
-        else if (!driving && mode === "blocked")
-            mode = "confirm"
+        return "Restart the head unit?\n\nNavigation, media, and camera views will be unavailable for about a minute."
     }
 
     Connections {
@@ -340,7 +317,7 @@ Item {
                 label: TranslationsModel.STR_HOME_YES + AppHomeModel.textUpdate
                 labelSize: ConstantModel.FONT_SIZE_39
                 labelColor: HomeThemeHelper.normalTextColor
-                enabled: root.serviceOk && !root.driving
+                enabled: root.serviceOk
                 opacity: enabled ? 1 : 0.4
                 onBtnRelease: root.confirm()
             }
@@ -369,7 +346,6 @@ Item {
         Item {
             id: okWrap
             visible: root.mode === "error" || root.mode === "unavailable"
-                     || root.mode === "blocked"
             width: popup.width - 24
             height: ConstantModel.APP_HOME_POPUP_BUTTON_HEIGHT
             anchors.left: parent.left

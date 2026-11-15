@@ -51,6 +51,7 @@ fi
 
 LATEST="$RW_DIR/backup/latest"
 [ -d "$LATEST" ] || fail "no backup/latest; cannot restore"
+[ ! -f /rw_data/wifi1b/wifi1b_daemon ] || fail "restore Wifi1b first; preserving its shared radio and QML"
 
 . "$PAYLOAD/lib/install_io.sh"
 io_init && io_settle_root || fail "root filesystem is not stably writable"

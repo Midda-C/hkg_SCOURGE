@@ -10,7 +10,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def build_id():
-    paths = [ROOT / "src/Makefile", ROOT.parent / "common/install_io.sh"]
+    paths = [ROOT / "src/Makefile", ROOT.parent / "common/install_io.sh",
+             ROOT.parent / "common/qml_layout.py", ROOT.parent / "common/radio_owner.h"]
     for directory, suffixes in [("src", {".c", ".h"}), ("scripts", {".py", ".sh"}),
                                 ("artifacts/systemd", {".service"})]:
         paths.extend(p for p in (ROOT / directory).rglob("*") if p.suffix in suffixes)

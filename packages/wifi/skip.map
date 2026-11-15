@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: 2026 The SCOURGE Project contributors
+# SPDX-License-Identifier: AGPL-3.0-only
+# Curated installed-state check for combo stage skipping (MODE=all only).
+# Format: <payload path relative to the stage dir>|<absolute destination>
+# The WiFi stage installs the last BatteryTile/HelloTile copies, so they are
+# checked here, not in the battery map. Q_ThemeImage is in the final-QML digest.
+# mdnsd.rooted is intentionally absent: it is installed only when the
+# MDNSD_ROOT_ARM experiment is armed, which the bundle does not ship.
+payload/bin/wifi_daemon|/rw_data/wifi/wifi_daemon
+payload/bin/dropbearmulti|/rw_data/wifi/bin/dropbearmulti
+payload/systemd/wifi-daemon.service|/etc/systemd/system/wifi-daemon.service
+payload/qml/AppHomeScreen/qml_eco3.0/HomeScreen/WifiPage.qml|/app/share/AppHomeScreen/qml_eco3.0/HomeScreen/WifiPage.qml
+payload/qml/AppHomeScreen/qml_eco3.0/component/WifiTile.qml|/app/share/AppHomeScreen/qml_eco3.0/component/WifiTile.qml
+payload/qml/AppHomeScreen/qml_eco3.0/component/WifiSwitch.qml|/app/share/AppHomeScreen/qml_eco3.0/component/WifiSwitch.qml
+payload/qml/AppHomeScreen/qml_eco3.0/component/WifiButton.qml|/app/share/AppHomeScreen/qml_eco3.0/component/WifiButton.qml
+payload/qml/AppHomeScreen/qml_eco3.0/component/HelloTile.qml|/app/share/AppHomeScreen/qml_eco3.0/component/HelloTile.qml
+payload/qml/AppHomeScreen/qml_eco3.0/component/BatteryTile.qml|/app/share/AppHomeScreen/qml_eco3.0/component/BatteryTile.qml
+payload/assets/wifi/wifi_icon_n.png|/app/share/AppHomeScreen/wifi/wifi_icon_n.png
+payload/assets/wifi/wifi_icon_d.png|/app/share/AppHomeScreen/wifi/wifi_icon_d.png
+payload/assets/hello/hello_icon_n.png|/app/share/AppHomeScreen/hello/hello_icon_n.png
+payload/assets/hello/hello_icon_d.png|/app/share/AppHomeScreen/hello/hello_icon_d.png
+payload/assets/battery/battery_icon_n.png|/app/share/AppHomeScreen/battery/battery_icon_n.png
+payload/assets/battery/battery_icon_d.png|/app/share/AppHomeScreen/battery/battery_icon_d.png

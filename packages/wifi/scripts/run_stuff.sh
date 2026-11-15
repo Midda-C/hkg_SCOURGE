@@ -319,6 +319,7 @@ log "HU backup: $BACKUP_HU"
 
 # ---- rootfs rw ---------------------------------------------------------
 . "$PAYLOAD/lib/install_io.sh"
+io_capture_qml "$QML_DIR" "$USB_DIR/qml_before" || log "WARNING: QML before-snapshot unavailable"
 io_init && io_settle_root || fail "root filesystem is not stably writable"
 
 mkdir -p "$BACKUP_HU/transaction" "$RW_DIR/backup/accounts" || fail "cannot create transaction backup"
@@ -697,6 +698,7 @@ log "daemon=$daemon_status"
 io_restore_root || fail "cannot restore root mount state"
 
 # ---- restart AppHomeScreen --------------------------------------------
+io_capture_qml "$QML_DIR" "$USB_DIR/qml_after" || log "WARNING: QML after-snapshot unavailable"
 restart="not-attempted"
 old_home_pid=$(pidof AppHomeScreen 2>/dev/null || true)
 launcher_pid=""

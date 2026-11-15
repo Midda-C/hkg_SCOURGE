@@ -1,0 +1,7 @@
+# SPDX-FileCopyrightText: 2026 The SCOURGE Project contributors
+# SPDX-License-Identifier: AGPL-3.0-only
+# Curated installed-state check for combo stage skipping (MODE=all only).
+# The marker is written only after a verified migration.  A later WiFi
+# reinstall changes the shared-QML digest, which independently defeats the
+# skip check, so a stale marker cannot hide an un-migrated install.
+payload/migration.done|/rw_data/wifi1b/migration.done

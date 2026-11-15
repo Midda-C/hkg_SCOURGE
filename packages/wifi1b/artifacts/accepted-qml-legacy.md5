@@ -1,0 +1,9 @@
+# SPDX-FileCopyrightText: 2026 The SCOURGE Project contributors
+# SPDX-License-Identifier: AGPL-3.0-only
+# Known V11 on-car shared-QML outputs.  The standalone-capable patcher changes
+# only the Wide/Advanced tile order, so those two files from the V11 install
+# are pinned here to let the next Wifi1b update and the WiFi-removal migration
+# accept the car's current bytes.  AllMenus, Setup and Custom are unchanged
+# and are already covered by the generated canonical entries.
+554c72dfc1c0468d788b2b2b26d5c4a5
+c44f9406c7c61f901fef2d5c8941a49f

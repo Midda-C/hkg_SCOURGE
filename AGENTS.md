@@ -56,20 +56,21 @@ repo.
    stop and report it.
 10. **Status honesty.** Mark what is car-validated vs offline-validated
     vs WIP everywhere. Never imply more validation than exists.
-11. **Unattended commits and merges get a second opinion.** This applies
+11. **Unattended commits and merges get one independent review.** This applies
     whenever work lands without a human reading the diff first — an agent
     committing, merging, rebasing, or force-pushing on the owner's behalf.
     The committer must self-review the full diff against these rules and
-    the task's requirements, then a **distinct** second agent (a different
-    session and/or model from the committer) must independently double-check
-    the same diff. Record the verdict in the commit message as
-    `Second-Opinion: <agent/model> — PASS`. A FAIL is a stop: fix it or
-    ask the human; never land a FAIL-reviewed change. Ask the human at the
-    **start** of the task which agent/model should review (store it in
-    gitignored `config/reviewer.local`, copied from
-    `config/reviewer.local.example`); if no pick is stored and the human
-    is unreachable, use a distinct available agent and record both the
-    agent/model and the fallback fact in the trailer. The pre-push hook
+    the task's requirements, then **one independent reviewer session** using
+    `opencode-go/deepseek-v4.1-flash#max` must double-check the same diff.
+    This single review is required for every agent-made commit, including WIP
+    checkpoints; no additional reviewer model or second review agent is required.
+    Do not use Sol as the independent reviewer. Record the verdict as
+    `Second-Opinion: opencode-go/deepseek-v4.1-flash#max — PASS` in the commit
+    message. A FAIL is a stop: fix it and re-review; never land a FAIL-reviewed
+    change. If the selected reviewer is unavailable, ask the human rather than
+    silently substituting a model. Keep the selection in gitignored
+    `config/reviewer.local`, copied from `config/reviewer.local.example`.
+    The pre-push hook
     warns, but cannot verify, that the trailer exists — the real check is
     the recorded review.
 
@@ -94,11 +95,9 @@ repo.
 - The TE2 key if `00_fetch_third_party.sh` could not fetch it.
 - The Pi host/user for rig deployment.
 - Which packages to put on a combo stick (`packages/compose.sh` prompts).
-- Which agent/model gives the rule-11 second opinion for unattended
-  commits/merges (or whether to prompt for it every task). Store the pick
-  in gitignored `config/reviewer.local`; the committed
-  `config/reviewer.local.example` is a per-owner template, not a repo
-  default, and may list fallbacks in preference order.
+- An alternative reviewer only if the rule-11 DeepSeek 4.1 Flash-Max reviewer
+  is unavailable. Do not silently fall back to another model or add a second
+  required reviewer.
 - Confirmation before `14_format_usb.sh`, Pi deployment, and every car step.
 
 ## Environment

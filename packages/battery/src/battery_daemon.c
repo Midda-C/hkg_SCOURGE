@@ -64,7 +64,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#define BATTERY_DAEMON_VERSION "2026-11-14.1"
+#define BATTERY_DAEMON_VERSION "2026-11-14.2"
 
 #define IFACE_DEFAULT "can0"
 #define HTTP_PORT 8088
@@ -1049,14 +1049,22 @@ static void tick_state(int64_t now)
         }
     }
 
+    /* An unconfirmed request followed by an observed idle/off report is a
+     * failed start, not an active heater. */
+    if (g_state == ST_TIMEOUT && g_precond_known &&
+        (g_precond_raw == 0x00 || g_precond_raw == 0x01)) {
+        enter_idle("idle");
+    }
+
     if (g_state == ST_STARTING) {
         if (!g_precond_known) {
-            /* WiCAN: without status frames there is nothing to confirm or
-             * retry; after the started timeout, assume it worked. */
+            /* WiCAN: without status frames there is nothing to confirm.
+             * Do NOT assume the heater started: report an unconfirmed
+             * request so the UI never claims heating without evidence. */
             if (g_burst == BURST_NONE &&
                 now - g_attempt_ms > g_started_timeout_ms) {
-                g_state = ST_ACTIVE;
-                set_message("active");
+                g_state = ST_TIMEOUT;
+                set_message("requested_unconfirmed");
             }
         } else if (g_precond_raw == 0x05) {
             g_state = ST_PREPARING;
@@ -1333,6 +1341,8 @@ static size_t build_status(char *buf, size_t sz)
         if (elapsed < STARTED_TIMEOUT_MS) eta = (int)((STARTED_TIMEOUT_MS - elapsed) / 1000);
     }
     int blocked = blocked_reason()[0] ? 1 : 0;
+    bool precond_confirmed = g_precond_known &&
+                             (g_precond_raw == 0x05 || g_precond_raw == 0x15);
     const char *door_reason = door_block_reason();
     bool park_fresh = g_park_known && now_ms() - g_gear_ms <= DOOR_SIGNAL_STALE_MS;
     bool cable_fresh = g_cable_known && now_ms() - g_cable_ms <= DOOR_SIGNAL_STALE_MS;
@@ -1365,6 +1375,7 @@ static size_t build_status(char *buf, size_t sz)
     return (size_t)snprintf(
         buf, sz,
         "{\"ok\":true,\"state\":\"%s\",\"precond_raw\":%d,"
+        "\"precond_confirmed\":%s,"
         "\"batt_min_c\":%d,\"batt_valid\":%s,"
         "\"batt_raw\":\"%s\","
         "\"temp_source\":\"%s\","
@@ -1392,6 +1403,7 @@ static size_t build_status(char *buf, size_t sz)
         "\"home_seq\":%d,\"home_source\":\"%s\",\"last_app_key\":%d,"
         "\"home_monitor\":%s}\n",
         state_name(), g_precond_raw,
+        precond_confirmed ? "true" : "false",
         g_batt_min_c, g_batt_valid ? "true" : "false",
         raw,
         g_temp_source,

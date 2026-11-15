@@ -16,6 +16,9 @@ import os
 import re
 import shutil
 import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'common'))
+from qml_layout import normalize
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -410,7 +413,7 @@ def patch_advanced_global(src: str) -> str:
             marker = f"                QMenuPageNoDrag{{\n                    id: {menu}"
         text = insert_after_block(text, marker, tile_advanced_global(page, custom_index))
     text = insert_reboot_tiles_advanced(text)
-    return add_page(text)
+    return normalize(add_page(text))
 
 
 def shrink_wide(text: str) -> str:

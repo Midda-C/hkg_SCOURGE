@@ -198,8 +198,8 @@ dbus-send --system --type=method_call --dest=com.lge.car.micom /Can \
   signals; the raw `micom-send <array>` interface is unchanged.
 - Full WiCAN sequence mimicry: the `0x0C7` burst at 40 ms pacing plus the
   `0x4E8`/`0x4CC` cluster countdown during start and stop; without BMS
-  status the start assumes active after the 70 s timeout; exhausted start
-  retries end with a cleanup stop burst.
+  status the start is reported as unconfirmed after the 70 s timeout (never
+  assumed active); exhausted start retries end with a cleanup stop burst.
 - A refused `/start`/`/stop` is shown in the UI ("Blocked: <reason>") instead
   of failing silently.
 - `0x2AD` `0x00` counts as "off": a stop completes in under a second instead
@@ -230,7 +230,7 @@ dbus-send --system --type=method_call --dest=com.lge.car.micom /Can \
   transient-zero hold, micom
   `0x0C7`/`0x4ED`/`0x4A2` arrays, the charge-door cable gate (gear gate
   disabled), optimistic feedback, the send-failed path, the session-bus
-  Home/Star monitor, the WiCAN sequence tests (assume-active, cleanup stop,
+  Home/Star monitor, the WiCAN sequence tests (unconfirmed timeout, cleanup stop,
   cluster display), the `/logs` tail, the manual USB dump, the error dump
   with its 10-minute rate limit, and the bus sniffer all pass.
 - `sh tests/test_logdump.sh`: bundle contents/reason, pruning to five, and

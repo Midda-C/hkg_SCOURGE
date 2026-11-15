@@ -170,7 +170,9 @@ exactly:
   stop countdown (seconds to the next retry, unit FT/MI, flag NONE), hidden
   at max retries.
 - Without any `0x2AD` status on the bus, one burst is sent and after the
-  started timeout the daemon **assumes active** (WiCAN `wait_starting_tick`).
+  started timeout the daemon reports `timeout` with message
+  `requested_unconfirmed`; it never claims `active` without an observed
+  `0x05`/`0x15` frame (`precond_confirmed` in `/status`).
 - Start retries exhausted -> one cleanup stop burst without stop retries,
   then idle (WiCAN "retries exhausted in once mode").
 - The manual "Cluster display test" toggle sends the same `0x4E8`+`0x4CC`
@@ -426,8 +428,10 @@ cable state is advisory; the gear/Park signal is not a gate for now.
      `fixed <idhi> <idlo> <start> <size> <data>` form for
      `SetCANFixedMicomRecv` (used by Tweaks).  Consumers must check for that
      method string before reusing the helper: an older raw-only wrapper would
-     treat `fixed` as a raw array and still exit 0.  See
-     `docs/MICOM_WHITELIST.md`.
+     treat `fixed` as a raw array and still exit 0.  A normal no-reply is
+     treated as queued (exit 0), while a real D-Bus transport error (unknown
+     service/method, access denied) exits non-zero so `send_fail` is
+     meaningful.  See `docs/MICOM_WHITELIST.md`.
    - Write the expected label to `/rw_data/battery/smack_expected`; the
      daemon reports `smack`, `smack_expected`, `smack_ok`, `smack_send`,
      `smack_monitor`, `micom_name` and `micom_path` in `/status`.
@@ -460,7 +464,7 @@ Environment overrides used by the offline test:
 
 | Test | Result |
 |---|---|
-| `tests/test_daemon.py` on `vcan0` | pass (0x2FC b2/b4 + transient-zero hold, micom 0x0C7 at 40 ms, 0x4E8/0x4CC cluster display, assume-active, cleanup stop burst, factory door frames 0x4A2 (arm/open/close), door gates, optimistic feedback, door send-fail not masked by dash frames, BMS 0x00 stop exit, cluster display without preheat, unknown-cable door, 0x25D batt_cond, 0x036 raw gear, session-bus Home/Star monitor, `/logs` tail, manual USB dump, error dump + 10 min rate limit, sniff) |
+| `tests/test_daemon.py` on `vcan0` | pass (0x2FC b2/b4 + transient-zero hold, micom 0x0C7 at 40 ms, 0x4E8/0x4CC cluster display, unconfirmed timeout, cleanup stop burst, factory door frames 0x4A2 (arm/open/close), door gates, optimistic feedback, door send-fail not masked by dash frames, BMS 0x00 stop exit, cluster display without preheat, unknown-cable door, 0x25D batt_cond, 0x036 raw gear, session-bus Home/Star monitor, `/logs` tail, manual USB dump, error dump + 10 min rate limit, sniff) |
 | `tests/test_logdump.sh` | pass (bundle contents, reason, pruning to 5, no-USB failure) |
 | `tests/test_installer.sh` | pass (install, reinstall, restore, Hello, restore-after-Hello) |
 | `qmllint` (vendor Qt 5.4, 260128 VM) | pass for all five QML files |

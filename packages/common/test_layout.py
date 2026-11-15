@@ -13,7 +13,7 @@ from check_layout import check
 path = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(__file__).resolve().parents[1] / "tweaks/out/usb/payload/qml/AppHomeScreen/qml_eco3.0/HomeScreen/QHMI_HomeScreenMain_Advanced.battery_tile_wifi.qml"
 text = path.read_text()
 assert check(text) == {"battery": 0, "wifi": 1, "tweaks": 2, "reboot": 3}
-bad = re.sub(r"property var slot: firstEmptySlot\(0\)", "", text)
+bad = re.sub(r"property var slot: root.firstEmptySlot\(0\)", "", text)
 try:
     check(bad)
 except AssertionError:
@@ -29,7 +29,7 @@ except AssertionError as error:
 else:
     raise AssertionError("removed Battery tile block was accepted")
 functions = "\n".join(re.search(r"    function " + name + r"\([^)]*\)\s*\{.*?\n    \}", text, re.S)[0]
-                      for name in ("emptySlots", "firstEmptySlot"))
+                      for name in ("emptySlots", "computeCustomLayout", "firstEmptySlot"))
 script = r'''
 const vm = require('vm'), assert = require('assert');
 for (const size of [8,12]) {
@@ -39,6 +39,7 @@ for (const size of [8,12]) {
     const ctx = vm.createContext({nbrItemsPerPage:size,totalPagesNormalMode:3,getPageDisplayListModel:p=>pages[p]});
     vm.runInContext(FUNCTIONS,ctx);
     pages = [model(full),model([0,1,2]),model([])];
+    ctx.customLayoutSlots=ctx.computeCustomLayout();
     for (let i=0;i<4;i++) {
         const s=ctx.firstEmptySlot(i);
         assert(s.page===1 && s.index===i+3,'full first page must allocate onto second');
@@ -46,11 +47,14 @@ for (const size of [8,12]) {
         assert((s.index%cols)>=0 && Math.floor(s.index/cols)<2);
     }
     pages=[model(full),model(full.filter(i=>i!==size-1)),model([])];
+    ctx.customLayoutSlots=ctx.computeCustomLayout();
     assert(ctx.firstEmptySlot(0).page===1 && ctx.firstEmptySlot(0).index===size-1);
     assert(ctx.firstEmptySlot(1).page===2 && ctx.firstEmptySlot(1).index===0);
     pages=[model(full),model(full),model(full)];
+    ctx.customLayoutSlots=ctx.computeCustomLayout();
     assert(ctx.firstEmptySlot(0)===null && ctx.firstEmptySlot(3)===null);
     pages=[model(full),model([1,2,3]),model([])];
+    ctx.customLayoutSlots=ctx.computeCustomLayout();
     assert(ctx.firstEmptySlot(0).index===0,'rearranged model must re-resolve');
 }
 '''.replace("FUNCTIONS", json.dumps(functions))

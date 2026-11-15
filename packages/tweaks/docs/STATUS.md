@@ -86,9 +86,10 @@
 - Confirm `setOFFlineMode(1)` blocks OTA without affecting SSH/Bluelink and
   that local USB detection still works; confirm `setOFFlineMode(0)` restores.
 - Reboot app: tile appears after Tweaks; Yes/No modal; No/outside/Home closes;
-  Yes cleanly reboots the unit; driving restriction blocks the request; the
-  daemon runs on `_` and `/status` shows `smack_expected`, `smack_ok`,
-  `home_seq`, `reboot_state`.
+  Yes cleanly reboots the unit. Verify the modal does **not** block when the
+  car is in gear/ignition on (with the car safely stationary) and that the
+  nav/media/camera warning is shown. The daemon runs on `_` and `/status`
+  shows `smack_expected`, `smack_ok`, `home_seq`, `reboot_state`.
 - The 20 s micom hard-reset fallback is **not** to be forced on a car unless
   the test is deliberate; the host tests use a fake `dbus-send` and the
   command is derived from `/etc/weston-crash.sh`. It remains car-pending.
