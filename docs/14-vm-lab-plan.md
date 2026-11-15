@@ -937,5 +937,17 @@ items beyond that.
   evidence validated. 396 tests; 201 VM commits.
 - **2026-11-14 — runtime provenance schema**: QEMU/runtime/options/state/
   share blocks validated. 397 tests; 203 VM commits.
-- **Remaining:** only the blocked items above; no feasible P2 work remains.
-  P3-1 is still deferred; P3-2's practical hardening is now landed.
+- **2026-11-15 — live car ground-truth capture**: root SSH access to the
+  actual `prm-gen-5` head unit produced a 14 GB read-only dump (maps omitted):
+  rootfs/log_data/update/rw_data/vr/space/Data/voicememo tar archives, raw
+  p1/p2/p3/p5/p6/p7/p16/boot0/boot1 images, AppUpgrade/vDM binaries, real
+  `esinit` and SMACK rules, systemd/D-Bus/CAN/PCI/USB runtime evidence.
+  Archives verified (`SHA256SUMS`, all tar listings clean; live-log `file
+  changed` warnings only). Full dump is NAS-local; only a sanitized index is
+  committed. This removes the P2-8 reconstruction gap (real `esinit` and boot
+  chain; no separate initramfs), supplies the P2-7 update engine/public key/
+  state/logs, and documents the P2-9 CAN service topology. P2-3 still lacks a
+  recorder (`wcap-decode` only); P2-6 still needs hardware. See
+  `docs/car-capture-20261115.md`.
+- **Remaining:** P2-3 (recorder), P2-6 (hardware) and the now-feasible
+  P2-7/P2-8/P2-9 slices using the car dump; P3 deferred.
