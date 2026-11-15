@@ -1199,6 +1199,13 @@ items beyond that.
   30 -> 40. `dmengine-fumo-resume-multi` asserts the offset/eTag, 206 request,
   completion and notification. Real run PASS with seven checks; 3 new tests;
   589 tests (75 skipped); doctor green.
+- **2026-11-15 — Multi-component failure result**: the multi-component
+  `DownloadAndUpdate` flow reports OEM result 500 after the event-77 handoff.
+  The engine logs `VDMC_FUMO_updateReport result=[500]`,
+  `triggerReportSession(500)`, reports through a DM session and returns to idle
+  without state 90. `dmengine-fumo-download-update-multi-failure` asserts the
+  multi marker, handoff, failure result and absence of success. Real run PASS
+  with twenty-three checks; 3 new tests; 592 tests (75 skipped); doctor green.
 - **2026-11-15 — FUMO bad-signature boundary**: the mock flips one bit in
   the lab HMAC trailer. The engine still downloads the 184-byte object, posts
   the install notification and advances to state 40. `check-dp --key` rejects

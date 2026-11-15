@@ -1291,6 +1291,32 @@ MOCK_DM_NOTIFY path=/notify bytes=11 body=900 Success
 The mock returns the remaining 227 bytes with 206. A real run passes all seven
 checks. No install is claimed.
 
+## dmengine FUMO multi-component failure result (Mode C, negative)
+
+```sh
+python3 -B launch.py run --kernel compat --profile research \
+  --scenario dmengine-fumo-download-update-multi-failure --payload payload/tweaks-vm --timeout 380
+```
+
+Same multi-component `DownloadAndUpdate` flow, but the lab OEM reports result
+`500`:
+
+```text
+MOCK_DM_MULTIDP bytes=291 components=2 updates=3
+Set state, 30 -> 40 -> 60
+event to OEM handler = [77] strData = [/update//lab-fumo]
+MOCK_OEM_SENT code=20 field1=500
+VDMC_FUMO_updateReport] result = [500]
+VDM_FUMO_triggerReportSession(500)
+Set state, 10
+DM session complete
+```
+
+The engine reports the failure through a DM session, returns to idle and never
+enters success state `90`. The result is lab-supplied and the package is
+structural; no physical install is claimed. A real run passes all twenty-three
+checks.
+
 ## dmengine startup (Mode C)
 
 ```sh
