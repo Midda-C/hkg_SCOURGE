@@ -61,15 +61,19 @@ repo.
     committing, merging, rebasing, or force-pushing on the owner's behalf.
     The committer must self-review the full diff against these rules and
     the task's requirements, then **one independent reviewer session** using
-    `opencode-go/deepseek-v4.1-flash#max` must double-check the same diff.
-    This single review is required for every agent-made commit, including WIP
-    checkpoints; no additional reviewer model or second review agent is required.
-    Do not use Sol as the independent reviewer. Record the verdict as
-    `Second-Opinion: opencode-go/deepseek-v4.1-flash#max — PASS` in the commit
-    message. A FAIL is a stop: fix it and re-review; never land a FAIL-reviewed
-    change. If the selected reviewer is unavailable, ask the human rather than
-    silently substituting a model. Keep the selection in gitignored
-    `config/reviewer.local`, copied from `config/reviewer.local.example`.
+    the DeepSeek V4.1 Flash-Max reviewer must double-check the same diff.
+    The reviewer identity is the **model, not the provider**: either
+    `deepseek-v4.1-flash#max` or `deepseek v4.1-flash-1017#max` is acceptable,
+    with or without a provider prefix, and a review must never be rejected for
+    the provider it arrived from. This single review is required for every
+    agent-made commit, including WIP checkpoints; no additional reviewer model
+    or second review agent is required. Do not use Sol as the independent
+    reviewer. Record the verdict as `Second-Opinion: <reviewer model> — PASS`
+    in the commit message. A FAIL is a stop: fix it and re-review; never land
+    a FAIL-reviewed change. If the reviewer is unavailable, ask the human
+    rather than silently substituting a model. Keep the local pick in
+    gitignored `config/reviewer.local`, copied from
+    `config/reviewer.local.example`.
     The pre-push hook
     warns, but cannot verify, that the trailer exists — the real check is
     the recorded review.
