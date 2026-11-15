@@ -425,6 +425,23 @@ starting QEMU. With `--state`, it builds the persistent overlays, releases
 the state lock and permits a subsequent real run. Dry runs bypass the global
 boot lock, so they never queue behind a live VM.
 
+## Car capture validation
+
+Ground-truth car dumps live outside the tracked tree. Validate one without
+extracting or executing target data:
+
+```sh
+python3 -B launch.py check-capture <capture-dir> [--verify-hashes]
+```
+
+The report checks the `archives/`, `partitions/`, `runtime/`, `meta/` and
+`critical/` layout, required `rootfs.tar`/`critical.tar`/`SOURCE.txt`/
+`SHA256SUMS`, every listed hash target and optional `SHA256SUMS.navi2`.
+`--verify-hashes` hashes the listed files; a plain run only checks names and
+presence. Absolute `/tmp/.../car-dump-*` paths in a sums file are normalized
+to capture-relative paths. Map-looking archives/images are warnings, not
+errors. Exit 0/1 with a JSON report.
+
 ## Parallel runs and suites
 
 All heavy boots share an exclusive lock at `runs/.vm-lab.lock`:

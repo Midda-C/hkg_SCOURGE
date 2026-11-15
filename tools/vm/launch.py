@@ -62,6 +62,7 @@ from harness.state import StateBusy, create_state_overlays
 from harness.visual import baseline as visual_baseline
 from harness.visual import compare as visual_compare
 from harness.visual import list_baselines
+from harness.capture import check_capture
 from harness.result_schema import (check_all_bench, check_all_bench_dir,
                                    check_all_results, schema_state,
                                    validate_bench, validate_file,
@@ -1646,6 +1647,12 @@ def main() -> int:
                              help='validate every runs/bench-*/bench.json')
     check_bench.add_argument('--root', type=Path, default=None,
                              help='bench root for --all (default: runs/)')
+    check_capture_parser = sub.add_parser(
+        'check-capture', help='validate a car ground-truth capture directory')
+    check_capture_parser.add_argument('path', type=Path)
+    check_capture_parser.add_argument(
+        '--verify-hashes', action='store_true',
+        help='hash every file listed in meta/SHA256SUMS (slow)')
     check_scenario = sub.add_parser('check-scenario',
                                     help='validate scenario JSON contracts')
     check_scenario.add_argument('scenario', nargs='?',
@@ -2141,6 +2148,10 @@ def main() -> int:
         print(json.dumps({'profile': name, 'path': str(path),
                           'ok': not problems, 'problems': problems}, indent=2))
         return 0 if not problems else 1
+    if args.action == 'check-capture':
+        report = check_capture(args.path, verify_hashes=args.verify_hashes)
+        print(json.dumps(report, indent=2))
+        return 0 if report['ok'] else 1
     if args.action == 'check-bench':
         if args.all and args.path:
             ap.error('check-bench accepts a path or --all, not both')

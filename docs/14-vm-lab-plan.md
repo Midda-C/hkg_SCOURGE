@@ -951,5 +951,10 @@ items beyond that.
   state/logs, and documents the P2-9 CAN service topology. P2-3 still lacks a
   recorder (`wcap-decode` only); P2-6 still needs hardware. See
   `docs/car-capture-20261115.md`.
+- **2026-11-15 — capture validator**: `launch.py check-capture <dir>
+  [--verify-hashes]` validates a car ground-truth dump (layout, required
+  files, sums, optional navi2 sums) without extracting target data; absolute
+  sums paths are normalized.  Nine tests; real USB capture reports 9 archives,
+  9 partitions, 40 hash entries.  406 tests; doctor green.
 - **Remaining:** P2-3 (recorder), P2-6 (hardware) and the now-feasible
   P2-7/P2-8/P2-9 slices using the car dump; P3 deferred.
