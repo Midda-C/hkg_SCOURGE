@@ -75,7 +75,8 @@ def _target(root: Path, rel: str, problems: list[str]) -> Path | None:
     return candidate
 
 
-def check_capture(root: Path, verify_hashes: bool = False) -> dict:
+def check_capture(root: Path, verify_hashes: bool = False,
+                  reject_maps: bool = False) -> dict:
     """Check capture layout and optional hashes; never extract target data."""
     root = Path(root)
     problems: list[str] = []
@@ -104,12 +105,16 @@ def check_capture(root: Path, verify_hashes: bool = False) -> dict:
         problems.append('archives/rootfs.tar is required')
     if not archives:
         problems.append('no tar archives found')
+    map_warnings = []
     for name in archives:
         if 'navi' in name.lower() and 'nonmap' not in name.lower():
-            warnings.append(f'archive may contain map data: {name}')
+            map_warnings.append(f'archive may contain map data: {name}')
     for name in partitions:
         if 'navi' in name.lower():
-            warnings.append(f'raw image may contain map data: {name}')
+            map_warnings.append(f'raw image may contain map data: {name}')
+    warnings.extend(map_warnings)
+    if reject_maps:
+        problems.extend(f'rejected map data: {warning}' for warning in map_warnings)
 
     entries: list[tuple[str, str]] = []
     missing: list[str] = []

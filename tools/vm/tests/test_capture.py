@@ -99,6 +99,10 @@ class CaptureTests(unittest.TestCase):
         self.assertEqual(report['hashes_verified'], 5)
         self.assertTrue(any('navi-map.tar' in warning
                             for warning in report['warnings']))
+        strict = check_capture(self.root, verify_hashes=True, reject_maps=True)
+        self.assertFalse(strict['ok'])
+        self.assertTrue(any('rejected map data' in problem
+                            for problem in strict['problems']))
 
     def test_absolute_sums_path_is_capture_relative(self) -> None:
         (self.root / 'archives/navi2-nonmap.tar').write_bytes(b'navi-nonmap')

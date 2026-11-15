@@ -1653,6 +1653,9 @@ def main() -> int:
     check_capture_parser.add_argument(
         '--verify-hashes', action='store_true',
         help='hash every file listed in meta/SHA256SUMS (slow)')
+    check_capture_parser.add_argument(
+        '--reject-maps', action='store_true',
+        help='fail when an archive or raw image looks like map data')
     check_scenario = sub.add_parser('check-scenario',
                                     help='validate scenario JSON contracts')
     check_scenario.add_argument('scenario', nargs='?',
@@ -2149,7 +2152,8 @@ def main() -> int:
                           'ok': not problems, 'problems': problems}, indent=2))
         return 0 if not problems else 1
     if args.action == 'check-capture':
-        report = check_capture(args.path, verify_hashes=args.verify_hashes)
+        report = check_capture(args.path, verify_hashes=args.verify_hashes,
+                               reject_maps=args.reject_maps)
         print(json.dumps(report, indent=2))
         return 0 if report['ok'] else 1
     if args.action == 'check-bench':

@@ -956,6 +956,7 @@ items beyond that.
   files, sums, optional navi2 sums) without extracting target data; absolute
   sums paths are normalized.  Nine tests; real USB capture reports 9 archives,
   9 partitions, 40 hash entries.  Hash targets must resolve inside the
-  capture root; `../`/symlink escapes are rejected.  407 tests; doctor green.
+  capture root; `../`/symlink escapes are rejected; `--reject-maps` turns
+  map warnings into failures.  407 tests; doctor green.
 - **Remaining:** P2-3 (recorder), P2-6 (hardware) and the now-feasible
   P2-7/P2-8/P2-9 slices using the car dump; P3 deferred.
