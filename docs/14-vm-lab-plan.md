@@ -938,10 +938,12 @@ items beyond that.
 - **2026-11-14 — runtime provenance schema**: QEMU/runtime/options/state/
   share blocks validated. 397 tests; 203 VM commits.
 - **2026-11-15 — live car ground-truth capture**: root SSH access to the
-  actual `prm-gen-5` head unit produced a 14 GB read-only dump (maps omitted):
-  rootfs/log_data/update/rw_data/vr/space/Data/voicememo tar archives, raw
-  p1/p2/p3/p5/p6/p7/p16/boot0/boot1 images, AppUpgrade/vDM binaries, real
-  `esinit` and SMACK rules, systemd/D-Bus/CAN/PCI/USB runtime evidence.
+  actual `prm-gen-5` head unit produced a 14 GB core read-only dump plus a
+  3 GB non-map navi archive (maps omitted): rootfs/log_data/update/rw_data/
+  vr/space/Data/voicememo tar archives, raw p1/p2/p3/p5/p6/p7/p16/boot0/
+  boot1 images, AppUpgrade/vDM binaries, real `esinit` and SMACK rules,
+  systemd/D-Bus/CAN/PCI/USB runtime evidence, AppNavi/CANService/navi UI
+  assets.
   Archives verified (`SHA256SUMS`, all tar listings clean; live-log `file
   changed` warnings only). Full dump is NAS-local; only a sanitized index is
   committed. This removes the P2-8 reconstruction gap (real `esinit` and boot
