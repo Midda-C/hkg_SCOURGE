@@ -22,6 +22,7 @@ LOG=/log_data/AppUpgrade/fota/vdm.log
 MODE=${FUMO_MODE:-download}
 RESULT_CODE=${FUMO_RESULT:-200}
 INVALID_RESULT=${FUMO_INVALID_RESULT:-0}
+SKIP_RESULT=${FUMO_SKIP_RESULT:-0}
 LOG_LEVEL=notice
 case "$MODE" in
     update|combined) LOG_LEVEL=debug ;;
@@ -369,6 +370,16 @@ if [ "$MODE" = combined ]; then
     fi
     echo 'HARNESS_CHECK fumo-update-handoff PASS'
 
+    if [ "$SKIP_RESULT" = 1 ]; then
+        sleep 8
+        tail -c +$((LOG_MARK + 1)) "$LOG" > /tmp/vdm-delta.log 2>/dev/null
+        if grep -q 'VDMC_FUMO_updateReport' /tmp/vdm-delta.log \
+            || grep -q 'Set state, 90' /tmp/vdm-delta.log; then
+            grep -aE 'updateReport|Set state' /tmp/vdm-delta.log | tail -20
+            fail 'fumo-update-no-result'
+        fi
+        echo 'HARNESS_CHECK fumo-update-no-result PASS'
+    else
     : > /tmp/mock-oem-result.log
     /tmp/mock-oem 20 /tmp/mock-oem-result.log 15 "$RESULT_CODE" 0 >/tmp/mock-oem-result.out 2>&1 &
     RESULT_PID=$!
@@ -428,6 +439,7 @@ if [ "$MODE" = combined ]; then
         fail 'fumo-update-result-reported'
     fi
     echo 'HARNESS_CHECK fumo-update-result-reported PASS'
+    fi
 fi
 
 if [ "$MODE" = update ]; then
@@ -483,7 +495,9 @@ if [ "$MODE" = notifyfail ]; then
 elif [ "$MODE" = missing ]; then
     echo 'HARNESS_CHECK dmengine-fumo-download-missing PASS'
 elif [ "$MODE" = combined ]; then
-    if [ "$INVALID_RESULT" = 1 ]; then
+    if [ "$SKIP_RESULT" = 1 ]; then
+        echo 'HARNESS_CHECK dmengine-fumo-update-no-result PASS'
+    elif [ "$INVALID_RESULT" = 1 ]; then
         echo 'HARNESS_CHECK dmengine-fumo-update-invalid-result PASS'
     elif [ "$RESULT_CODE" = 200 ]; then
         echo 'HARNESS_CHECK dmengine-fumo-download-update PASS'

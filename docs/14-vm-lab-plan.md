@@ -1151,6 +1151,12 @@ items beyond that.
   proves the C fixture is byte-identical to the Python builder. All FUMO
   scenarios still download it. 3 new tests; 547 tests (75 skipped); doctor
   green.
+- **2026-11-15 — FUMO update without result**: the combined flow withholds
+  the OEM result after event 77. The engine remains in update progressing
+  (`Set state, 60`), never logs `VDMC_FUMO_updateReport`, never sets state 90
+  and issues no success report. `dmengine-fumo-update-no-result` asserts the
+  download/update handoff and the absence of completion. Real run PASS with
+  nineteen checks; 3 new tests; 563 tests (75 skipped); doctor green.
 - **2026-11-15 — FUMO notification failure**: the DP download succeeds but
   `/notify` returns HTTP 500. The engine retries, logs
   `DL session aborted, 0x6308` and FUMO result 503 / error 25352, and never

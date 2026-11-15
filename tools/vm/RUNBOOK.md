@@ -1096,6 +1096,27 @@ The engine retries the notification, reports the failure and never reaches
 downloaded/update states (`Set state, 40`/`60` are absent). A real run passes
 all fifteen checks.
 
+## dmengine FUMO update without result (Mode C, negative)
+
+```sh
+python3 -B launch.py run --kernel compat --profile research \
+  --scenario dmengine-fumo-update-no-result --payload payload/tweaks-vm --timeout 340
+```
+
+Runs the combined download/update handoff but deliberately withholds the OEM
+update result. The engine downloads the DD/DP, hands event 77 to the OEM
+handler and remains in update progressing:
+
+```text
+Got EXEC on "DownloadAndUpdate" node.
+event to OEM handler = [77] ... strData = [/update//lab-fumo]
+Set state, 60
+```
+
+It never logs `VDMC_FUMO_updateReport`, never sets state 90 and issues no
+success report. This shows the engine waits for an OEM result; no physical
+install is claimed. A real run passes all nineteen checks.
+
 ## dmengine startup (Mode C)
 
 ```sh

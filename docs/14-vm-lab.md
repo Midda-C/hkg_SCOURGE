@@ -121,6 +121,9 @@ VM-validated (vendor kernel):
 - FUMO notification failure (`dmengine-fumo-notify-failure`): the DP download
   succeeds but `/notify` returns HTTP 500; the engine aborts with `0x6308`,
   FUMO result 503 / error 25352 and never reaches downloaded/update states
+- FUMO update without result (`dmengine-fumo-update-no-result`): after the
+  DownloadAndUpdate handoff the OEM sends no result; the engine stays in
+  update progressing and never sets state 90 or reports success
 - device-model regression (`device-model`): asserts Q35 host bridge, SDHCI
   root, ICH9 LPC/SATA and no virtio; substrate only, not captured BXT hardware
 - AppDMClient fota callback (`dmclient-fota-events`): `/fotaInterface`
