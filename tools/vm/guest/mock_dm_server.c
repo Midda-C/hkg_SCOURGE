@@ -50,6 +50,8 @@
 #define TOKEN_CMD 0x4a
 #define TOKEN_DATA 0x4f
 #define TOKEN_FINAL 0x12
+#define TOKEN_REPLACE 0x60
+#define TOKEN_EXEC 0x51
 #define WBXML_END 0x01
 #define WBXML_STRING 0x03
 #define WBXML_OPAQUE 0xc3
@@ -218,9 +220,28 @@ static void put_status(struct buffer *buffer, const char *cmdid,
     put_byte(buffer, WBXML_END);
 }
 
+static void put_replace(struct buffer *buffer, const char *locuri,
+                        const char *pkgurl)
+{
+    (void)pkgurl;
+    put_byte(buffer, TOKEN_EXEC);
+    put_byte(buffer, TOKEN_CMDID);
+    put_string(buffer, "4");
+    put_byte(buffer, WBXML_END);
+    put_byte(buffer, 0x54);             /* Item */
+    put_byte(buffer, TOKEN_TARGET);
+    put_byte(buffer, TOKEN_LOCURI);
+    put_opaque(buffer, locuri);
+    put_byte(buffer, WBXML_END);
+    put_byte(buffer, WBXML_END);
+    put_byte(buffer, WBXML_END);        /* Item */
+    put_byte(buffer, WBXML_END);        /* Exec */
+}
+
 static int build_response(const unsigned char *body, size_t length,
                           unsigned char *output, size_t capacity,
-                          char *session, size_t session_size)
+                          char *session, size_t session_size,
+                          int send_exec)
 {
     static const char string_table[] = "-//SYNCML//DTD SyncML 1.2//EN";
     struct wbxml_string strings[MAX_STRINGS];
@@ -284,6 +305,9 @@ static int build_response(const unsigned char *body, size_t length,
     put_status(&buffer, "1", "1", "Alert");
     put_status(&buffer, "2", "2", "Replace");
     put_status(&buffer, "3", "3", "Alert");
+    if (send_exec)
+        put_replace(&buffer, "./ManagedObjects/FUMO/Download",
+                    "http://127.0.0.1:8002/package.bin");
     put_byte(&buffer, TOKEN_FINAL);
     put_byte(&buffer, WBXML_END);       /* SyncBody */
     put_byte(&buffer, WBXML_END);       /* SyncML */
@@ -308,6 +332,7 @@ int main(int argc, char **argv)
 {
     int port = argc > 1 ? atoi(argv[1]) : 8002;
     const char *log_path = argc > 2 ? argv[2] : "/tmp/mock-dm.log";
+    int download_mode = argc > 3 && strcmp(argv[3], "download") == 0;
     int server = socket(AF_INET, SOCK_STREAM, 0);
     int one = 1;
     struct sockaddr_in addr;
@@ -390,10 +415,56 @@ int main(int argc, char **argv)
                                            "%02x", request[body_offset + index]);
         }
         prefix[prefix_len] = '\0';
+        if (strcmp(method, "GET") == 0 && strcmp(path, "/package.bin") == 0) {
+            unsigned char package[4096];
+            char header[256];
+            int header_length;
+            for (size_t index = 0; index < sizeof(package); index++)
+                package[index] = (unsigned char)(index & 0xff);
+            header_length = snprintf(
+                header, sizeof(header),
+                "HTTP/1.1 200 OK\r\n"
+                "Content-Type: application/octet-stream\r\n"
+                "Content-Length: %zu\r\n"
+                "Connection: close\r\n\r\n", sizeof(package));
+            send_all(client, (const unsigned char *)header,
+                     (size_t)header_length);
+            send_all(client, package, sizeof(package));
+            fprintf(log, "MOCK_DM_DOWNLOAD method=GET path=/package.bin "
+                         "bytes=%zu sha256_prefix=%02x%02x%02x%02x\n",
+                    sizeof(package), package[0], package[1], package[2],
+                    package[3]);
+            fflush(log);
+            close(client);
+            free(request);
+            requests++;
+            fprintf(log, "MOCK_DM_DOWNLOAD_DONE requests=%d\n", requests);
+            fflush(log);
+            continue;
+        }
+        if (requests == 1 && (size_t)used > body_offset) {
+            FILE *second = fopen("/tmp/dm-request2.bin", "wb");
+            if (second != NULL) {
+                fwrite(request + body_offset, 1,
+                       (size_t)used - body_offset, second);
+                fclose(second);
+            }
+            for (size_t index = 0; index + 3 <= (size_t)used - body_offset;
+                 index++) {
+                if (request[body_offset + index] == '4'
+                    && request[body_offset + index + 1] == '0'
+                    && request[body_offset + index + 2] == '7') {
+                    fprintf(log, "MOCK_DM_CLIENT_STATUS status=407\n");
+                    fflush(log);
+                    break;
+                }
+            }
+        }
         if ((size_t)used > body_offset) {
             response_body = build_response(
                 request + body_offset, (size_t)used - body_offset,
-                response, sizeof(response), session, sizeof(session));
+                response, sizeof(response), session, sizeof(session),
+                download_mode && requests == 0);
         }
         fprintf(log,
                 "MOCK_DM_REQUEST method=%s path=%s content_type=%s "
@@ -412,7 +483,8 @@ int main(int argc, char **argv)
             send_all(client, response, (size_t)response_body);
             fprintf(log,
                     "MOCK_DM_RESPONSE status=200 syncml=1 session=%s "
-                    "bytes=%d\n", session, response_body);
+                    "bytes=%d exec=%d\n", session, response_body,
+                    download_mode && requests == 0);
         } else {
             static const char empty_response[] =
                 "HTTP/1.1 200 OK\r\n"

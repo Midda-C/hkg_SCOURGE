@@ -91,6 +91,9 @@ VM-validated (vendor kernel):
   mock endpoint, which returns a minimal WBXML response with Status 200 and
   Final. The engine completes the session handshake (state 1, lastError 0)
   without performing an update
+- FUMO auth gate (`dmengine-fumo-auth-gate`): the mock sends a FUMO Exec
+  command; the unauthenticated server is rejected with client status 407 and
+  the session aborts 0x6011, with no package download (negative auth test)
 - device-model regression (`device-model`): asserts Q35 host bridge, SDHCI
   root, ICH9 LPC/SATA and no virtio; substrate only, not captured BXT hardware
 - AppDMClient fota callback (`dmclient-fota-events`): `/fotaInterface`

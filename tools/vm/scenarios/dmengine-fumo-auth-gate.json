@@ -1,0 +1,22 @@
+{
+  "name": "dmengine-fumo-auth-gate",
+  "description": "Mode C negative auth-gate test: the mock returns a FUMO Exec command after the session handshake; the real dmengine reports 407 for the unauthenticated server command and aborts the session with 0x6011. No package download occurs. Server authentication remains unimplemented; this is not an update test.",
+  "requires": [
+    "payload"
+  ],
+  "requires_mode": "compat",
+  "checks": [
+    "fumo-ready",
+    "fumo-http-post",
+    "fumo-response",
+    "fumo-syncml",
+    "fumo-trigger",
+    "fumo-command",
+    "fumo-auth-407",
+    "fumo-no-download",
+    "fumo-abort",
+    "fumo-no-production",
+    "dmengine-fumo-auth-gate"
+  ],
+  "blockers": {}
+}

@@ -881,6 +881,25 @@ This is a completed DM session handshake, not an update: the mock performs no
 management operations and the scenario makes no update-success claim. A real
 run passes all eight checks.
 
+## dmengine FUMO auth gate (negative)
+
+```sh
+python3 -B launch.py run --kernel compat --profile research \
+  --scenario dmengine-fumo-auth-gate --payload payload/tweaks-vm --timeout 200
+```
+
+Starts the same lab dmengine session, but the mock endpoint sends a FUMO
+`Exec` command on `./ManagedObjects/FUMO/Download` after the status handshake.
+The server does not authenticate itself, so the engine sends a second package
+with `407` for both `SyncHdr` and `Exec` and aborts the session with `0x6011`
+(`FUMO_Plugin_onSessionStateChange ... Error=[24593]`). No package GET occurs.
+
+A real run passes all eleven checks, including `fumo-command`,
+`fumo-auth-407`, `fumo-no-download` and `fumo-abort`. This is a **negative**
+test: server authentication is still unimplemented, so the download cannot
+proceed. The next step is a valid `syncml:auth-md5` server credential (or a
+working auth-none exchange).
+
 ## dmengine startup (Mode C)
 
 ```sh

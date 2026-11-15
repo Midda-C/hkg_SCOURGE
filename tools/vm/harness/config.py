@@ -22,7 +22,8 @@ SCENARIO_NAMES = ('boot', 'usb-discovery', 'dbus-ready', 'dmclient-events',
                   'vendor-esinit-fixture', 'update-preflight',
                   'update-preflight-negative', 'dmengine-startup',
                   'dmengine-oem-queue', 'dmengine-fumo-http',
-                  'device-model', 'dmclient-fota-events',
+                  'dmengine-fumo-auth-gate', 'device-model',
+                  'dmclient-fota-events',
                   'recovery-repeat-update')
 
 
@@ -110,6 +111,8 @@ echo 'HARNESS_CHECK recovery-no-space PASS'
         return (VM / 'probes' / 'dmengine-oem-queue.sh').read_text()
     if name == 'dmengine-fumo-http':
         return (VM / 'probes' / 'dmengine-fumo-http.sh').read_text()
+    if name == 'dmengine-fumo-auth-gate':
+        return (VM / 'probes' / 'dmengine-fumo-auth-gate.sh').read_text()
     if name == 'device-model':
         return (VM / 'probes' / 'device-model.sh').read_text()
     if name == 'vendor-esinit-fixture':

@@ -1085,6 +1085,13 @@ items beyond that.
   SCOMO session state 1/lastError 0 with no abort. Real run PASS with eight
   checks. No update operations or success claim. 515 tests (75 skipped);
   doctor green.
+- **2026-11-15 — P2-7 FUMO auth gate characterized**: the mock can send a
+  FUMO `Exec` command and serve a package GET, but the real engine rejects
+  the unauthenticated server with status 407 for `SyncHdr` and `Exec` and
+  aborts 0x6011 (FUMO 24593). `dmengine-fumo-auth-gate` asserts the second
+  package, the 407, the abort and that no download occurs. Server MD5 auth is
+  the next blocker. Real run PASS with eleven checks; 3 new tests; 518 tests
+  (75 skipped); doctor green.
 - **2026-11-15 — NAS import verified**: 9.4 GB preservation copy complete;
   all archives, partitions, runtime files and the navi2 archive match.
   `meta/SOURCE.txt` was finalized after the original manifest, so its one
