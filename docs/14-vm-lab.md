@@ -78,6 +78,10 @@ VM-validated (vendor kernel):
   fsck and the non-FDE fstab decision; the lge-fan driver attach blocks
   without micom/thermal hardware, so systemd is not reached (partial boot,
   documented hardware gate)
+- vendor esinit fixture (`vendor-esinit-fixture`): a lab runtime layout, an
+  empty `/etc/fstab` and a modprobe wrapper that skips only `fan` let the real
+  esinit reach real systemd and Multi-User; micommanager/nua still fail and
+  the hardware gate is bypassed, not emulated
 - synthetic micom CAN interface smoke (`can-smoke`): READY/CALL/ACK for
   fixed and bulk calls; contract only, not real CAN timing
 - vehicle-state model (`vehicle-state`): lab-defined fixed-frame decode for

@@ -705,6 +705,30 @@ segments replaced by `<accountN>`; `--fail-on-diff` turns a difference into
 exit 1. The captured stock and update trees are identical at leaf level
 (30 nodes, 63 leaves, FUMO state 10).
 
+## Vendor esinit fixture to Multi-User (Mode V)
+
+```sh
+python3 -B launch.py run --profile research --scenario vendor-esinit-fixture \
+  --rootfs /path/to/rootfs.img --timeout 240
+```
+
+A lab fixture that lets the real vendor `esinit` finish. It makes three
+explicit substitutions before handing PID 1 to `/lib/systemd/esinit`:
+
+- creates the `/var` skeleton, `/tmp/passwd` messagebus entry and D-Bus
+  tmpfiles rule that the missing vendor initramfs normally provides
+- replaces the `/etc/fstab -> /tmp/fstab` symlink with an empty regular file,
+  because esinit points `/tmp/fstab` at the vendor eMMC fstab and the missing
+  partitions otherwise force `systemd-remount-fs` into emergency mode
+- preserves `/sbin/modprobe` as `/sbin/modprobe.real` and installs a wrapper
+  that skips only `modprobe fan`; every other call is delegated
+
+The scenario requires `OEM Type:`, `running in system mode` and `Reached
+target Multi-User System`, in order, from PID 1. A real run reaches
+Multi-User in about 16 seconds with `micommanager` and `nua.service` still
+failing. This is **not stock boot**: the fan/micom gate is bypassed, not
+emulated, and the fstab/runtime layout is a lab fixture.
+
 ## Troubleshooting
 
 | Symptom | Action |

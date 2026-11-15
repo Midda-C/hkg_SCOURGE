@@ -994,6 +994,13 @@ items beyond that.
   (encrypted) payload and asserts the updater was not launched. Real run PASS
   with all five checks in about six seconds; 1 new probe test. 444 tests
   (73 skipped); doctor green.
+- **2026-11-15 — P2-8 esinit fixture to Multi-User**: `vendor-esinit-fixture`
+  prepares the missing `/var`/passwd runtime layout, supplies an empty
+  `/etc/fstab` and installs a wrapper that skips only `modprobe fan`, then
+  hands PID 1 to the real esinit. Real run PASS in about 16 s through
+  `OEM Type:`, systemd and `Reached target Multi-User System`; only
+  `micommanager` and `nua.service` remain failed. Lab fixture, not stock
+  boot. 3 new tests; 447 tests (73 skipped); doctor green.
 - **2026-11-15 — NAS import verified**: 9.4 GB preservation copy complete;
   all archives, partitions, runtime files and the navi2 archive match.
   `meta/SOURCE.txt` was finalized after the original manifest, so its one
