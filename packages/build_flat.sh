@@ -43,12 +43,28 @@ python3 "$HERE/common/test_layout_qt.py" \
 (cd "$STAGE/tree" && tar -czf "$STAGE/appcombo.tar.gz" .)
 digest=$(sha256sum "$STAGE/appcombo.tar.gz" | cut -d' ' -f1)
 cleanup_sha=$(sha256sum "$HERE/common/runtime_cleanup.sh" | cut -d' ' -f1)
-cp -f "$HERE/common/runtime_cleanup.sh" "$STAGE/runtime_cleanup.sh"
-sed -e "s/@TARBALL_SHA256@/$digest/g" \
-    -e "s/@RUNTIME_CLEANUP_SHA256@/$cleanup_sha/g" \
-    "$HERE/flat_wrapper.sh" > "$STAGE/run_stuff.sh"
+# Inject the canonical helper function definitions verbatim.  The flat pair
+# stays two files; no external cleanup helper is copied or extracted.
+awk -v tarball="$digest" -v cleanup_sha="$cleanup_sha" \
+    -v helper="$HERE/common/runtime_cleanup.sh" '
+    /^# @RUNTIME_CLEANUP_SHELL@$/ {
+        while ((getline line < helper) > 0) print line
+        close(helper)
+        next
+    }
+    {
+        gsub(/@TARBALL_SHA256@/, tarball)
+        gsub(/@RUNTIME_CLEANUP_SHA256@/, cleanup_sha)
+        print
+    }
+' "$HERE/flat_wrapper.sh" > "$STAGE/run_stuff.sh"
+if grep -Eq '@[A-Z_][A-Z0-9_]*@' "$STAGE/run_stuff.sh"; then
+    echo "unexpanded build placeholder in generated wrapper" >&2
+    exit 1
+fi
 sh -n "$STAGE/run_stuff.sh"
-cp -f "$STAGE/appcombo.tar.gz" "$STAGE/run_stuff.sh" "$STAGE/runtime_cleanup.sh" "$OUT/"
+cp -f "$STAGE/appcombo.tar.gz" "$STAGE/run_stuff.sh" "$OUT/"
+rm -f "$OUT/runtime_cleanup.sh"
 cat > "$OUT/README.txt" <<'EOF'
 SCOURGE standalone flat combo — Battery, Tweaks/Reboot and Wifi1b
 =================================================================
@@ -61,9 +77,10 @@ No manual WiFi Off step is needed: the installer preflight stops only its own
 radio daemons before backing up or changing files.
 OFFLINE-TESTED / WORK IN PROGRESS; not car-validated. No firmware/update stick
 present, and no vehicle deployment is authorized by this bundle.
-Copy ALL THREE files to the stick root: run_stuff.sh, appcombo.tar.gz and
-runtime_cleanup.sh. The wrapper verifies the archive SHA256 and the cleanup
-helper SHA256 before running any stage; do not extract the archive.
+Copy BOTH files to the stick root: run_stuff.sh and appcombo.tar.gz. The
+wrapper verifies the archive SHA256 and readback before running any stage; do
+not extract the archive. The canonical cleanup helper is embedded in
+run_stuff.sh; no third file is needed.
 Bounded runtime log truncation happens first. Removed-WiFi cleanup is
 evidence-gated: it runs only with readable QML absence evidence, no existing
 or dangling WiFi page/service, no running owned WiFi daemon, and a verified
@@ -72,7 +89,7 @@ and backups are preserved and reported.
 SENSITIVE: appcombo.tar.gz contains the compiled Wifi1b payload, which may
 include owner credentials from the private source, plus any
 SCOURGE_WIFI1B_TXT/SCOURGE_WIFI_TXT or SCOURGE_AUTHORIZED_KEYS inputs.
-Treat the set as private, store and dispose of it accordingly, and keep it
+Treat the pair as private, store and dispose of it accordingly, and keep it
 out of any shared location. Optional iphone_wifi.txt (or wifi.txt) and
 authorized_keys at the stick root override packed inputs.
 Wifi1b SSH: user wifi1b, UID 0, key-only, port 2224, bind-all. This is a

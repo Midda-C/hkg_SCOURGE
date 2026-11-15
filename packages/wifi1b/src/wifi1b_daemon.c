@@ -26,6 +26,11 @@
 #include <fcntl.h>
 #include <glob.h>
 #include <netinet/in.h>
+#include <netinet/ip.h>
+#include <netinet/udp.h>
+#include <net/if.h>
+#include <linux/if_ether.h>
+#include <linux/if_packet.h>
 #include <poll.h>
 #include <signal.h>
 #include <stdarg.h>
@@ -185,9 +190,20 @@ static char g_home_line[512];
 static size_t g_home_line_len;
 static char g_home_member[48];
 
-typedef enum { WORK_MODE, WORK_SCAN, WORK_SSH, WORK_PAIR_STOP, WORK_DUMP } work_t;
+typedef enum {
+    W2_DHCP_ACQUIRE = 0,
+    W2_DHCP_RENEW,
+    W2_DHCP_REBIND
+} w2_dhcp_step_t;
+
+typedef enum { WORK_MODE, WORK_SCAN, WORK_SSH, WORK_PAIR_STOP, WORK_DUMP, WORK_DHCP } work_t;
 static work_t g_work_kind = WORK_MODE, g_pending_kind;
 static bool g_work_pending, g_pending_pair, g_apply_cancelled;
+static w2_dhcp_step_t g_dhcp_work_step = W2_DHCP_ACQUIRE;
+static int g_dhcp_retry_failures;
+static int64_t g_dhcp_next_try_ms;
+static int64_t g_last_dhcp_work_ms;
+static int64_t g_client_t1_at_ms, g_client_t2_at_ms, g_client_expiry_at_ms;
 static bool g_current_pair, g_dump_requested;
 static bool g_pairing_stop_requested;
 static bool g_pair_stop_confirmed;
@@ -352,6 +368,7 @@ static bool (*test_work)(work_t, bool);
 static int test_iface = -1, test_owned_wpa = -1, test_dhcpd_start = -1;
 static const char *test_if_inet6_path;
 static const char *test_ipv6_conf_dir;
+static const char *test_mac_override;
 #endif
 static int run_command(char *out, size_t outsz, const char *cmd, int timeout_ms)
 {
@@ -3819,6 +3836,11 @@ static bool accept_apply_result(char *buf)
     if (!l1 || !msg || sscanf(l1, "%d %d %c", &gen, &ok, &extra) != 2 ||
         (ok != 0 && ok != 1) || gen != g_apply_gen) return false;
     char *line;
+    char lease_ip[32] = "", lease_server[32] = "", lease_gateway[32] = "";
+    char lease_iface[16] = "";
+    int lease_updated = 0, lease_valid = 0, lease_route_ok = 0;
+    int lease_prefix = 0, lease_s = 0, lease_t1 = 0, lease_t2 = 0;
+    unsigned int lease_metric = 0, lease_proto = 0;
     while ((line = strtok_r(NULL, "\n", &save))) {
         char *eq = strchr(line, '=');
         if (!eq) continue;
@@ -3842,15 +3864,64 @@ static bool accept_apply_result(char *buf)
         else if (!strcmp(line, "dhcp_attempts")) g_dhcp_attempts = v;
         else if (!strcmp(line, "dhcp_bssid")) str_copy(g_dhcp_bssid, sizeof(g_dhcp_bssid), eq);
         else if (!strcmp(line, "dhcp_error")) str_copy(g_dhcp_error, sizeof(g_dhcp_error), eq);
+        else if (!strcmp(line, "client_lease_updated")) lease_updated = v == 1;
+        else if (!strcmp(line, "client_lease_valid")) lease_valid = v == 1;
+        else if (!strcmp(line, "client_lease_ip")) str_copy(lease_ip, sizeof(lease_ip), eq);
+        else if (!strcmp(line, "client_lease_server")) str_copy(lease_server, sizeof(lease_server), eq);
+        else if (!strcmp(line, "client_lease_gateway")) str_copy(lease_gateway, sizeof(lease_gateway), eq);
+        else if (!strcmp(line, "client_lease_iface")) str_copy(lease_iface, sizeof(lease_iface), eq);
+        else if (!strcmp(line, "client_lease_prefix")) lease_prefix = v;
+        else if (!strcmp(line, "client_lease_lease_s")) lease_s = v;
+        else if (!strcmp(line, "client_lease_t1_s")) lease_t1 = v;
+        else if (!strcmp(line, "client_lease_t2_s")) lease_t2 = v;
+        else if (!strcmp(line, "client_lease_route_ok")) lease_route_ok = v == 1;
+        else if (!strcmp(line, "client_route_metric")) lease_metric = (unsigned int)strtoul(eq, NULL, 10);
+        else if (!strcmp(line, "client_route_proto")) lease_proto = (unsigned int)strtoul(eq, NULL, 10);
+    }
+    if (lease_updated) {
+        struct in_addr ip_addr, server_addr, gateway_addr;
+        bool parsed = inet_pton(AF_INET, lease_ip, &ip_addr) == 1 &&
+                      inet_pton(AF_INET, lease_gateway, &gateway_addr) == 1 &&
+                      (lease_server[0] == '\0' || inet_pton(AF_INET, lease_server, &server_addr) == 1);
+        if (lease_valid && parsed && lease_prefix > 0 && lease_prefix <= 32 &&
+            lease_s >= 60 && lease_t1 > 0 && lease_t2 > lease_t1 &&
+            lease_t2 < lease_s && lease_iface[0] != '\0') {
+            int64_t now = now_ms();
+            g_dhcp_lease.valid = true;
+            g_dhcp_lease.updated = true;
+            g_dhcp_lease.route_ok = lease_route_ok;
+            g_dhcp_lease.ip = ntohl(ip_addr.s_addr);
+            g_dhcp_lease.server = lease_server[0] ? ntohl(server_addr.s_addr) : 0;
+            g_dhcp_lease.gateway = ntohl(gateway_addr.s_addr);
+            g_dhcp_lease.prefix = lease_prefix;
+            g_dhcp_lease.lease_s = lease_s;
+            g_dhcp_lease.t1_s = lease_t1;
+            g_dhcp_lease.t2_s = lease_t2;
+            g_dhcp_lease.route_metric = lease_metric;
+            g_dhcp_lease.route_proto = lease_proto;
+            str_copy(g_dhcp_lease.iface, sizeof(g_dhcp_lease.iface), lease_iface);
+            g_client_t1_at_ms = now + (int64_t)lease_t1 * 1000;
+            g_client_t2_at_ms = now + (int64_t)lease_t2 * 1000;
+            g_client_expiry_at_ms = now + (int64_t)lease_s * 1000;
+            g_dhcp_retry_failures = 0;
+            g_dhcp_next_try_ms = 0;
+        } else {
+            if (lease_valid)
+                log_msg("dhcp client: ignoring malformed lease readback");
+            g_dhcp_lease.valid = false;
+            g_dhcp_lease.updated = true;
+            g_dhcp_lease.route_ok = false;
+            g_client_t1_at_ms = g_client_t2_at_ms = g_client_expiry_at_ms = 0;
+        }
     }
     g_apply_failed = !ok;
     if (g_work_kind == WORK_MODE) g_network_failed = !ok;
     set_msg("%s", msg);
-    if (!config_save()) {
+    if (g_work_kind != WORK_DHCP && !config_save()) {
         g_apply_failed = true;
         set_msg("State applied, but preferences could not be saved; they may revert at reboot");
     }
-    bt_state_save();
+    if (g_work_kind != WORK_DHCP) bt_state_save();
     return true;
 }
 
@@ -3874,15 +3945,17 @@ static void request_work(work_t kind, bool pair)
     g_last_apply_ms = now_ms();
     g_apply_failed = false;
     if (kind == WORK_MODE) g_last_mode_ms = g_last_apply_ms;
+    if (kind == WORK_DHCP) g_last_dhcp_work_ms = g_last_apply_ms;
     if (kind == WORK_DUMP) g_last_dump_try_ms = g_last_apply_ms;
     g_pending_kind = kind;
     g_pending_pair = pair;
     g_work_pending = true;
-    config_save();  /* persist user intent, including Off, before slow work */
+    if (kind != WORK_DHCP) config_save();  /* persist user intent, including Off, before slow work */
     set_msg("%s", kind == WORK_SCAN ? "Scanning..." :
             kind == WORK_DUMP ? "Saving logs..." :
             kind == WORK_SSH ? "Updating SSH..." :
-            kind == WORK_PAIR_STOP ? "Stopping pairing..." : "Applying mode...");
+            kind == WORK_PAIR_STOP ? "Stopping pairing..." :
+            kind == WORK_DHCP ? "Renewing client lease..." : "Applying mode...");
     start_pending_work();
     write_status();
 }
@@ -3923,6 +3996,8 @@ static void start_pending_work(void)
         } else if (g_work_kind == WORK_PAIR_STOP) {
             bt_pair_stop();
             ok = g_pair_stop_confirmed;
+        } else if (g_work_kind == WORK_DHCP) {
+            ok = w2_dhcp_client_renew(g_dhcp_work_step);
         } else if (g_work_kind == WORK_DUMP) ok = dump_logs_to_usb(true);
         else if (g_work_kind == WORK_SCAN) {
             char scan[32768];
@@ -3930,19 +4005,42 @@ static void start_pending_work(void)
             ok = strstr(scan, "\"ok\":true") != NULL;
             if (!g_stop) write_file_atomic(SCAN_RESULT, scan, 0600);
         }
-        char buf[2048];
+        char lease_ip[32] = "", lease_server[32] = "", lease_gateway[32] = "";
+        bool lease_relevant = g_work_kind == WORK_MODE || g_work_kind == WORK_DHCP;
+        if (lease_relevant && (g_cfg.mode != MODE_CLIENT || !g_cfg.wlan_on)) {
+            g_dhcp_lease.valid = false;
+            g_dhcp_lease.route_ok = false;
+            g_dhcp_lease.updated = true;
+        }
+        if (!lease_relevant) g_dhcp_lease.updated = false;
+        if (g_dhcp_lease.ip) w2_ip4_str(g_dhcp_lease.ip, lease_ip, sizeof(lease_ip));
+        if (g_dhcp_lease.server) w2_ip4_str(g_dhcp_lease.server, lease_server, sizeof(lease_server));
+        if (g_dhcp_lease.gateway) w2_ip4_str(g_dhcp_lease.gateway, lease_gateway, sizeof(lease_gateway));
+        char buf[4096];
         snprintf(buf, sizeof(buf), "%d %d\n%s\ncp_band=%d\ncp_channel=%d\n"
                  "ssh_port=%d\ncarplay_ie=%d\nssh_active_port=%d\nssh_fallback=%d\n"
                  "bt_discoverable=%d\nbt_pairable=%d\npair_stop_ok=%d\nbt_address=%s\ncp_id=%s\npair_message=%s\n"
                  "dhcp_tx=%d\ndhcp_rx_offer=%d\ndhcp_rx_ack=%d\ndhcp_attempts=%d\n"
-                 "dhcp_bssid=%s\ndhcp_error=%s\n",
+                 "dhcp_bssid=%s\ndhcp_error=%s\n"
+                 "client_lease_updated=%d\nclient_lease_valid=%d\n"
+                 "client_lease_ip=%s\nclient_lease_server=%s\nclient_lease_gateway=%s\n"
+                 "client_lease_prefix=%d\nclient_lease_lease_s=%d\n"
+                 "client_lease_t1_s=%d\nclient_lease_t2_s=%d\n"
+                 "client_lease_route_ok=%d\nclient_route_metric=%u\n"
+                 "client_route_proto=%u\nclient_lease_iface=%s\n",
                  g_apply_gen, ok ? 1 : 0, g_last_msg,
                  g_cfg.cp_band, g_cfg.cp_channel, g_cfg.ssh_port,
                  g_carplay_ie, g_ssh_active_port, g_ssh_port_fallback,
                  g_bt_discoverable, g_bt_pairable, g_pair_stop_confirmed,
                  g_cfg.cp_btaddr, g_cfg.cp_id, g_pair_msg,
                  g_dhcp_tx, g_dhcp_rx_offer, g_dhcp_rx_ack, g_dhcp_attempts,
-                 g_dhcp_bssid, g_dhcp_error);
+                 g_dhcp_bssid, g_dhcp_error,
+                 g_dhcp_lease.updated ? 1 : 0, g_dhcp_lease.valid ? 1 : 0,
+                 lease_ip, lease_server, lease_gateway,
+                 g_dhcp_lease.prefix, g_dhcp_lease.lease_s,
+                 g_dhcp_lease.t1_s, g_dhcp_lease.t2_s,
+                 g_dhcp_lease.route_ok ? 1 : 0, g_dhcp_lease.route_metric,
+                 g_dhcp_lease.route_proto, g_dhcp_lease.iface);
         if (!g_stop) write_file_atomic(APPLY_RESULT, buf, 0600);
         _exit(0);
     }
@@ -3978,7 +4076,7 @@ static void apply_reap(void)
     /* Always clean the command group, even when its leader exited first. */
     kill(-pid, SIGKILL);
     g_apply_pid = 0;
-    char buf[2048] = "";
+    char buf[4096] = "";
     bool valid = !g_apply_cancelled && WIFEXITED(st) && WEXITSTATUS(st) == 0 &&
                  read_file(APPLY_RESULT, buf, sizeof(buf)) > 0 && accept_apply_result(buf);
     unlink(APPLY_RESULT);
@@ -3987,6 +4085,24 @@ static void apply_reap(void)
         g_apply_failed = true;
         if (g_work_kind == WORK_MODE) g_network_failed = true;
         set_msg("worker failed; result absent, invalid or stale");
+    }
+    if (g_work_kind == WORK_MODE && !g_apply_cancelled && (!valid || g_apply_failed)) {
+        /* A failed client-mode apply must not leave an old lease advertised. */
+        g_dhcp_lease.valid = false;
+        g_dhcp_lease.route_ok = false;
+        g_client_t1_at_ms = g_client_t2_at_ms = g_client_expiry_at_ms = 0;
+    }
+    if (g_work_kind == WORK_DHCP && !g_apply_cancelled) {
+        if (valid && !g_apply_failed) {
+            g_dhcp_retry_failures = 0;
+            g_dhcp_next_try_ms = 0;
+        } else {
+            int shift = g_dhcp_retry_failures > 4 ? 4 : g_dhcp_retry_failures;
+            int64_t delay = 5000LL << shift;
+            if (delay > 60000LL) delay = 60000LL;
+            g_dhcp_retry_failures++;
+            g_dhcp_next_try_ms = now_ms() + delay;
+        }
     }
     if (g_work_kind == WORK_DUMP) {
         g_last_dump_try_ms = now_ms();
@@ -4000,6 +4116,59 @@ static void apply_reap(void)
         request_work(WORK_DUMP, false);
     }
     write_status();
+}
+
+typedef enum {
+    DHCP_TICK_NONE = 0,
+    DHCP_TICK_RENEW,
+    DHCP_TICK_REBIND,
+    DHCP_TICK_ACQUIRE
+} dhcp_tick_t;
+
+/* Pure monotonic lease clock. Timers are set from the ACK lifetime and are
+ * never derived from wall-clock/configuration state. */
+static dhcp_tick_t dhcp_lease_action(bool valid, int64_t now, int64_t t1,
+                                     int64_t t2, int64_t expiry)
+{
+    if (!valid || expiry <= 0 || now >= expiry) return DHCP_TICK_ACQUIRE;
+    if (t2 > 0 && now >= t2) return DHCP_TICK_REBIND;
+    if (t1 > 0 && now >= t1) return DHCP_TICK_RENEW;
+    return DHCP_TICK_NONE;
+}
+
+/* One bounded worker at a time: the common apply queue owns scheduling,
+ * cancellation and the radio reservation. Expired leases stop being ready
+ * immediately (status is derived from this clock) even before the worker
+ * gets to remove the stale address/route. */
+static void dhcp_lease_tick(void)
+{
+    if (g_stop || !g_cfg.wlan_on || g_cfg.mode != MODE_CLIENT) return;
+    if (g_apply_pid > 0 || g_work_pending) return;
+    int64_t now = now_ms();
+    if (g_dhcp_lease.valid && g_client_expiry_at_ms > 0 &&
+        now >= g_client_expiry_at_ms) {
+        g_dhcp_lease.valid = false;
+        g_dhcp_lease.route_ok = false;
+        g_client_t1_at_ms = g_client_t2_at_ms = 0;
+    }
+    if (now < g_dhcp_next_try_ms) return;
+    dhcp_tick_t action = dhcp_lease_action(g_dhcp_lease.valid, now,
+                                           g_client_t1_at_ms,
+                                           g_client_t2_at_ms,
+                                           g_client_expiry_at_ms);
+    if (action == DHCP_TICK_NONE) return;
+    if (action == DHCP_TICK_ACQUIRE) {
+        /* A full acquire needs an association; the existing watchdog handles
+         * a dead link and avoids a worker storm while the mode apply runs. */
+        if (!client_associated()) return;
+        if (now - g_last_mode_ms < 5000) return;
+        g_dhcp_work_step = W2_DHCP_ACQUIRE;
+    } else if (action == DHCP_TICK_REBIND) {
+        g_dhcp_work_step = W2_DHCP_REBIND;
+    } else {
+        g_dhcp_work_step = W2_DHCP_RENEW;
+    }
+    request_work(WORK_DHCP, false);
 }
 
 static void watchdog(void)
@@ -4172,7 +4341,30 @@ static void build_status(char *out, size_t n)
     char client_e[256], pair_e[512];
     char dhcp_bssid_e[64], dhcp_error_e[256];
     char ap_sec_e[96], ap_ll_e[160], ap_v6e_e[256];
+    char client_gw_e[64], client_lease_ip[32] = "";
     char radio_owner[32];
+    int64_t now = now_ms();
+    if (g_dhcp_lease.ip) w2_ip4_str(g_dhcp_lease.ip, client_lease_ip, sizeof(client_lease_ip));
+    bool lease_timer_valid = g_cfg.mode == MODE_CLIENT && g_cfg.wlan_on &&
+                             g_dhcp_lease.valid && g_client_expiry_at_ms > now;
+    bool client_ready = lease_timer_valid && g_dhcp_lease.route_ok &&
+                        o->associated && client_lease_ip[0] &&
+                        !strcmp(o->ip, client_lease_ip);
+    const char *effective_ip = o->ip;
+    if (g_cfg.mode == MODE_CLIENT)
+        effective_ip = client_ready ? client_lease_ip : "";
+    int client_lease_remaining = lease_timer_valid
+        ? (int)((g_client_expiry_at_ms - now) / 1000) : 0;
+    const char *client_lease_state = "none";
+    if (g_dhcp_lease.valid) {
+        if (g_client_expiry_at_ms <= 0) client_lease_state = "unknown";
+        else if (now >= g_client_expiry_at_ms) client_lease_state = "expired";
+        else if (g_client_t2_at_ms > 0 && now >= g_client_t2_at_ms) client_lease_state = "rebind";
+        else if (g_client_t1_at_ms > 0 && now >= g_client_t1_at_ms) client_lease_state = "renew";
+        else client_lease_state = "bound";
+    } else if (g_dhcp_lease.ip && g_client_expiry_at_ms > 0) {
+        client_lease_state = "expired";
+    }
     /* Local service state is not a CarPlay session. Until a discovery,
      * iAP2 and projection handshake is actually observed, "ready" must
      * stay false and the UI reports the components separately. */
@@ -4182,7 +4374,7 @@ static void build_status(char *out, size_t n)
         o->ap_on && g_carplay_ie && o->carplay_svc && o->mdns_svc;
     if (!radio_record_name(radio_owner, sizeof(radio_owner))) radio_owner[0] = 0;
     json_escape(ssid_e, sizeof(ssid_e), o->ssid);
-    json_escape(ip_e, sizeof(ip_e), o->ip);
+    json_escape(ip_e, sizeof(ip_e), effective_ip);
     json_escape(ap_e, sizeof(ap_e), o->ap_ssid);
     json_escape(msg_e, sizeof(msg_e), g_last_msg);
     json_escape(imp_e, sizeof(imp_e), g_cfg.imported_from);
@@ -4197,6 +4389,9 @@ static void build_status(char *out, size_t n)
     json_escape(ap_sec_e, sizeof(ap_sec_e), o->ap.security);
     json_escape(ap_ll_e, sizeof(ap_ll_e), o->ap.linklocal);
     json_escape(ap_v6e_e, sizeof(ap_v6e_e), o->ap.ipv6_error);
+    char gateway_text[32] = "";
+    if (g_dhcp_lease.gateway) w2_ip4_str(g_dhcp_lease.gateway, gateway_text, sizeof(gateway_text));
+    json_escape(client_gw_e, sizeof(client_gw_e), gateway_text);
 
     /* Legacy "carplay_ie" stays an alias for the configured flag because the
      * existing QML consumes it. The split fields below make the difference
@@ -4222,6 +4417,14 @@ static void build_status(char *out, size_t n)
              "\"iface\":\"wlan0\","
              "\"radio_owner\":\"%s\","
              "\"ip\":\"%s\","
+             "\"client_ready\":%s,"
+             "\"client_lease_valid\":%s,"
+             "\"client_lease_remaining_s\":%d,"
+             "\"client_lease_state\":\"%s\","
+             "\"client_route_ok\":%s,"
+             "\"client_route_metric\":%u,"
+             "\"client_route_proto\":%u,"
+             "\"client_gateway\":\"%s\","
              "\"ssid\":\"%s\","
              "\"signal\":%d,"
              "\"ap_active\":%s,"
@@ -4286,7 +4489,16 @@ static void build_status(char *out, size_t n)
              g_cfg.wlan_on ? "true" : "false",
              o->driver ? "true" : "false",
              radio_owner[0] ? radio_owner : "",
-             ip_e, ssid_e, o->signal,
+             ip_e,
+             client_ready ? "true" : "false",
+             lease_timer_valid ? "true" : "false",
+             client_lease_remaining,
+             client_lease_state,
+             g_dhcp_lease.route_ok ? "true" : "false",
+             g_dhcp_lease.route_metric,
+             g_dhcp_lease.route_proto,
+             client_gw_e,
+             ssid_e, o->signal,
              o->ap_on ? "true" : "false", o->ap.role == 1 ? "true" : "false",
              o->ap.state, fresh ? o->ap.tether : -1, ap_e, o->clients,
              o->ap.channel, o->ap.frequency, ap_sec_e, ap_ll_e, o->ap.ifindex,
@@ -5348,6 +5560,7 @@ int main(int argc, char **argv)
         home_monitor_tick();
         probe_tick();
         watchdog();
+        dhcp_lease_tick();
         ssh_fw_tick();
         int64_t now = now_ms();
         if (now - g_last_status_ms > 2000) {

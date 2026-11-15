@@ -40,6 +40,17 @@
  *   - Events and stats contain no CSM payloads, SSIDs, passphrases or keys.
  *     Events report only states, enum reasons, flags and generations.
  *
+ * Blocking authentication providers: cp_boot_auth_provider callbacks are
+ * invoked synchronously while cp_session_feed() processes CSM work (and from
+ * any other bootstrap path that requires them). A real OEM/RPC adapter may
+ * block for its bounded timeout (the reference helper default is 5 s). This
+ * pure wrapper cannot offload that work or guarantee SPP/link ACK/output
+ * deadlines while a provider runs. A broker must offload authentication or
+ * otherwise keep servicing link output and ACKs around the blocking call;
+ * this module alone makes no realtime guarantee. The wrapper does not observe
+ * elapsed time during a callback; the next call must supply fresh monotonic
+ * milliseconds.
+ *
  * Single-threaded use only. The event callback is invoked after link work
  * returns, from the public API call that caused it. Do not re-enter cp_session
  * from the callback. All storage is fixed; no allocation or logging.
@@ -65,6 +76,12 @@ extern "C" {
 #define CP_SESSION_TX_QUEUE 8u
 #endif
 #define CP_SESSION_RX_BUFFER (CP_WIRE_MAX_FRAME + CP_LINK_MAX_PAYLOAD)
+
+/* While a trusted receiver observation is active, the bootstrap receiver-wait
+ * deadline is retired. Consent/USB/wireless policy is re-checked locally at
+ * this bounded interval instead, so a legitimate active projection is not
+ * cancelled by the bootstrap offer timer. */
+#define CP_SESSION_POLICY_RECHECK_MS 1000u
 
 typedef enum cp_session_state {
     CP_SESSION_STATE_IDLE = 0,
@@ -169,13 +186,19 @@ typedef struct cp_session_stats {
 } cp_session_stats_t;
 
 typedef struct cp_session_config {
+    /* cp_session_config_default() selects the observed live-Bluetooth link
+     * profile (control session version 2, max_outgoing 4, ordinary ACK mode,
+     * standard session ids 10/11/12). Explicit fields remain caller-owned;
+     * wired/ZeroACK profiles remain selectable by assignment.
+     * max_payload must cover the local SYN frame (10 + 3 per advertised
+     * session; 19 with the default three sessions) or init returns CONFIG. */
     cp_link_config_t link;
     cp_boot_config boot;
 } cp_session_config_t;
 
 /* Internal fixed records; treat as private. At default limits cp_session is
- * dominated by cp_link_t (roughly 300 KiB). Allocate once in static or
- * caller-owned storage, not on a small task stack. */
+ * dominated by cp_link_t and the tx/rx buffers (roughly 360 KiB). Allocate
+ * once in static or caller-owned storage, not on a small task stack. */
 typedef struct cp_session_tx_slot {
     uint16_t len;
     uint16_t sent;
@@ -214,6 +237,12 @@ typedef struct cp_session {
 
     bool receiver_active;
     uint32_t receiver_generation;
+    uint32_t receiver_ap_generation;
+    uint32_t ap_readback_generation;
+    uint64_t receiver_policy_deadline_ms;
+    cp_boot_consent_fn policy_consent;
+    cp_boot_usb_active_fn policy_usb_active;
+    void *policy_context;
 
     cp_session_stats_t stats;
 } cp_session_t;
@@ -254,8 +283,18 @@ cp_session_error_t cp_session_set_ap_readback(cp_session_t *session,
 /* Trusted local receiver observation. Requires the caller's generation to
  * equal the live link generation, a normal link, a started offer, successful
  * authentication, a ready AP and a Bluetooth peer id recorded from the phone.
- * `peer_id` must match that identified id (ASCII case-insensitive). A network
- * request, CSM or bare boolean can never set this state. */
+ * `peer_id` must match that identified id (ASCII case-insensitive). Initial
+ * activation also requires the current consent callback to return GRANTED,
+ * USB activity to be false and wireless availability not to be withdrawn.
+ * A network request, CSM or bare boolean can never set this state.
+ *
+ * Once active, the bootstrap receiver-wait/offer timer is retired: the
+ * wrapper skips cp_bootstrap_tick() while the trusted observation remains
+ * valid, and re-checks the configured consent/USB callbacks and wireless
+ * availability every CP_SESSION_POLICY_RECHECK_MS. Consent denial, USB
+ * activity or wireless withdrawal retires the bootstrap offer and clears the
+ * observation; AP loss, link reset, auth failure or generation change also
+ * clear it. The offer is never extended by an untrusted/network boolean. */
 cp_session_error_t cp_session_set_receiver_active(cp_session_t *session,
                                                   uint64_t now_ms,
                                                   uint32_t generation,

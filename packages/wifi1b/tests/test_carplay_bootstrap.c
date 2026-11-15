@@ -1121,6 +1121,10 @@ static void test_inbound_decoding(void)
             0x40u, 0x40u, 0x00u, 0x0Eu, 0x1Du, 0x03u,
             0x00u, 0x04u, 0x00u, 0x0Bu,
             0x00u, 0x04u, 0x00u, 0x19u};
+        static const uint8_t team_twice[14] = {
+            0x40u, 0x40u, 0x00u, 0x0Eu, 0x1Du, 0x03u,
+            0x00u, 0x04u, 0x00u, 0x0Bu,
+            0x00u, 0x04u, 0x00u, 0x0Bu};
         static const uint8_t unknown_truncated[10] = {
             0x40u, 0x40u, 0x00u, 0x0Au, 0x1Du, 0x03u, 0x00u, 0x08u,
             0x00u, 0x19u};
@@ -1139,6 +1143,10 @@ static void test_inbound_decoding(void)
         CHECK_EQ(cp_wire_decode_identification_rejection(&view, &rejection),
                  CP_WIRE_OK);
         CHECK_EQ(rejection.flagged, (uint32_t)(1u << 11u));
+        CHECK_EQ(cp_wire_open(team_twice, sizeof(team_twice), &view),
+                 CP_WIRE_OK);
+        CHECK_EQ(cp_wire_decode_identification_rejection(&view, &rejection),
+                 CP_WIRE_ERR_DUPLICATE);
         CHECK_EQ(cp_wire_open(unknown_truncated, sizeof(unknown_truncated),
                               &view),
                  CP_WIRE_OK);
@@ -1694,6 +1702,33 @@ static void test_late_rejection_after_auth(void)
                                   sizeof(out));
     CHECK_EQ(result.event, CP_BOOT_EV_IGNORED);
     CHECK_EQ(result.state, CP_BOOT_STATE_AUTHENTICATED);
+
+    /* Malformed late authentication duplicates are inapplicable before
+     * decoding and must not turn a valid session into AUTH_FAILED. */
+    {
+        const uint8_t late_ids[] = {0x02u, 0x05u, 0x00u};
+        uint8_t malformed_auth[] = {
+            0x40u, 0x40u, 0x00u, 0x0Au, 0xAAu, 0x00u,
+            0x00u, 0x05u, 0x00u, 0x00u};
+        uint64_t generation = session.generation;
+        int cert_calls = auth.cert_calls;
+        int signature_calls = auth.signature_calls;
+        size_t i;
+        for (i = 0u; i < sizeof(late_ids); i++) {
+            malformed_auth[5] = late_ids[i];
+            result = cp_bootstrap_receive(&session, malformed_auth,
+                                          sizeof(malformed_auth), now, out,
+                                          sizeof(out));
+            CHECK_EQ(result.event, CP_BOOT_EV_IGNORED);
+            CHECK_EQ(result.error, CP_BOOT_OK);
+            CHECK_EQ(result.out_len, 0u);
+            CHECK_EQ(result.state, CP_BOOT_STATE_AUTHENTICATED);
+            CHECK_EQ(cp_bootstrap_auth_state(&session), CP_BOOT_AUTH_SUCCEEDED);
+            CHECK_EQ(session.generation, generation);
+            CHECK_EQ(auth.cert_calls, cert_calls);
+            CHECK_EQ(auth.signature_calls, signature_calls);
+        }
+    }
 
     /* The session remains able to make a normal bounded offer. */
     set_ap_ready(&session, now, out, sizeof(out));
@@ -2619,7 +2654,6 @@ static void test_malformed_tlv_corpus(void)
         size_t len;
         uint16_t msg_id;
         cp_wire_status expected;
-        bool header_only;
     } corpus_case;
 
     static const uint8_t tlv_zero[10] = {
@@ -2670,30 +2704,30 @@ static void test_malformed_tlv_corpus(void)
         0x40u, 0x40u, 0x00u, 0x14u, 0x4Eu, 0x0Du,
         0x00u, 0x05u, 0x00u, 0x00u};
     static const corpus_case cases[] = {
-        {tlv_zero, sizeof(tlv_zero), 0x4E0Du, CP_WIRE_ERR_TLV, false},
-        {tlv_short, sizeof(tlv_short), 0x4E0Du, CP_WIRE_ERR_TLV, false},
+        {tlv_zero, sizeof(tlv_zero), 0x4E0Du, CP_WIRE_ERR_TLV},
+        {tlv_short, sizeof(tlv_short), 0x4E0Du, CP_WIRE_ERR_TLV},
         {tlv_truncated, sizeof(tlv_truncated), 0x4E0Du,
-         CP_WIRE_ERR_TRUNCATED, false},
-        {tlv_trailing, sizeof(tlv_trailing), 0x4E0Du, CP_WIRE_ERR_TLV, false},
-        {bool_bad, sizeof(bool_bad), 0x4E0Du, CP_WIRE_ERR_TYPE, false},
+         CP_WIRE_ERR_TRUNCATED},
+        {tlv_trailing, sizeof(tlv_trailing), 0x4E0Du, CP_WIRE_ERR_TLV},
+        {bool_bad, sizeof(bool_bad), 0x4E0Du, CP_WIRE_ERR_TYPE},
         {bool_duplicate, sizeof(bool_duplicate), 0x4E0Du,
-         CP_WIRE_ERR_DUPLICATE, false},
-        {group_short, sizeof(group_short), 0x4300u, CP_WIRE_ERR_TLV, false},
+         CP_WIRE_ERR_DUPLICATE},
+        {group_short, sizeof(group_short), 0x4300u, CP_WIRE_ERR_TLV},
         {group_nested_truncated, sizeof(group_nested_truncated), 0x4300u,
-         CP_WIRE_ERR_TRUNCATED, false},
+         CP_WIRE_ERR_TRUNCATED},
         {reject_truncated, sizeof(reject_truncated), 0x1D03u,
-         CP_WIRE_ERR_TRUNCATED, false},
+         CP_WIRE_ERR_TRUNCATED},
         {challenge_empty, sizeof(challenge_empty), 0xAA02u,
-         CP_WIRE_ERR_RANGE, false},
-        {ids_no_nul, sizeof(ids_no_nul), 0x4E0Eu, CP_WIRE_ERR_UTF8, false},
+         CP_WIRE_ERR_RANGE},
+        {ids_no_nul, sizeof(ids_no_nul), 0x4E0Eu, CP_WIRE_ERR_UTF8},
         {unknown_truncated, sizeof(unknown_truncated), 0x4E0Eu,
-         CP_WIRE_ERR_TRUNCATED, false},
+         CP_WIRE_ERR_TRUNCATED},
         {header_short_total, sizeof(header_short_total), 0x4E0Du,
-         CP_WIRE_ERR_LENGTH, true},
+         CP_WIRE_ERR_LENGTH},
         {header_big_total, sizeof(header_big_total), 0x4E0Du,
-         CP_WIRE_ERR_LENGTH, true},
+         CP_WIRE_ERR_LENGTH},
         {header_truncated, sizeof(header_truncated), 0x4E0Du,
-         CP_WIRE_ERR_TRUNCATED, true},
+         CP_WIRE_ERR_TRUNCATED},
     };
     cp_bootstrap session;
     cp_boot_config cfg = base_config();
@@ -2710,9 +2744,6 @@ static void test_malformed_tlv_corpus(void)
             cp_boot_result result;
 
             if (st != CP_WIRE_OK) {
-                /* Only the header-level fixtures may be rejected by open
-                 * itself; a decoder regression must not hide here. */
-                CHECK(cases[i].header_only);
                 CHECK_EQ(st, cases[i].expected);
                 result = cp_bootstrap_receive(&session, cases[i].data,
                                               cases[i].len, 1u, out,

@@ -156,12 +156,16 @@ exit 0
             tar.add(path, arcname="./" + path.name)
     digest = hashlib.sha256(archive.read_bytes()).hexdigest()
     cleanup_source = packages / "common/runtime_cleanup.sh"
-    shutil.copyfile(cleanup_source, stick / "runtime_cleanup.sh")
-    cleanup_sha = hashlib.sha256((stick / "runtime_cleanup.sh").read_bytes()).hexdigest()
+    cleanup_sha = hashlib.sha256(cleanup_source.read_bytes()).hexdigest()
+    helper_text = cleanup_source.read_text()
     wrapper = stick / "run_stuff.sh"
     wrapper.write_text((PACKAGES / "flat_wrapper.sh").read_text()
                        .replace("@TARBALL_SHA256@", digest)
-                       .replace("@RUNTIME_CLEANUP_SHA256@", cleanup_sha))
+                       .replace("@RUNTIME_CLEANUP_SHA256@", cleanup_sha)
+                       .replace("# @RUNTIME_CLEANUP_SHELL@", helper_text))
+    assert "@RUNTIME_CLEANUP_SHELL@" not in wrapper.read_text()
+    assert f'RUNTIME_CLEANUP_DIGEST="{cleanup_sha}"' in wrapper.read_text()
+    assert not (stick / "runtime_cleanup.sh").exists()
     env["USB_DIR"] = str(stick)
     (root / 'runtime/battery').mkdir()
     (root / 'runtime/battery/result.txt').write_text('status=FAIL\nerror=historical\n')
@@ -233,8 +237,9 @@ exit 0
     digest = hashlib.sha256(archive.read_bytes()).hexdigest()
     wrapper.write_text((PACKAGES / "flat_wrapper.sh").read_text()
                        .replace("@TARBALL_SHA256@", digest)
-                       .replace("@RUNTIME_CLEANUP_SHA256@",
-                                hashlib.sha256((stick / "runtime_cleanup.sh").read_bytes()).hexdigest()))
+                       .replace("@RUNTIME_CLEANUP_SHA256@", cleanup_sha)
+                       .replace("# @RUNTIME_CLEANUP_SHELL@", helper_text))
+    assert "@RUNTIME_CLEANUP_SHELL@" not in wrapper.read_text()
     assert run().returncode == 0
     tail = order()[-3:]
     assert tail[0].startswith("wifi:install"), tail

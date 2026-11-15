@@ -19,6 +19,9 @@
  * AP readiness.  Bounded ticks re-query consent and USB policy and expire the
  * offer, so a revoked policy or an absent receiver cannot leave a stale
  * "start was sent" state behind.  Projection is never reported active.
+ * An outer session wrapper observing a trusted active receiver must retire
+ * this receiver-wait deadline while preserving consent/USB checks itself.
+ * Expiry alone is not evidence that an OEM receiver failed or stopped.
  *
  * Availability (0x4300) is interpreted conservatively: the wireless side must
  * be present and explicitly report availability.  A missing optional field is
@@ -67,8 +70,9 @@ typedef enum {
     CP_BOOT_STATE_IDENTIFYING,
     CP_BOOT_STATE_IDENTIFIED,
     CP_BOOT_STATE_AUTHENTICATED,
-    /* Start-session was sent; no receiver has been observed.  Projection is
-     * never reported active by this module. */
+    /* Start-session was sent; no receiver has been observed.  The offer is
+     * bounded by ap_wait_ms and is cleared by tick expiry or a policy
+     * revocation.  Projection is never reported active by this module. */
     CP_BOOT_STATE_AWAITING_RECEIVER,
     CP_BOOT_STATE_FAILED
 } cp_boot_state;
@@ -108,8 +112,7 @@ typedef enum {
     CP_BOOT_EV_START_SENT,
     CP_BOOT_EV_START_DUPLICATE,
     CP_BOOT_EV_START_REFUSED,
-    /* The bounded AP-readiness wait or the bounded post-start receiver offer
-     * expired without producing a start. */
+    /* The bounded AP-readiness wait or post-start receiver offer expired. */
     CP_BOOT_EV_START_TIMEOUT,
     CP_BOOT_EV_USB_ACTIVE,
     CP_BOOT_EV_CONSENT_DENIED,

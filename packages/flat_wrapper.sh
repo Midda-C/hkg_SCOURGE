@@ -2,11 +2,10 @@
 # SPDX-FileCopyrightText: 2026 The SCOURGE Project contributors
 # SPDX-License-Identifier: AGPL-3.0-only
 # TARGET: Ioniq 5 Gen5W_L EU 260128
-# Build-time substitutions bind this loader to one complete tarball and one
-# integrity-checked cleanup helper.
+# Build-time substitutions bind this loader to one complete tarball and the
+# canonical inline cleanup helper definition.
 # COMBO_FLAT_WRAPPER_REV=13
 EXPECTED_SHA256="@TARBALL_SHA256@"
-RUNTIME_CLEANUP_SHA256="@RUNTIME_CLEANUP_SHA256@"
 set -u
 PATH="${COMBO_PATH:-/bin:/sbin:/usr/bin:/usr/sbin}"
 USB_DIR="${USB_DIR:-$(CDPATH= cd -- "$(dirname "$0")" && pwd)}"
@@ -50,19 +49,31 @@ fail() {
     exit 1
 }
 
-# FIRST: verify and load the cleanup helper without writing anything, then
-# reclaim bounded runtime log space before any extraction or runtime write.
-# A full /rw_data makes every later write (including this installer's own
-# state) fail.  Unknown files, symlinks and foreign paths are left alone.
-CLEANUP_LIB="$USB_DIR/runtime_cleanup.sh"
-if [ ! -f "$CLEANUP_LIB" ] || [ -L "$CLEANUP_LIB" ] || [ ! -r "$CLEANUP_LIB" ]; then
-    fail "cleanup helper missing or unreadable; copy runtime_cleanup.sh next to run_stuff.sh"
+# Canonical first-party cleanup helper, embedded verbatim at build time.
+# The wrapper identity changes with the helper digest; no external helper file
+# is required at runtime.  The plain two-file USB pair stays deployable.
+RUNTIME_CLEANUP_DIGEST="@RUNTIME_CLEANUP_SHA256@"
+SHA256SUM_BIN=sha256sum
+command -v "$SHA256SUM_BIN" >/dev/null 2>&1 || SHA256SUM_BIN=sha256sum.coreutils
+# @RUNTIME_CLEANUP_SHELL@
+_cleanup_id_bad=0
+case "$RUNTIME_CLEANUP_DIGEST" in
+    ''|*[!0-9a-f]*) _cleanup_id_bad=1 ;;
+esac
+[ "${#RUNTIME_CLEANUP_DIGEST}" -eq 64 ] || _cleanup_id_bad=1
+if [ "$_cleanup_id_bad" = 1 ] ||
+   ! command -v cleanup_bounded_logs >/dev/null 2>&1 ||
+   ! command -v cleanup_removed_wifi >/dev/null 2>&1; then
+    printf 'COMBO_FLAT_WRAPPER\nstatus=FAIL\nerror=unexpanded_cleanup_helper\n' \
+        > "$USB_DIR/wrapper_result.txt" 2>/dev/null || true
+    cp -f "$USB_DIR/wrapper_result.txt" "$RESULT" 2>/dev/null || true
+    exit 1
 fi
-cleanup_actual=$(sha256sum "$CLEANUP_LIB" 2>/dev/null | cut -d' ' -f1)
-if [ -z "$cleanup_actual" ] || [ "$cleanup_actual" != "$RUNTIME_CLEANUP_SHA256" ]; then
-    fail "cleanup helper SHA256 mismatch; copy the matching pair"
-fi
-. "$CLEANUP_LIB"
+RUNTIME_CLEANUP_SHA256="$SHA256SUM_BIN"
+
+# FIRST: reclaim bounded runtime log space before any extraction or runtime
+# write.  A full /rw_data makes every later write (including this installer's
+# own state) fail.  Unknown files, symlinks and foreign paths are left alone.
 RUNTIME_CLEANUP_LOG=""
 cleanup_bounded_logs "$RUNTIME_ROOT" || true
 
@@ -71,8 +82,16 @@ cleanup_bounded_logs "$RUNTIME_ROOT" || true
 if [ ! -f "$USB_DIR/appcombo.tar.gz" ] || [ -L "$USB_DIR/appcombo.tar.gz" ]; then
     fail "missing or unsafe appcombo.tar.gz"
 fi
-actual=$(sha256sum "$USB_DIR/appcombo.tar.gz" | cut -d' ' -f1)
+actual=$("$SHA256SUM_BIN" "$USB_DIR/appcombo.tar.gz" | cut -d' ' -f1)
 [ "$actual" = "$EXPECTED_SHA256" ] || fail "tarball SHA256 mismatch; copy the matching pair"
+# Hash binding alone is not enough: verify the archive is readable and really
+# contains the inner master before anything is deleted.
+if ! tar -tzf "$USB_DIR/appcombo.tar.gz" >/dev/null 2>&1; then
+    fail "tarball unreadable or corrupt; nothing was deleted"
+fi
+if ! tar -tzf "$USB_DIR/appcombo.tar.gz" 2>/dev/null | grep -Eq '(^|/)run_stuff\.sh$'; then
+    fail "tarball has no inner master; nothing was deleted"
+fi
 
 MODE=all
 if [ -f "$USB_DIR/MODE" ]; then MODE=$(head -n 1 "$USB_DIR/MODE" | tr -d '\r'); fi
@@ -123,8 +142,7 @@ for app in battery wifi tweaks wifi1b migrate; do
         [ ! -f "$app_rw/$action.log" ] || cp -f "$app_rw/$action.log" "$USB_DIR/${app}_$action.log"
     fi
     # Do not export status.json: it carries cleartext psk/carplay_psk fields.
-    # The daemon's own log dump writes a redacted copy; the stage result files
-    # above are the authoritative evidence.
+    # The stale-snapshot cleanup above removes copies left by older wrappers.
     for phase in before after; do
         snapshot="$WORK/combo/$app/qml_$phase"
         if [ -d "$snapshot" ]; then
@@ -141,6 +159,6 @@ if [ -f "$WORK/README.txt" ]; then cp -f "$WORK/README.txt" "$USB_DIR/README_COM
 status=$(sed -n 's/^status=\([^ ]*\).*/\1/p' "$RESULT" 2>/dev/null | tail -n 1)
 verdict=FAIL
 if [ "$rc" = 0 ] && [ "$status" = OK ]; then verdict=OK; fi
-printf 'COMBO_FLAT_WRAPPER\nstatus=%s\ninner_rc=%s\ntarball_sha256=%s\n' "$verdict" "$rc" "$actual" > "$USB_DIR/wrapper_result.txt"
+printf 'COMBO_FLAT_WRAPPER\nstatus=%s\ninner_rc=%s\ntarball_sha256=%s\ncleanup_helper_sha256=%s\n' "$verdict" "$rc" "$actual" "$RUNTIME_CLEANUP_DIGEST" > "$USB_DIR/wrapper_result.txt"
 sync
 [ "$verdict" = OK ]

@@ -35,8 +35,7 @@ extern "C" {
  * copied.  CP_WIRE_MAX_AUTH_BLOB is a local fixed-buffer policy, not a wire
  * fact: the actual OEM certificate and signature sizes are not known to this
  * tree, so callers must supply their real bytes within this bound.  The value
- * is deliberately above a typical MFi certificate but small enough for a
- * fixed buffer. */
+ * is a fixed buffer bound only, not a claim about any real certificate size. */
 #define CP_WIRE_MAX_FRAME 4096u
 #define CP_WIRE_MAX_TLV_DEPTH 8u
 #define CP_WIRE_MAX_LANGUAGES 4u
@@ -223,12 +222,15 @@ cp_wire_status cp_wire_encode_start_session(const cp_wire_start_session *start,
 /* Decoders for the messages a phone sends during wireless bring-up.  They
  * structurally validate every TLV (length, bounded nesting, truncation),
  * reject duplicates of a known field and malformed nested TLVs, and never
- * return pointers past the frame.  Unknown parameter IDs are skipped after
+ * return pointers past the frame. In messages with parameter tables, unknown
+ * parameter IDs are skipped after
  * their length has been validated: the reference profile treats unknown
  * parameters as ignorable extensions, and this checkpoint must not turn an
  * unknown optional field into a fatal error.  String fields that this
  * checkpoint does implement keep strict NUL-termination and UTF-8 validity;
- * no form of unconditional trailing-NUL stripping is performed. */
+ * no form of unconditional trailing-NUL stripping is performed. Messages
+ * defined as empty remain strictly empty; extension parameters are not
+ * assumed valid for a message without a parameter table. */
 cp_wire_status cp_wire_decode_empty(const cp_wire_view *view,
                                     uint16_t expected_msg_id);
 cp_wire_status cp_wire_decode_identification_rejection(

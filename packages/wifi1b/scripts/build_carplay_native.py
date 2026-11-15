@@ -26,7 +26,6 @@ import json
 import os
 from pathlib import Path
 import re
-import shutil
 import subprocess
 import sys
 
@@ -46,15 +45,18 @@ class BuildError(RuntimeError):
 
 
 def run(command: list[str], cwd: Path | None = None) -> str:
-    result = subprocess.run(
-        command,
-        cwd=str(cwd) if cwd is not None else None,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        timeout=120,
-        check=False,
-    )
+    try:
+        result = subprocess.run(
+            command,
+            cwd=str(cwd) if cwd is not None else None,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=120,
+            check=False,
+        )
+    except OSError as error:
+        raise BuildError(f"cannot run {' '.join(command)}: {error}") from error
     if result.returncode != 0:
         detail = (result.stderr or result.stdout).strip()
         raise BuildError(f"command failed ({result.returncode}): "
@@ -129,17 +131,17 @@ def elf_symbols(path: Path, dynamic: bool = True) -> dict[str, dict[str, object]
 
 def verify_coreutils(path: Path, expected_sha: str,
                      expected_symbols: dict[str, int]) -> dict[str, object]:
-    if not path.is_file():
-        raise BuildError(f"coreutils not found: {path}")
+    if not path.is_file() or path.is_symlink():
+        raise BuildError(f"coreutils not found as a regular file: {path}")
     actual_sha = sha256_file(path)
     if actual_sha != expected_sha:
         raise BuildError(
             f"coreutils SHA-256 mismatch: expected {expected_sha}, "
             f"got {actual_sha}")
     header = run(["readelf", "-h", str(path)])
-    if "Class:                             ELF64" not in header:
+    if re.search(r"Class:\s+ELF64", header) is None:
         raise BuildError("coreutils is not ELF64")
-    if "Machine:                           Advanced Micro Devices X86-64" not in header:
+    if re.search(r"Machine:\s+Advanced Micro Devices X86-64", header) is None:
         raise BuildError("coreutils is not x86-64")
     symbols = elf_symbols(path, dynamic=True)
     found: dict[str, int] = {}
@@ -207,9 +209,9 @@ def verify_helper(path: Path) -> dict[str, object]:
     if not path.is_file():
         raise BuildError(f"helper not built: {path}")
     header = run(["readelf", "-h", str(path)])
-    if "Class:                             ELF64" not in header:
+    if re.search(r"Class:\s+ELF64", header) is None:
         raise BuildError("helper is not ELF64")
-    if "Machine:                           Advanced Micro Devices X86-64" not in header:
+    if re.search(r"Machine:\s+Advanced Micro Devices X86-64", header) is None:
         raise BuildError("helper is not x86-64")
     program = run(["readelf", "-l", str(path)])
     interpreters = re.findall(

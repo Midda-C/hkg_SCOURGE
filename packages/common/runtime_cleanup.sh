@@ -150,6 +150,10 @@ cleanup_stale_temps() {
     for _rc_dir in "$_rc_root/wifi" "$_rc_root/wifi1b" \
                     "$_rc_root/wifi1b/ssh" "$_rc_root/wifi1b/home/.ssh" \
                     "$_rc_root/battery" "$_rc_root/tweaks"; do
+        if ! runtime_cleanup_safe_path "$_rc_dir"; then
+            runtime_cleanup_note "refused unsafe temp dir: $_rc_dir"
+            continue
+        fi
         if [ -L "$_rc_dir" ]; then
             runtime_cleanup_note "refused symlink temp dir: $_rc_dir"
             continue
@@ -254,6 +258,10 @@ cleanup_removed_wifi() {
             runtime_cleanup_note "preserved WiFi state: bundle archive hash mismatch"
             return 1
         fi
+        if ! tar -tzf "$_rc_archive" >/dev/null 2>&1; then
+            runtime_cleanup_note "preserved WiFi state: bundle archive unreadable"
+            return 1
+        fi
     fi
 
     if ! runtime_cleanup_safe_path "$_rc_qml" || [ ! -d "$_rc_qml" ] ||
@@ -277,12 +285,17 @@ cleanup_removed_wifi() {
                return 1 ;;
         esac
     done
-    for _rc_rel in HomeScreen/WifiPage.qml component/WifiTile.qml; do
+    for _rc_rel in HomeScreen/WifiPage.qml component/WifiTile.qml \
+                    component/WifiSwitch.qml component/WifiButton.qml; do
         if [ -e "$_rc_qml/$_rc_rel" ] || [ -L "$_rc_qml/$_rc_rel" ]; then
             runtime_cleanup_note "preserved WiFi state: WiFi UI still present ($_rc_rel)"
             return 1
         fi
     done
+    if ! runtime_cleanup_safe_path "$_rc_service"; then
+        runtime_cleanup_note "preserved WiFi state: unsafe WiFi service path"
+        return 1
+    fi
     if [ -e "$_rc_service" ] || [ -L "$_rc_service" ]; then
         runtime_cleanup_note "preserved WiFi state: WiFi service still present"
         return 1

@@ -5,8 +5,10 @@
 #
 # Proven pattern (combo v3): each package ships its own installer as
 # combo/<pkg>/stage.sh (+ restore.sh); the master run_stuff.sh runs the
-# selected installers in a fixed order — battery -> wifi -> tweaks — because
-# each installer detects the current QML base and picks a matching variant.
+# selected installers in a fixed dependency order — battery -> wifi -> tweaks
+# -> wifi1b -> migrate — because each installer detects the current QML base
+# and picks a matching variant.  A Wifi1b selection without wifi/migrate is
+# the standalone layout and is marked combo/standalone.
 # Restore runs in reverse. The failsafe's md5 gate re-runs the master script
 # whenever its content (the MODE= line) changes.
 #
@@ -202,7 +204,7 @@ ORDER_SPACES="$SELECTED"
 # different package payloads still triggers an install on the next plug-in.
 PAYLOAD_ID=$(cd "$STAGE" && find combo -type f \( -name manifest.md5 -o -name stage.sh -o -name restore.sh \
     -o -name runtime_cleanup.sh -o -name standalone \) -print0 \
-    | sort -z | xargs -0 md5sum | md5sum | cut -c1-16)
+    | LC_ALL=C sort -z | xargs -0 md5sum | md5sum | cut -c1-16)
 
 cat > "$STAGE/run_stuff.sh" <<EOF
 #!/bin/sh
@@ -243,6 +245,9 @@ WIFI1B_SERVICE="\${WIFI1B_SERVICE:-/etc/systemd/system/wifi1b-daemon.service}"
 WIFI_SERVICE="\${WIFI_SERVICE:-/etc/systemd/system/wifi-daemon.service}"
 MD5SUM_BIN=md5sum
 command -v "\$MD5SUM_BIN" >/dev/null 2>&1 || MD5SUM_BIN=md5sum.coreutils
+SHA256SUM_BIN=sha256sum
+command -v "\$SHA256SUM_BIN" >/dev/null 2>&1 || SHA256SUM_BIN=sha256sum.coreutils
+RUNTIME_CLEANUP_SHA256="\$SHA256SUM_BIN"
 
 # FIRST: verify and load the cleanup helper without writing anything, then
 # reclaim bounded runtime log space before any other runtime write.  A full
@@ -333,9 +338,10 @@ stage_digest(){
 stage_owns_destination(){
     # True when another selected stage ships this exact destination.  A
     # "final stage owns it" entry in skip.map is then left to that stage.
-    _own_from=\$1; _own_dst=\$2
+    _own_from=\$1; _own_dst=\$2; _own_seen=0
     for _own_s in \$STAGE_ORDER; do
-        [ "\$_own_s" = "\$_own_from" ] && continue
+        if [ "\$_own_s" = "\$_own_from" ]; then _own_seen=1; continue; fi
+        [ "\$_own_seen" = 1 ] || continue
         [ -f "\$COMBO/\$_own_s/skip.map" ] || continue
         while IFS= read -r _own_line; do
             [ -n "\$_own_line" ] || continue

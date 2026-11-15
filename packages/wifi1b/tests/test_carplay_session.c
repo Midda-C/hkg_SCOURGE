@@ -99,6 +99,7 @@ typedef struct policy_fixture {
 static cp_session_t g_session;
 static phone_t g_phone;
 static uint64_t g_now;
+static uint32_t g_ap_wait_ms = 60000u;
 static auth_fixture_t g_auth;
 static policy_fixture_t g_policy;
 static session_event_capture_t g_events[128];
@@ -241,7 +242,7 @@ static cp_boot_config base_boot_config(void)
     cfg.device_identifier = "SCOURGE-DEV";
     cfg.public_key = "test-public-key";
     cfg.source_version = "1.0.0";
-    cfg.ap_wait_ms = 60000u;
+    cfg.ap_wait_ms = g_ap_wait_ms;
     return cfg;
 }
 
@@ -482,11 +483,6 @@ static bool phone_flush(phone_t *phone, uint64_t now_ms)
             }
             if (result == CP_LINK_ERR_BACKPRESSURE)
                 return true;
-            fprintf(stderr,
-                    "phone_flush rc=%d link_state=%d sid=%u seg=%zu sent=%u/%u\n",
-                    result, (int)cp_link_state(&phone->link),
-                    (unsigned)slot->session_id, segment, (unsigned)slot->sent,
-                    (unsigned)slot->len);
             return false;
         }
     }
@@ -673,26 +669,6 @@ static void pump_until(bool (*predicate)(void), unsigned max_steps,
 
     for (i = 0; i < max_steps && !predicate(); i++)
         pump_step(&g_session, &g_phone, chunk, drain_accessory);
-    if (!predicate())
-        fprintf(stderr,
-                "pump_until exhausted steps=%u sess=%d link=%d phone=%d msg=%zu auth=%d start=%d gen=%u\n",
-                max_steps, (int)cp_session_state(&g_session),
-                (int)cp_session_link_state(&g_session),
-                (int)cp_link_state(&g_phone.link), g_phone.msg_count,
-                (int)cp_session_auth_state(&g_session),
-                cp_session_start_sent(&g_session) ? 1 : 0,
-                cp_session_generation(&g_session));
-    if (!predicate())
-        fprintf(stderr,
-                "  err=%d link_reason=%d phone_reason=%d link_stats valid=%u badh=%u badp=%u badl=%u reset=%u\n",
-                (int)cp_session_last_error(&g_session),
-                (int)cp_link_reset_reason(&g_session.link),
-                (int)g_phone.reset_reason,
-                cp_session_stats(&g_session)->link.frames_valid,
-                cp_session_stats(&g_session)->link.frames_bad_header,
-                cp_session_stats(&g_session)->link.frames_bad_payload,
-                cp_session_stats(&g_session)->link.frames_bad_length,
-                cp_session_stats(&g_session)->link.reset_count);
     CHECK(predicate());
 }
 
@@ -704,20 +680,25 @@ static void pump_extra(unsigned steps, size_t chunk, bool drain_accessory)
         pump_step(&g_session, &g_phone, chunk, drain_accessory);
 }
 
-static void set_ap_ready(bool on_air)
+static void set_ap_ready_named(bool on_air, const char *ssid)
 {
     cp_boot_ap_readback readback;
 
     memset(&readback, 0, sizeof(readback));
     readback.on_air = on_air;
     if (on_air) {
-        readback.ssid = "SCOURGE-AP-LIVE";
+        readback.ssid = ssid;
         readback.channel = 36u;
         readback.security = CP_WIRE_WIFI_WPA2;
         readback.link_local = "fe80::1";
     }
     CHECK(cp_session_set_ap_readback(&g_session, &readback, g_now) ==
           CP_SESSION_OK);
+}
+
+static void set_ap_ready(bool on_air)
+{
+    set_ap_ready_named(on_air, "SCOURGE-AP-LIVE");
 }
 
 static void test_end_to_end(void)
@@ -784,6 +765,9 @@ static void test_end_to_end(void)
     CHECK(cp_session_start_sent(&g_session));
     CHECK(cp_session_state(&g_session) ==
           CP_SESSION_STATE_AWAITING_RECEIVER);
+    /* Re-publishing the same live AP readback is idempotent. */
+    set_ap_ready(true);
+    CHECK(cp_session_receiver_active(&g_session));
 
     /* AP loss clears the receiver observation but does not pretend the start
      * was never sent. */
@@ -798,6 +782,18 @@ static void test_end_to_end(void)
           CP_SESSION_OK);
     CHECK(cp_session_receiver_active(&g_session));
 
+    /* A changed live AP readback invalidates the local observation. */
+    set_ap_ready_named(true, "SCOURGE-AP-LIVE-2");
+    CHECK(!cp_session_receiver_active(&g_session));
+    CHECK(cp_session_start_sent(&g_session));
+    set_ap_ready(true);
+    CHECK(cp_session_set_receiver_active(&g_session, g_now, generation,
+                                         "AA:BB:CC:DD:EE:FF", true) ==
+          CP_SESSION_OK);
+    CHECK(cp_session_receiver_active(&g_session));
+
+    CHECK(cp_session_stats(&g_session)->link.frames_valid > 0u);
+    CHECK(cp_session_stats(&g_session)->link.bytes_fed > 0u);
     CHECK(cp_session_stats(&g_session)->csm_frames_rx >= 8u);
     CHECK(cp_session_stats(&g_session)->csm_replies_sent >= 5u);
     CHECK(cp_session_stats(&g_session)->csm_segments_sent >
@@ -899,6 +895,107 @@ static void drive_to_start(void)
     CHECK(cp_session_start_sent(&g_session));
 }
 
+static void run_active_policy_case(uint64_t start_now, bool usb_case)
+{
+    uint32_t generation;
+
+    g_now = start_now;
+    g_ap_wait_ms = 2000u;
+    memset(&g_auth, 0, sizeof(g_auth));
+    g_auth.cert_len = 16u;
+    g_auth.signature_len = 16u;
+    memset(&g_policy, 0, sizeof(g_policy));
+    g_policy.consent = CP_BOOT_CONSENT_GRANTED;
+    phone_init(&g_phone, 32u, 4u, true, true, false);
+    session_setup(&g_session, 64u, 8u);
+    clear_events();
+    drive_to_start();
+    pump_extra(50u, 5u, true);
+    generation = cp_session_generation(&g_session);
+    if (usb_case) {
+        g_policy.usb_active = true;
+        CHECK(cp_session_set_receiver_active(&g_session, g_now, generation,
+                                             "AA:BB:CC:DD:EE:FF", true) ==
+              CP_SESSION_ERR_POLICY);
+        g_policy.usb_active = false;
+    } else {
+        g_policy.consent = CP_BOOT_CONSENT_DENIED;
+        CHECK(cp_session_set_receiver_active(&g_session, g_now, generation,
+                                             "AA:BB:CC:DD:EE:FF", true) ==
+              CP_SESSION_ERR_POLICY);
+        g_policy.consent = CP_BOOT_CONSENT_GRANTED;
+    }
+    CHECK(!cp_session_receiver_active(&g_session));
+    CHECK(cp_session_set_receiver_active(&g_session, g_now, generation,
+                                         "AA:BB:CC:DD:EE:FF", true) ==
+          CP_SESSION_OK);
+    CHECK(cp_session_receiver_active(&g_session));
+    CHECK(g_session.boot.offer_active);
+    CHECK(cp_session_next_deadline(&g_session) <=
+          g_now + CP_SESSION_POLICY_RECHECK_MS);
+
+    /* The trusted active observation retires the bootstrap offer timer.
+     * Ticking well past ap_wait_ms must not cancel a legitimate projection. */
+    g_now = g_session.boot.offer_deadline_ms + 100u;
+    CHECK(cp_session_tick(&g_session, g_now) == CP_SESSION_OK);
+    CHECK(cp_session_receiver_active(&g_session));
+    CHECK(cp_session_start_sent(&g_session));
+    CHECK(cp_session_state(&g_session) ==
+          CP_SESSION_STATE_AWAITING_RECEIVER);
+
+    if (usb_case) {
+        g_policy.usb_active = true;
+    } else {
+        g_policy.consent = CP_BOOT_CONSENT_DENIED;
+    }
+    g_now += CP_SESSION_POLICY_RECHECK_MS + 1u;
+    CHECK(cp_session_tick(&g_session, g_now) == CP_SESSION_OK);
+    CHECK(!cp_session_receiver_active(&g_session));
+    CHECK(!cp_session_start_sent(&g_session));
+    CHECK(cp_session_last_error(&g_session) == CP_SESSION_ERR_POLICY);
+    CHECK(cp_session_stats(&g_session)->policy_refusals >= 1u);
+    CHECK(cp_session_pending_replies(&g_session) == 0u);
+    CHECK(cp_session_state(&g_session) == CP_SESSION_STATE_AUTHENTICATED);
+    CHECK(cp_session_cancel(&g_session, g_now) == CP_SESSION_OK);
+    g_ap_wait_ms = 60000u;
+}
+
+static void run_offer_expiry_case(uint64_t start_now)
+{
+    g_now = start_now;
+    g_ap_wait_ms = 2000u;
+    memset(&g_auth, 0, sizeof(g_auth));
+    g_auth.cert_len = 16u;
+    g_auth.signature_len = 16u;
+    memset(&g_policy, 0, sizeof(g_policy));
+    g_policy.consent = CP_BOOT_CONSENT_GRANTED;
+    phone_init(&g_phone, 32u, 4u, true, true, false);
+    session_setup(&g_session, 64u, 8u);
+    clear_events();
+    drive_to_start();
+    pump_extra(50u, 5u, true);
+    CHECK(cp_session_start_sent(&g_session));
+    CHECK(g_session.boot.offer_active);
+
+    g_now = g_session.boot.offer_deadline_ms + 100u;
+    CHECK(cp_session_tick(&g_session, g_now) == CP_SESSION_OK);
+    CHECK(!cp_session_start_sent(&g_session));
+    CHECK(!cp_session_receiver_active(&g_session));
+    CHECK(cp_session_state(&g_session) == CP_SESSION_STATE_AUTHENTICATED);
+    CHECK(cp_session_last_error(&g_session) == CP_SESSION_ERR_TIMEOUT);
+    CHECK(cp_session_pending_replies(&g_session) == 0u);
+    CHECK(cp_session_cancel(&g_session, g_now) == CP_SESSION_OK);
+    g_ap_wait_ms = 60000u;
+}
+
+static void test_offer_timer_and_policy_recheck(void)
+{
+    run_active_policy_case(10000u, true);
+    run_active_policy_case(20000u, false);
+    run_offer_expiry_case(30000u);
+    puts("PASS: active receiver survives ap_wait expiry; USB/consent revoke tears down; unobserved offer expires");
+}
+
 static void test_disconnect_and_transport_reset(void)
 {
     uint32_t generation;
@@ -950,18 +1047,11 @@ static void test_reconnect_no_old_replies(void)
     g_auth.signature_len = 24u;
     memset(&g_policy, 0, sizeof(g_policy));
     g_policy.consent = CP_BOOT_CONSENT_GRANTED;
-    phone_init(&g_phone, 16u, 2u, true, true, false);
+    phone_init(&g_phone, 32u, 2u, true, true, false);
     session_setup(&g_session, 64u, 8u);
     clear_events();
-    fprintf(stderr, "reconnect setup gen=%u sess_state=%d link=%d phone=%d pend_s=%zu pend_p=%zu\n",
-            cp_session_generation(&g_session), (int)cp_session_state(&g_session),
-            (int)cp_session_link_state(&g_session), (int)cp_link_state(&g_phone.link),
-            cp_session_output_pending(&g_session), cp_link_output_pending(&g_phone.link));
 
     pump_until(pred_links_normal, 4000u, 5u, true);
-    fprintf(stderr, "reconnect after normal gen=%u sess=%d phone=%d\n",
-            cp_session_generation(&g_session), (int)cp_session_link_state(&g_session),
-            (int)cp_link_state(&g_phone.link));
     pump_until(pred_auth_done, 20000u, 5u, true);
     CHECK(!cp_session_start_sent(&g_session));
 
@@ -977,15 +1067,10 @@ static void test_reconnect_no_old_replies(void)
     CHECK(cp_session_auth_state(&g_session) == CP_BOOT_AUTH_NONE);
 
     /* New transport generation: no old credentials/start CSM may appear. */
-    phone_init(&g_phone, 16u, 2u, true, true, false);
+    phone_init(&g_phone, 32u, 2u, true, true, false);
     CHECK(cp_session_start(&g_session, CP_LINK_ROLE_INITIATOR, g_now) ==
           CP_SESSION_OK);
     CHECK(cp_session_generation(&g_session) > generation_before);
-    fprintf(stderr, "restart pending sess=%zu phone=%zu sess_state=%d phone_state=%d\n",
-            cp_session_output_pending(&g_session),
-            cp_link_output_pending(&g_phone.link),
-            (int)cp_session_link_state(&g_session),
-            (int)cp_link_state(&g_phone.link));
     pump_until(pred_got_ident, 12000u, 5u, true);
     CHECK(g_phone.msg_count >= 1u);
     CHECK(g_phone.msg_ids[0] == 0x1D01u);
@@ -1128,11 +1213,19 @@ static void test_unknown_session_cannot_inject_csm(void)
 static void test_clock_and_api_errors(void)
 {
     cp_session_config_t cfg;
+    cp_session_config_t defaults;
     uint32_t generation;
 
     g_now = 9000u;
     memset(&g_auth, 0, sizeof(g_auth));
     memset(&g_policy, 0, sizeof(g_policy));
+    cp_session_config_default(&defaults);
+    CHECK(defaults.link.control_version == 2u);
+    CHECK(defaults.link.max_outgoing == 4u);
+    CHECK(defaults.link.zero_ack == false);
+    CHECK(defaults.link.control_session_id == 10u);
+    CHECK(defaults.link.external_accessory_session_id == 11u);
+    CHECK(defaults.link.file_transfer_session_id == 12u);
     base_session_config(&cfg);
     CHECK(cp_session_init(&g_session, &cfg, NULL, NULL, g_now) ==
           CP_SESSION_OK);
@@ -1157,6 +1250,12 @@ static void test_clock_and_api_errors(void)
           CP_SESSION_ERR_ARGUMENT);
     CHECK(cp_session_set_ap_readback(NULL, NULL, g_now) ==
           CP_SESSION_ERR_ARGUMENT);
+    cfg.link.max_payload = 18u;
+    CHECK(cp_session_init(&g_session, &cfg, NULL, NULL, g_now) ==
+          CP_SESSION_ERR_CONFIG);
+    base_session_config(&cfg);
+    CHECK(cp_session_init(&g_session, &cfg, NULL, NULL, g_now) ==
+          CP_SESSION_OK);
     CHECK(cp_session_cancel(&g_session, g_now) == CP_SESSION_OK);
     CHECK(cp_session_state(&g_session) == CP_SESSION_STATE_CANCELLED);
     puts("PASS: monotonic-clock rejection and API argument checks");
@@ -1167,6 +1266,7 @@ int main(void)
     test_end_to_end();
     test_auth_failure_and_cancel();
     test_usb_policy_refusal();
+    test_offer_timer_and_policy_recheck();
     test_disconnect_and_transport_reset();
     test_reconnect_no_old_replies();
     test_malformed_csm();

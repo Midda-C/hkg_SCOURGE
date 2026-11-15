@@ -23,7 +23,7 @@ remove the previous two-model requirement. GLM was unavailable (provider budget)
 | Checkpoint | Work | Status |
 |---|---|---|
 | C0 | Preserve existing WIP; update review policy; dedicated branch | Complete: `4279a70` |
-| C1 | Bounded wire codec, identification and bootstrap state-machine tests | Initial review FAIL; corrections and regression coverage in progress |
+| C1 | Bounded wire codec, identification and bootstrap state-machine tests | Independent Flash-Max PASS: reviewed tree `bd674f4e`; offline-only checkpoint |
 | C2 | AP IPv6/readiness/firewall and current-network snapshot | Pending |
 | C3 | Recover and verify OEM Bluetooth RX/TX/listener and MFi/identity ABI | Static research complete for SPP; live bus/transport proof still pending |
 | C4 | Integrate wireless transport and authenticated bootstrap | Pending |
@@ -168,6 +168,35 @@ post-offer policy/receiver timeout, accurate session-ID direction claims and
 SYN retransmission ACKs, documented local certificate/frame bounds, explicit
 policy for absent availability, and automatic bootstrap sanitizer coverage.
 
+Corrections are now implemented: terminal identification gates and safe late
+rejections; absent false EAP flag; leading-compression rejection; skipping
+structurally valid unknown optional TLVs while keeping known duplicates and
+malformed fields invalid; coalesced/deferred cumulative ACKs; sequencing of
+session-id zero; explicit live-Bluetooth preset; current-ACK SYN retries; and
+bounded post-start offer policy checks. Omitted availability remains an
+explicit conservative refusal. The reference's hard-coded session IDs do not
+prove arbitrary peer-ID negotiation. Certificate/frame bounds remain local
+policy, not measurements of the vehicle.
+
+The bootstrap runner now includes ASan/UBSan and a malformed-TLV corpus.
+`scripts/check_carplay_index.py` extracts the explicit protocol/test allowlist
+from one frozen index tree and checks that the index did not change during
+testing. Independent Flash-Max re-review **PASS** for corrected tree
+`bd674f4ee5c54aecd2351d85201dcc5d4ad06415`: 3216 bootstrap checks and 26
+link groups pass normal and ASan/UBSan builds from the frozen index; staged
+policy and whitespace gates also pass. No phone/vehicle validation is implied.
+
+The second C1 review (`00404e80a0f13ba24f1eb2b1dca288296267c28c`)
+confirmed B1–B7 fixed but remained **FAIL** for malformed late authentication
+duplicates. AA00/AA02/AA05 state checks now precede parameter decoding;
+regressions require an authenticated session, unchanged generation/provider
+call counts, and a subsequent valid start. That final delta is covered by the
+PASS above; the remaining change before commit records this verdict only.
+Empty-message decoders remain strict; unknown-TLV tolerance applies to messages
+with parameter tables. An outer wrapper must retire the receiver-wait deadline
+on a trusted active observation while retaining consent/USB checks. Timeout
+alone does not establish that the OEM receiver failed or stopped.
+
 ## Later worktree components (outside the C1 reviewed index)
 
 `cp_spp_socket.*` adds an unactivated, root-only Unix datagram receiver for the
@@ -193,5 +222,46 @@ merely because their individual mocked tests pass.
 
 The SPP author completed the build-only hook/builder and exact vbtd-63 pins.
 Author-reported positive build/readback changes only the pinned function span;
-no OEM execution or installer activation. An independent review now covers the
-hook, builder, public datagram contract, root socket receiver and their tests.
+no OEM execution or installer activation. A separately reported initial C3
+review failed because the patcher CLI accepted replacement firmware pins.
+The CLI override has been removed; output/symlink/toolchain corrections and
+tests are under re-review. No C3 PASS or activation is claimed by this index.
+
+## OEM receiver research checkpoint (static, not live validation)
+
+Additional exact artifact identities:
+
+| Artifact | SHA256 |
+|---|---|
+| libCarPlayAppFramework.so | `e3603e6b0744cf07724cc5cc79ea01ea3d9207d7eaf37c544c7ce26536ecd7a2` |
+| libCarPlayMediaFramework.so | `69690210d1aa4dec33c77b0e80f1d3368f8a70bcb507c1b158b6245dc29eb2f3` |
+
+- libAirPlay `AirPlayReceiverServerControl` (ELF `0xedab`) handles
+  `startServer`; there is no separate receiver-start export. OEM already calls
+  it. Listener creation tries port 7000 and can fall back to an ephemeral port;
+  obtain the current port from local `_airplay._tcp` SRV, not a constant.
+- `interfaceName` scopes mDNS registration only; it does not bind listener
+  sockets to wlan0. Do not change global receiver state or restart it for a
+  wireless disconnect. USB preservation still needs a live test.
+- Actual OEM deviceID normally comes from its configured Bluetooth address
+  with the last byte incremented, with a primary-interface fallback. Do not
+  derive a substitute; obtain the current receiver value.
+- `AirPlayCopyHomeKitPairingIdentity` (ELF `0xcc9f`) calls
+  `PairingSessionCopyIdentity` with create flag 1 and can persist a new keypair.
+  A helper must never use that convenience wrapper or request private output.
+- `PairingSessionCopyIdentity` (CoreUtils ELF `0x8e8c9`) with create flag 0
+  performs lookup without the create path. Identity/public-key ABI and
+  namespace constants require exact binding; public-key role must still be
+  compared with pair-verify before use in session-start.
+- `_airplay._tcp` TXT carries `deviceid`, `pi` and `srcvers` (`320.17.6`),
+  but no `pk`. `pi` is the pairing account identifier, not the public key.
+  Network advertisements alone are not trusted local readiness evidence.
+- Screen-stream Started/Stopped/Played callbacks are imported through PLT by
+  the media library, unlike vbtd's internal PIE RX callback. A future optional
+  observation-only shim could forward those exact callbacks; no such preload
+  is activated. Started and first-frame Played are distinct observations.
+
+Next receiver step: bounded passive probe and fixture tests, with explicit
+unverified-vs-trusted observation states. Do not create a second receiver,
+identity or discovery client. Live listener, keychain-read permission, mDNS
+scope, callback forwarding and USB behavior remain unverified.

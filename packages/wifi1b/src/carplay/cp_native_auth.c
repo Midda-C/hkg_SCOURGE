@@ -31,6 +31,7 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
+#include <sys/time.h>
 #include <sys/types.h>
 #include <sys/un.h>
 #include <time.h>
@@ -475,8 +476,7 @@ static bool parent_dir(const char *path, char *out, size_t cap)
 }
 
 static cp_oem_auth_error prepare_socket_path(const char *path,
-                                             uint32_t expected_uid,
-                                             const char **error_stage)
+                                             uint32_t expected_uid)
 {
     struct stat st;
     cp_oem_auth_error error = CP_OEM_AUTH_OK;
@@ -484,51 +484,41 @@ static cp_oem_auth_error prepare_socket_path(const char *path,
     if (path == NULL || path[0] != '/' ||
         strlen(path) >= CP_OEM_AUTH_SOCKET_PATH_MAX ||
         path[strlen(path) - 1u] == '/') {
-        *error_stage = "path";
         return CP_OEM_AUTH_ERR_ARGUMENT;
     }
     memcpy(g_socket_path, path, strlen(path) + 1u);
     if (!parent_dir(g_socket_path, g_socket_dir, sizeof(g_socket_dir))) {
-        *error_stage = "parent";
         return CP_OEM_AUTH_ERR_ARGUMENT;
     }
     if (auth_lstat(g_socket_dir, &st) != 0) {
         if (errno != ENOENT) {
-            *error_stage = "dir-stat";
             return CP_OEM_AUTH_ERR_POLICY;
         }
         if (mkdir(g_socket_dir, 0700) != 0) {
-            *error_stage = "dir-create";
             return CP_OEM_AUTH_ERR_POLICY;
         }
         g_dir_created = true;
         if (chmod(g_socket_dir, 0700) != 0) {
-            *error_stage = "dir-chmod";
             return CP_OEM_AUTH_ERR_POLICY;
         }
         if (auth_lstat(g_socket_dir, &st) != 0) {
-            *error_stage = "dir-restat";
             return CP_OEM_AUTH_ERR_POLICY;
         }
     }
     if (!S_ISDIR(st.st_mode) || (uint32_t)st.st_uid != expected_uid ||
         (st.st_mode & 0777u) != 0700u) {
-        *error_stage = "dir-mode";
         return CP_OEM_AUTH_ERR_POLICY;
     }
     if (auth_lstat(g_socket_path, &st) == 0) {
-        *error_stage = "socket-exists";
         return CP_OEM_AUTH_ERR_POLICY;
     }
     if (errno != ENOENT) {
-        *error_stage = "socket-stat";
         return CP_OEM_AUTH_ERR_POLICY;
     }
     return error;
 }
 
-static cp_oem_auth_error open_socket(uint32_t expected_uid,
-                                     const char **error_stage)
+static cp_oem_auth_error open_socket(uint32_t expected_uid)
 {
     struct sockaddr_un addr;
     struct stat path_stat;
@@ -536,7 +526,6 @@ static cp_oem_auth_error open_socket(uint32_t expected_uid,
 
     fd = socket(AF_UNIX, SOCK_SEQPACKET, 0);
     if (fd < 0) {
-        *error_stage = "socket";
         return CP_OEM_AUTH_ERR_RPC;
     }
     (void)fcntl(fd, F_SETFD, FD_CLOEXEC);
@@ -545,7 +534,6 @@ static cp_oem_auth_error open_socket(uint32_t expected_uid,
     memcpy(addr.sun_path, g_socket_path, strlen(g_socket_path) + 1u);
     if (bind(fd, (const struct sockaddr *)&addr, sizeof(addr)) != 0) {
         (void)close(fd);
-        *error_stage = "bind";
         return CP_OEM_AUTH_ERR_RPC;
     }
     g_socket_bound = true;
@@ -555,19 +543,16 @@ static cp_oem_auth_error open_socket(uint32_t expected_uid,
         !S_ISSOCK(path_stat.st_mode) ||
         (uint32_t)path_stat.st_uid != expected_uid) {
         (void)close(fd);
-        *error_stage = "socket-owner";
         return CP_OEM_AUTH_ERR_POLICY;
     }
     g_socket_dev = path_stat.st_dev;
     g_socket_ino = path_stat.st_ino;
     if (chmod(g_socket_path, 0600) != 0) {
         (void)close(fd);
-        *error_stage = "socket-chmod";
         return CP_OEM_AUTH_ERR_POLICY;
     }
     if (listen(fd, 8) != 0) {
         (void)close(fd);
-        *error_stage = "listen";
         return CP_OEM_AUTH_ERR_RPC;
     }
     g_listen_fd = fd;
@@ -602,6 +587,16 @@ static void cleanup(void)
     cp_oem_auth_secure_zero(g_payload, sizeof(g_payload));
     cp_oem_auth_secure_zero(g_socket_path, sizeof(g_socket_path));
     cp_oem_auth_secure_zero(g_socket_dir, sizeof(g_socket_dir));
+}
+
+static bool set_socket_timeout(int fd, uint32_t timeout_ms)
+{
+    struct timeval tv;
+
+    tv.tv_sec = (time_t)(timeout_ms / 1000u);
+    tv.tv_usec = (suseconds_t)((timeout_ms % 1000u) * 1000u);
+    return setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) == 0 &&
+           setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv)) == 0;
 }
 
 static bool peer_is_expected(int fd, uint32_t expected_uid)
@@ -688,6 +683,9 @@ static bool send_response(int fd, uint16_t op, uint32_t request_id,
     cp_oem_auth_rpc_response response;
     size_t total;
 
+    if (payload_len > sizeof(g_response) - CP_OEM_AUTH_RPC_RESPONSE_LEN) {
+        return false;
+    }
     memset(&response, 0, sizeof(response));
     response.magic = CP_OEM_AUTH_RPC_MAGIC;
     response.version = CP_OEM_AUTH_RPC_VERSION;
@@ -752,6 +750,7 @@ static bool handle_connection(int fd, uint32_t timeout_ms)
                            status == CP_OEM_AUTH_OK ? g_payload : NULL,
                            status == CP_OEM_AUTH_OK ? payload_len : 0u)) {
             cp_oem_auth_secure_zero(g_request, sizeof(g_request));
+            cp_oem_auth_secure_zero(g_payload, sizeof(g_payload));
             return false;
         }
         cp_oem_auth_secure_zero(g_request, sizeof(g_request));
@@ -874,7 +873,6 @@ static uint32_t expected_uid(void)
 int main(int argc, char **argv)
 {
     options opts;
-    const char *stage = "options";
     cp_oem_auth_error error;
     uint32_t uid;
     int rc;
@@ -901,9 +899,9 @@ int main(int argc, char **argv)
         return (int)error;
     }
     (void)umask(0077);
-    error = prepare_socket_path(opts.socket, uid, &stage);
+    error = prepare_socket_path(opts.socket, uid);
     if (error == CP_OEM_AUTH_OK) {
-        error = open_socket(uid, &stage);
+        error = open_socket(uid);
     }
     if (error != CP_OEM_AUTH_OK) {
         cleanup();
@@ -920,7 +918,8 @@ int main(int argc, char **argv)
             return CP_OEM_AUTH_ERR_RPC;
         }
         (void)fcntl(client, F_SETFD, FD_CLOEXEC);
-        if (peer_is_expected(client, uid)) {
+        if (peer_is_expected(client, uid) &&
+            set_socket_timeout(client, opts.timeout_ms)) {
             (void)handle_connection(client, opts.timeout_ms);
         }
         (void)close(client);

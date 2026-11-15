@@ -35,9 +35,9 @@
  *
  * Session identifiers are never hard-coded after startup. They are read
  * from the peer's SYN payload and are the identifiers used in both link
- * directions; that matches the reference engine's wire behaviour. The
- * reference integration also hard-codes 10/11/12 as its *local* offer, but
- * that is an integration policy, not a wire requirement. This module exposes
+ * directions as this module's explicit negotiation policy. The reference
+ * integration hard-codes 10/11/12 for sending and receiving; it does not prove
+ * this module's handling of arbitrary peer ids. This module exposes
  * 10/11/12 only through its default local profile; peers may negotiate any
  * nonzero ids, and nonstandard ids remain unvalidated against real hardware.
  * Local advertisements only describe what this side offers during
@@ -370,8 +370,9 @@ typedef struct cp_link {
 } cp_link_t;
 
 /* Fill `cfg` with bounded local defaults. These are a conservative local
- * policy (control-session version 1, max_outgoing 30 and local ids 10/11/12),
- * not a live-validated profile; keep the ids only as an offer. Use
+ * policy (control-session version 1, max_outgoing 30 clamped by
+ * CP_LINK_MAX_OUTSTANDING, and local ids 10/11/12), not a live-validated
+ * profile; keep the ids only as an offer. Use
  * cp_link_config_live_bluetooth() for the profile observed on the reference
  * Bluetooth link. */
 void cp_link_config_default(cp_link_config_t *cfg);
@@ -428,6 +429,8 @@ int cp_link_abort(cp_link_t *link, uint64_t now_ms,
 /* Output queue inspection. The returned pointer is the *unconsumed* suffix of
  * the oldest queued frame. It remains valid until the next mutating call.
  * A transport may write any prefix and then consume exactly those bytes.
+ * A completely unconsumed ACK-only frame may be rewritten in place when a
+ * cumulative ACK is coalesced; a consumed prefix is never modified.
  * If a retransmission burst does not fit, the remaining retransmissions stay
  * pending (they are never discarded) and resume as output slots are consumed.
  * Queued bytes are not transport-confirmed: drain them promptly so that

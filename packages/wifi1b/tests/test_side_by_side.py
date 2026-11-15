@@ -473,8 +473,13 @@ def exercise_standalone() -> None:
     """Wifi1b must install and restore with no WiFi app present at all."""
     with tempfile.TemporaryDirectory(prefix="wifi1b-standalone-", dir="/tmp/opencode") as directory:
         fixture = Fixture(Path(directory), standalone=True)
+        # Owner key material must survive install and restore even though the
+        # payload ships no key at the stick root.
+        (fixture.rw2 / "ssh").mkdir(parents=True, exist_ok=True)
+        (fixture.rw2 / "ssh/authorized_keys").write_text("owner-key\n")
         report = fixture.run(fixture.install)
         assert "status=OK" in report or "status=REBOOT_REQUIRED" in report, report
+        assert (fixture.rw2 / "ssh/authorized_keys").read_text() == "owner-key\n"
         assert "layout=standalone" in report, report
         adv = (fixture.qml / "HomeScreen/QHMI_HomeScreenMain_Advanced.qml").read_text()
         assert "WIFI1B_PAYLOAD_260128" in adv and "TWEAKS_PAYLOAD_260128" in adv
@@ -498,6 +503,7 @@ def exercise_standalone() -> None:
         for name in ("HomeScreen/Wifi1bPage.qml", "component/Wifi1bTile.qml"):
             assert not (fixture.qml / name).exists(), name
         assert not (fixture.root / "etc/systemd/system/wifi1b-daemon.service").exists()
+        assert (fixture.rw2 / "ssh/authorized_keys").read_text() == "owner-key\n"
 
 
 exercise_standalone()

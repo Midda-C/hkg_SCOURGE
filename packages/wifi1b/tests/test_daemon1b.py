@@ -21,21 +21,21 @@ with tempfile.TemporaryDirectory(prefix="wifi1b-daemon-", dir="/tmp/opencode") a
            "-o", str(binary), str(ROOT / "src/wifi1b_daemon.c")]
     subprocess.run(cmd, check=True, timeout=90)
     profile = tmp / "iphone_wifi.txt"
-    profile.write_text("ssid=Fixture-Phone\npsk=fixture-psk-1\nssid2=Fixture-Home\npsk2=fixture-psk-2\nssh=1\nssh_port=2222\n")
+    profile.write_text("ssid=iPhone\npsk=Sup3rSecretPass\nssid2=HomeFixture\npsk2=BackupFixtureSecret\nssh=1\nssh_port=2222\n")
     out = subprocess.run([str(binary), "--import-file", str(profile)],
                          capture_output=True, text=True, check=True, timeout=20).stdout
     assert json.loads(out)["ok"] is True
     cfg = (app / "config.conf").read_text()
     assert "mode=off" in cfg and "wlan_on=0" in cfg
     assert "ssh=0" in cfg and "ssh_port=2224" in cfg
-    assert "ssid=Fixture-Phone" in cfg
-    assert "ssid2=Fixture-Home" in cfg and "psk2=fixture-psk-2" in cfg
-    assert "fixture-psk-1" not in subprocess.run([str(binary), "--status"],
+    assert "ssid=iPhone" in cfg
+    assert "ssid2=HomeFixture" in cfg and "psk2=BackupFixtureSecret" in cfg
+    assert "Sup3rSecretPass" not in subprocess.run([str(binary), "--status"],
                                                    capture_output=True, text=True, timeout=20).stdout
     status = json.loads(subprocess.run([str(binary), "--status"], capture_output=True,
                                        text=True, check=True, timeout=20).stdout)
     assert status["app"] == "wifi1b"
-    assert 'fixture-psk-2' not in json.dumps(status)
+    assert 'BackupFixtureSecret' not in json.dumps(status)
     assert status["backend"] == "static_supplicant"
     assert status["mode"] == "off" and status["wlan_on"] is False
     assert status["ssh_enabled"] is False and status["ssh_port"] == 2224

@@ -456,6 +456,7 @@ def main() -> int:
                      capture_output=True)
         assert "checks passed" in tested.stdout, tested.stdout
         assert "FAIL" not in tested.stdout + tested.stderr
+        print("PASS: cp_bootstrap normal strict build and tests")
         fixtures = run([str(binary), "--emit-fixtures"], env=env, timeout=60,
                        text=True, capture_output=True)
         emitted = {}
@@ -491,6 +492,7 @@ def main() -> int:
                       text=True, capture_output=True)
             assert "checks passed" in san.stdout, san.stdout
             assert "FAIL" not in san.stdout + san.stderr
+            print("PASS: cp_bootstrap ASan/UBSan build and tests")
         else:
             print("SKIP: compiler sanitizer runtime unavailable")
 

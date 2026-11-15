@@ -1646,7 +1646,8 @@ static void test_handshake_bounds_and_marker(void)
     CHECK(cp_link_generation(&g_link) == 2u);
     expect_no_output(&g_link);
 
-    /* SYN retries use the identical stored SYN frame. */
+    /* SYN retries rebuild deterministically while nothing has been received:
+     * same sequence, payload, ACK and checksum. */
     CHECK(cp_link_init(&g_link, &cfg, capture_event, NULL) == CP_LINK_OK);
     CHECK(cp_link_start(&g_link, CP_LINK_ROLE_PASSIVE, 0) == CP_LINK_OK);
     expect_wire(&g_link, "ff550200ee10", "marker");

@@ -477,6 +477,18 @@ static void test_mock_signature(void)
     CHECK_EQ(cp_oem_auth_last_error(&auth), CP_OEM_AUTH_ERR_SIGNATURE);
 
     mock.signature_null = false;
+    mock.signature_len = 0u;
+    CHECK_EQ(cp_oem_auth_provider_signature(&auth, challenge, 20u, out,
+                                            sizeof(out), &out_len),
+             -1);
+    CHECK_EQ(cp_oem_auth_last_error(&auth), CP_OEM_AUTH_ERR_SIGNATURE);
+
+    mock.signature_len = CP_OEM_AUTH_MAX_SIGNATURE + 1u;
+    CHECK_EQ(cp_oem_auth_provider_signature(&auth, challenge, 20u, out,
+                                            sizeof(out), &out_len),
+             -1);
+    CHECK_EQ(cp_oem_auth_last_error(&auth), CP_OEM_AUTH_ERR_SIGNATURE);
+
     mock.signature_len = 32u;
     memset(canary, 0x7E, sizeof(canary));
     CHECK_EQ(cp_oem_auth_provider_signature(&auth, challenge, 20u,

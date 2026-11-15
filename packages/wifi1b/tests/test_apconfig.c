@@ -47,23 +47,23 @@ int main(void)
     assert(read_file(WPA_CONF, conf, sizeof(conf)) > 0);
     assert(strstr(conf, "frequency=2437"));
 
-    assert(write_station_conf("Fixture-Phone", "fixture-client-key", false));
+    assert(write_station_conf("iPhone", "fixture-client-key", false));
     assert(read_file(WPA_CONF, conf, sizeof(conf)) > 0);
     assert(strstr(conf, "key_mgmt=WPA-PSK"));
-    assert(strstr(conf, "ssid=\"Fixture-Phone\""));
+    assert(strstr(conf, "ssid=\"iPhone\""));
     assert(strstr(conf, "scan_ssid=1"));
 
-    assert(write_station_conf("Fixture-Phone", "fixture-client-key", true));
+    assert(write_station_conf("iPhone", "fixture-client-key", true));
     assert(read_file(WPA_CONF, conf, sizeof(conf)) > 0);
     assert(strstr(conf, "key_mgmt=SAE"));
     assert(strstr(conf, "ieee80211w=2"));
-    str_copy(g_cfg.extra_ssid[0], sizeof(g_cfg.extra_ssid[0]), "Fixture-Home");
+    str_copy(g_cfg.extra_ssid[0], sizeof(g_cfg.extra_ssid[0]), "HomeFixture");
     str_copy(g_cfg.extra_psk[0], sizeof(g_cfg.extra_psk[0]), "backup-fixture-key");
-    assert(write_station_conf("Fixture-Phone", "fixture-client-key", false));
+    assert(write_station_conf("iPhone", "fixture-client-key", false));
     assert(read_file(WPA_CONF, conf, sizeof(conf)) > 0);
-    assert(strstr(conf, "ssid=\"Fixture-Phone\"") < strstr(conf, "ssid=\"Fixture-Home\""));
+    assert(strstr(conf, "ssid=\"iPhone\"") < strstr(conf, "ssid=\"HomeFixture\""));
     assert(strstr(conf, "priority=100") && strstr(conf, "priority=99"));
-    assert(!write_station_conf("Fixture-Phone", "short", false));
+    assert(!write_station_conf("iPhone", "short", false));
 
     unsigned char mac[6];
     assert(parse_mac6("aa:bb:cc:dd:ee:ff", mac));

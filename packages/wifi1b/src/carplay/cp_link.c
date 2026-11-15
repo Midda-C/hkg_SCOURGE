@@ -1365,7 +1365,7 @@ int cp_link_tick(cp_link_t *link, uint64_t now_ms)
                 return CP_LINK_OK;
         }
 
-        if (link->ack_due && link->state == CP_LINK_STATE_NORMAL) {
+        if (link->ack_due) {
             send_ack(link);
             if (!link->ack_due)
                 did = true;
@@ -1442,7 +1442,7 @@ int cp_link_output_consume(cp_link_t *link, size_t len)
                       (unsigned)CP_LINK_OUTPUT_FRAMES);
         link->out_count--;
         link->tx_blocked = false;
-        if (link->ack_due && link->state == CP_LINK_STATE_NORMAL)
+        if (link->ack_due)
             send_ack(link);
         update_writable(link);
     }

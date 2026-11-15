@@ -16,6 +16,8 @@ _Static_assert(CP_SESSION_TX_QUEUE <= 255u, "queue count is u8");
 _Static_assert(CP_SESSION_RX_BUFFER >= CP_WIRE_MAX_FRAME,
                "at least one maximum CSM");
 
+static void refresh_link_stats(cp_session_t *session);
+
 static uint16_t be16(const uint8_t *p)
 {
     return (uint16_t)(((uint16_t)p[0] << 8) | (uint16_t)p[1]);
@@ -24,6 +26,13 @@ static uint16_t be16(const uint8_t *p)
 static size_t min_size(size_t a, size_t b)
 {
     return a < b ? a : b;
+}
+
+static uint64_t add_ms(uint64_t now_ms, uint32_t delta_ms)
+{
+    if (UINT64_MAX - now_ms < (uint64_t)delta_ms)
+        return UINT64_MAX;
+    return now_ms + (uint64_t)delta_ms;
 }
 
 static const char *session_state_name_internal(cp_session_state_t state)
@@ -282,10 +291,12 @@ static void rx_drop_all(cp_session_t *session)
 
 static void clear_receiver(cp_session_t *session, bool notify)
 {
+    session->receiver_policy_deadline_ms = 0u;
     if (!session->receiver_active)
         return;
     session->receiver_active = false;
     session->receiver_generation = 0u;
+    session->receiver_ap_generation = 0u;
     if (notify)
         emit_receiver(session);
 }
@@ -295,16 +306,58 @@ static bool receiver_inputs_valid(const cp_session_t *session)
     return cp_link_state(&session->link) == CP_LINK_STATE_NORMAL &&
            cp_bootstrap_auth_state(&session->boot) ==
                CP_BOOT_AUTH_SUCCEEDED &&
-           cp_bootstrap_state(&session->boot) ==
-               CP_BOOT_STATE_AWAITING_RECEIVER &&
+           cp_bootstrap_state(&session->boot) != CP_BOOT_STATE_FAILED &&
+           cp_bootstrap_state(&session->boot) !=
+               CP_BOOT_STATE_DISCONNECTED &&
            cp_bootstrap_ap_state(&session->boot) == CP_BOOT_AP_READY &&
-           session->receiver_generation == cp_link_generation(&session->link);
+           session->receiver_generation == cp_link_generation(&session->link) &&
+           session->receiver_ap_generation ==
+               session->ap_readback_generation;
+}
+
+static bool boot_event_clears_receiver(const cp_session_t *session,
+                                       cp_boot_event event)
+{
+    switch (event) {
+    case CP_BOOT_EV_AUTH_FAILED:
+    case CP_BOOT_EV_IDENTIFICATION_REJECTED:
+    case CP_BOOT_EV_ERROR:
+    case CP_BOOT_EV_CANCELLED:
+    case CP_BOOT_EV_TRANSPORT_RESET:
+    case CP_BOOT_EV_CONSENT_DENIED:
+    case CP_BOOT_EV_USB_ACTIVE:
+    case CP_BOOT_EV_AVAILABILITY_FALSE:
+    case CP_BOOT_EV_START_REFUSED:
+        return true;
+    case CP_BOOT_EV_WIRELESS_STATUS:
+        return session->boot.wireless_update_known &&
+               !session->boot.wireless_update_available;
+    case CP_BOOT_EV_PHONE_IDENTITY:
+        return !session->boot.offer_active;
+    default:
+        return false;
+    }
 }
 
 static void clear_receiver_if_invalid(cp_session_t *session)
 {
     if (session->receiver_active && !receiver_inputs_valid(session))
         clear_receiver(session, true);
+}
+
+static bool bounded_text_equal(const char *a, const char *b, size_t max_len)
+{
+    size_t i;
+
+    if (a == NULL || b == NULL)
+        return a == b;
+    for (i = 0; i <= max_len; i++) {
+        if (a[i] != b[i])
+            return false;
+        if (a[i] == '\0')
+            return true;
+    }
+    return false;
 }
 
 static bool id_bounded(const char *id)
@@ -344,7 +397,7 @@ static bool id_equal_ci(const char *a, const char *b)
 static void set_state_from_boot(cp_session_t *session,
                                 const cp_boot_result *result)
 {
-    cp_session_state_t state = session->state;
+    cp_session_state_t state;
 
     switch (result->event) {
     case CP_BOOT_EV_IDENTIFICATION_SENT:
@@ -400,11 +453,34 @@ static void set_state_from_boot(cp_session_t *session,
                 state = CP_SESSION_STATE_DISCONNECTED;
             break;
         default:
+            state = session->state;
             break;
         }
         break;
     }
     set_state(session, state);
+}
+
+static cp_session_state_t state_from_current_boot(const cp_session_t *session)
+{
+    switch (cp_bootstrap_state(&session->boot)) {
+    case CP_BOOT_STATE_FAILED:
+        return CP_SESSION_STATE_FAILED;
+    case CP_BOOT_STATE_AWAITING_RECEIVER:
+        return CP_SESSION_STATE_AWAITING_RECEIVER;
+    case CP_BOOT_STATE_AUTHENTICATED:
+        return CP_SESSION_STATE_AUTHENTICATED;
+    case CP_BOOT_STATE_IDENTIFIED:
+        return CP_SESSION_STATE_IDENTIFIED;
+    case CP_BOOT_STATE_IDENTIFYING:
+        return CP_SESSION_STATE_IDENTIFYING;
+    case CP_BOOT_STATE_DISCONNECTED:
+    default:
+        return session->started &&
+                       cp_link_state(&session->link) != CP_LINK_STATE_DEAD
+                   ? CP_SESSION_STATE_STARTING
+                   : CP_SESSION_STATE_DISCONNECTED;
+    }
 }
 
 static cp_session_error_t abort_session(cp_session_t *session,
@@ -457,6 +533,7 @@ static cp_session_error_t sync_link_generation(cp_session_t *session,
     if (was_receiver)
         emit_receiver(session);
     emit_state(session);
+    refresh_link_stats(session);
     return CP_SESSION_OK;
 }
 
@@ -502,6 +579,7 @@ static cp_session_error_t abort_session(cp_session_t *session,
     if (was_receiver)
         emit_receiver(session);
     emit_state(session);
+    refresh_link_stats(session);
     return error;
 }
 
@@ -606,6 +684,70 @@ static cp_session_error_t flush_tx(cp_session_t *session, uint64_t now_ms)
     }
 }
 
+static cp_session_error_t receiver_policy_check(cp_session_t *session,
+                                                  uint64_t now_ms)
+{
+    cp_boot_event cause = CP_BOOT_EV_NONE;
+    cp_boot_consent consent;
+    bool partial = false;
+    uint8_t dropped;
+    cp_boot_result result;
+
+    if (!session->receiver_active)
+        return CP_SESSION_OK;
+    if (!receiver_inputs_valid(session)) {
+        clear_receiver_if_invalid(session);
+        return CP_SESSION_OK;
+    }
+
+    if (session->policy_consent == NULL) {
+        cause = CP_BOOT_EV_CONSENT_DENIED;
+    } else {
+        consent = session->policy_consent(session->policy_context, now_ms);
+        if (consent != CP_BOOT_CONSENT_GRANTED &&
+            consent != CP_BOOT_CONSENT_PENDING)
+            cause = CP_BOOT_EV_CONSENT_DENIED;
+    }
+    if (cause == CP_BOOT_EV_NONE && session->policy_usb_active != NULL &&
+        session->policy_usb_active(
+            session->policy_context,
+            session->boot.have_phone_bluetooth_id
+                ? session->boot.phone_bluetooth_id
+                : "",
+            session->boot.have_phone_usb_id ? session->boot.phone_usb_id
+                                            : "")) {
+        cause = CP_BOOT_EV_USB_ACTIVE;
+    }
+    if (cause == CP_BOOT_EV_NONE && session->boot.wireless_update_known &&
+        !session->boot.wireless_update_available)
+        cause = CP_BOOT_EV_WIRELESS_STATUS;
+
+    if (cause == CP_BOOT_EV_NONE) {
+        session->receiver_policy_deadline_ms =
+            add_ms(now_ms, CP_SESSION_POLICY_RECHECK_MS);
+        return CP_SESSION_OK;
+    }
+
+    session->stats.policy_refusals++;
+    clear_receiver(session, true);
+    rx_drop_all(session);
+    dropped = tx_drop_all(session, &partial);
+    session->stats.csm_stale_replies_dropped += dropped;
+    if (partial)
+        return abort_session(session, CP_SESSION_ERR_TX_STALE, now_ms);
+
+    result = cp_bootstrap_cancel(&session->boot, now_ms);
+    (void)result;
+    session->last_error = CP_SESSION_ERR_POLICY;
+    session->stats.boot_events++;
+    session->stats.boot_errors++;
+    set_state(session, state_from_current_boot(session));
+    emit_event(session, CP_SESSION_EVENT_BOOT, CP_SESSION_ERR_POLICY, cause,
+               CP_BOOT_ERR_POLICY, CP_LINK_RESET_NONE);
+    emit_error(session, CP_SESSION_ERR_POLICY);
+    return CP_SESSION_OK;
+}
+
 static cp_session_error_t handle_boot_result(cp_session_t *session,
                                              cp_boot_result result,
                                              uint64_t old_boot_generation,
@@ -660,6 +802,9 @@ static cp_session_error_t handle_boot_result(cp_session_t *session,
 
     emit_event(session, CP_SESSION_EVENT_BOOT, mapped, result.event,
                result.error, CP_LINK_RESET_NONE);
+    if (session->receiver_active &&
+        boot_event_clears_receiver(session, result.event))
+        clear_receiver(session, true);
     clear_receiver_if_invalid(session);
     return CP_SESSION_OK;
 }
@@ -769,7 +914,7 @@ static cp_session_error_t service_after_link(cp_session_t *session,
     if (err != CP_SESSION_OK)
         return err;
 
-    if (tick_bootstrap) {
+    if (tick_bootstrap && !session->receiver_active) {
         uint8_t out[CP_WIRE_MAX_FRAME];
         uint64_t old_boot_generation =
             cp_bootstrap_generation(&session->boot);
@@ -792,7 +937,16 @@ static cp_session_error_t service_after_link(cp_session_t *session,
             return err;
     }
 
+    if (session->receiver_active &&
+        session->receiver_policy_deadline_ms != 0u &&
+        now_ms >= session->receiver_policy_deadline_ms) {
+        err = receiver_policy_check(session, now_ms);
+        if (err != CP_SESSION_OK)
+            return err;
+    }
+
     clear_receiver_if_invalid(session);
+    refresh_link_stats(session);
     return CP_SESSION_OK;
 }
 
@@ -838,12 +992,37 @@ static void session_link_callback(void *user, const cp_link_event_t *event)
     }
 }
 
+static void refresh_link_stats(cp_session_t *session)
+{
+    session->stats.link = *cp_link_stats(&session->link);
+}
+
+static bool session_link_config_acceptable(const cp_link_config_t *cfg)
+{
+    size_t sessions = 1u;
+    size_t syn_frame_len;
+
+    if (cfg == NULL)
+        return false;
+    if (cfg->external_accessory_session_id != 0u)
+        sessions++;
+    if (cfg->file_transfer_session_id != 0u)
+        sessions++;
+    /* header 9 + LSP (10 + 3 per session) + payload checksum 1 */
+    syn_frame_len = 20u + 3u * sessions;
+    if ((size_t)cfg->max_payload + 10u < syn_frame_len)
+        return false;
+    return true;
+}
+
 void cp_session_config_default(cp_session_config_t *config)
 {
     if (config == NULL)
         return;
     memset(config, 0, sizeof(*config));
-    cp_link_config_default(&config->link);
+    /* The default wireless profile follows the observed live Bluetooth
+     * advertisement. Explicit callers may override any link field. */
+    cp_link_config_live_bluetooth(&config->link);
     /* config.boot must be filled by the caller with real identity/AP data. */
 }
 
@@ -856,9 +1035,13 @@ cp_session_error_t cp_session_init(cp_session_t *session,
     cp_boot_error boot_error;
     cp_boot_result reset_result;
 
-    if (session == NULL || config == NULL)
+    if (session == NULL)
         return CP_SESSION_ERR_ARGUMENT;
     memset(session, 0, sizeof(*session));
+    if (config == NULL)
+        return CP_SESSION_ERR_ARGUMENT;
+    if (!session_link_config_acceptable(&config->link))
+        return CP_SESSION_ERR_CONFIG;
     link_result = cp_link_init(&session->link, &config->link,
                                session_link_callback, session);
     if (link_result != CP_LINK_OK)
@@ -911,6 +1094,7 @@ cp_session_error_t cp_session_start(cp_session_t *session,
     if (was_receiver)
         clear_receiver(session, true);
     session->receiver_generation = 0u;
+    session->receiver_policy_deadline_ms = 0u;
     session->stats.csm_stale_replies_dropped += tx_drop_all(session, NULL);
     rx_drop_all(session);
     session->cb_rx_overflow = false;
@@ -934,6 +1118,7 @@ cp_session_error_t cp_session_start(cp_session_t *session,
     session->last_error = CP_SESSION_OK;
     session->state = CP_SESSION_STATE_STARTING;
     emit_state(session);
+    refresh_link_stats(session);
     return CP_SESSION_OK;
 }
 
@@ -991,6 +1176,15 @@ uint64_t cp_session_next_deadline(const cp_session_t *session)
         session->boot.pending_deadline_ms != 0u &&
         session->boot.pending_deadline_ms < deadline)
         deadline = session->boot.pending_deadline_ms;
+    if (session->receiver_active) {
+        if (session->receiver_policy_deadline_ms != 0u &&
+            session->receiver_policy_deadline_ms < deadline)
+            deadline = session->receiver_policy_deadline_ms;
+    } else if (session->boot.offer_active &&
+               session->boot.offer_deadline_ms != 0u &&
+               session->boot.offer_deadline_ms < deadline) {
+        deadline = session->boot.offer_deadline_ms;
+    }
     return deadline;
 }
 
@@ -1016,7 +1210,35 @@ cp_session_error_t cp_session_set_policy(cp_session_t *session,
         return CP_SESSION_ERR_ARGUMENT;
     error = cp_bootstrap_set_policy(&session->boot, consent, usb_active,
                                     context);
-    return error == CP_BOOT_OK ? CP_SESSION_OK : CP_SESSION_ERR_ARGUMENT;
+    if (error != CP_BOOT_OK)
+        return CP_SESSION_ERR_ARGUMENT;
+    session->policy_consent = consent;
+    session->policy_usb_active = usb_active;
+    session->policy_context = context;
+    if (session->receiver_active)
+        session->receiver_policy_deadline_ms = session->last_now_ms;
+    return CP_SESSION_OK;
+}
+
+static bool ap_readback_changed(const cp_session_t *session,
+                                   const cp_boot_ap_readback *readback)
+{
+    const char *link_local;
+
+    if (readback == NULL || !readback->on_air)
+        return false;
+    if (!session->boot.readback_valid)
+        return true;
+    if (readback->ssid == NULL ||
+        !bounded_text_equal(readback->ssid, session->boot.readback_ssid,
+                            CP_WIRE_MAX_SSID))
+        return true;
+    if (readback->channel != session->boot.readback_channel ||
+        readback->security != session->boot.readback_security)
+        return true;
+    link_local = readback->link_local != NULL ? readback->link_local : "";
+    return !bounded_text_equal(link_local, session->boot.readback_link_local,
+                               CP_WIRE_MAX_LINK_LOCAL);
 }
 
 cp_session_error_t cp_session_set_ap_readback(cp_session_t *session,
@@ -1034,8 +1256,14 @@ cp_session_error_t cp_session_set_ap_readback(cp_session_t *session,
         return CP_SESSION_ERR_CLOCK_ROLLBACK;
 
     old_boot_generation = cp_bootstrap_generation(&session->boot);
-    result = cp_bootstrap_set_ap_readback(&session->boot, readback, now_ms,
-                                         out, sizeof(out));
+    {
+        bool changed = ap_readback_changed(session, readback);
+
+        result = cp_bootstrap_set_ap_readback(&session->boot, readback, now_ms,
+                                             out, sizeof(out));
+        if (result.error == CP_BOOT_OK && readback->on_air && changed)
+            session->ap_readback_generation++;
+    }
     err = handle_boot_result(session, result, old_boot_generation, out,
                              result.out_len, now_ms);
     if (err != CP_SESSION_OK)
@@ -1045,11 +1273,37 @@ cp_session_error_t cp_session_set_ap_readback(cp_session_t *session,
     if (err != CP_SESSION_OK)
         return err;
     clear_receiver_if_invalid(session);
+    refresh_link_stats(session);
 
     if (result.error == CP_BOOT_ERR_ARGUMENT)
         return CP_SESSION_ERR_ARGUMENT;
     if (result.error == CP_BOOT_ERR_CONFIG)
         return CP_SESSION_ERR_CONFIG;
+    return CP_SESSION_OK;
+}
+
+static cp_session_error_t receiver_policy_ready(cp_session_t *session,
+                                                  uint64_t now_ms)
+{
+    cp_boot_consent consent;
+
+    if (session->policy_consent == NULL)
+        return CP_SESSION_ERR_POLICY;
+    consent = session->policy_consent(session->policy_context, now_ms);
+    if (consent != CP_BOOT_CONSENT_GRANTED)
+        return CP_SESSION_ERR_POLICY;
+    if (session->policy_usb_active != NULL &&
+        session->policy_usb_active(
+            session->policy_context,
+            session->boot.have_phone_bluetooth_id
+                ? session->boot.phone_bluetooth_id
+                : "",
+            session->boot.have_phone_usb_id ? session->boot.phone_usb_id
+                                            : ""))
+        return CP_SESSION_ERR_POLICY;
+    if (session->boot.wireless_update_known &&
+        !session->boot.wireless_update_available)
+        return CP_SESSION_ERR_POLICY;
     return CP_SESSION_OK;
 }
 
@@ -1093,9 +1347,26 @@ cp_session_error_t cp_session_set_receiver_active(cp_session_t *session,
     if (!active) {
         if (session->receiver_active)
             clear_receiver(session, true);
-        else
-            session->last_error = CP_SESSION_OK;
         return CP_SESSION_OK;
+    }
+    if (session->receiver_active &&
+        session->receiver_generation == generation) {
+        if (!receiver_inputs_valid(session)) {
+            clear_receiver(session, true);
+            session->stats.receiver_rejections++;
+            emit_error(session, CP_SESSION_ERR_RECEIVER_STATE);
+            return CP_SESSION_ERR_RECEIVER_STATE;
+        }
+        session->receiver_policy_deadline_ms =
+            add_ms(now_ms, CP_SESSION_POLICY_RECHECK_MS);
+        {
+            cp_session_error_t err = receiver_policy_check(session, now_ms);
+
+            if (err != CP_SESSION_OK)
+                return err;
+        }
+        return session->receiver_active ? CP_SESSION_OK
+                                        : CP_SESSION_ERR_POLICY;
     }
 
     if (cp_bootstrap_auth_state(&session->boot) !=
@@ -1107,12 +1378,17 @@ cp_session_error_t cp_session_set_receiver_active(cp_session_t *session,
         emit_error(session, CP_SESSION_ERR_RECEIVER_STATE);
         return CP_SESSION_ERR_RECEIVER_STATE;
     }
+    if (receiver_policy_ready(session, now_ms) != CP_SESSION_OK) {
+        session->stats.receiver_rejections++;
+        emit_error(session, CP_SESSION_ERR_POLICY);
+        return CP_SESSION_ERR_POLICY;
+    }
 
-    if (session->receiver_active &&
-        session->receiver_generation == generation)
-        return CP_SESSION_OK;
     session->receiver_active = true;
     session->receiver_generation = generation;
+    session->receiver_ap_generation = session->ap_readback_generation;
+    session->receiver_policy_deadline_ms =
+        add_ms(now_ms, CP_SESSION_POLICY_RECHECK_MS);
     session->last_error = CP_SESSION_OK;
     session->stats.receiver_observations++;
     emit_receiver(session);
@@ -1161,6 +1437,7 @@ static cp_session_error_t shutdown_session(cp_session_t *session,
     if (was_receiver)
         emit_receiver(session);
     emit_state(session);
+    refresh_link_stats(session);
     return CP_SESSION_OK;
 }
 
@@ -1212,7 +1489,9 @@ cp_session_error_t cp_session_output_consume(cp_session_t *session, size_t len)
     result = cp_link_output_consume(&session->link, len);
     if (result != CP_LINK_OK)
         return map_link_result(result);
-    return flush_tx(session, session->now_ms);
+    result = flush_tx(session, session->now_ms);
+    refresh_link_stats(session);
+    return (cp_session_error_t)result;
 }
 
 size_t cp_session_pending_replies(const cp_session_t *session)

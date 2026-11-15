@@ -52,4 +52,4 @@ Artifacts:
 - `out/wifi1b_usb.zip`
 - `out/usb/` (standalone payload; requires the current canonical
   Battery/Tweaks or Battery/Tweaks/WiFi shared QML)
-- Repository `out/appcombo-flat/` (standalone three-file bundle; preferred)
+- Repository `out/appcombo-flat/` (standalone two-file bundle; preferred)

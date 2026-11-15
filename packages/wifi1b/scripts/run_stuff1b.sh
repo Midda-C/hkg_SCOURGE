@@ -42,6 +42,10 @@ ALL="HomeScreen/Screen_HomeScreen_AllMenus.qml"
 SETUP="HomeScreen/Screen_HomeScreen_Submenu_Setup.qml"
 CUSTOM="component/QCustomizedMenuListAllowEmpty.qml"
 
+if [ -L "$RW_DIR" ]; then
+    printf 'WIFI1B_PAYLOAD\nstatus=FAIL\nerror=runtime directory is a symlink\n' > "$OUT" 2>/dev/null || true
+    exit 1
+fi
 mkdir -p "$RW_DIR" 2>/dev/null
 mkdir -p "$RW_DIR/backup" 2>/dev/null
 mkdir -p "$RW_DIR/bin" 2>/dev/null

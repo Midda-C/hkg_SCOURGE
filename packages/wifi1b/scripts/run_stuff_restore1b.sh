@@ -23,6 +23,10 @@ ALL="HomeScreen/Screen_HomeScreen_AllMenus.qml"
 SETUP="HomeScreen/Screen_HomeScreen_Submenu_Setup.qml"
 CUSTOM="component/QCustomizedMenuListAllowEmpty.qml"
 
+if [ -L "$RW_DIR" ]; then
+    printf 'WIFI1B_RESTORE\nstatus=FAIL\nerror=runtime directory is a symlink\n' > "$OUT" 2>/dev/null || true
+    exit 1
+fi
 mkdir -p "$RW_DIR" 2>/dev/null
 : > "$LOG" 2>/dev/null
 log() { echo "$(date -u 2>/dev/null) $*" >> "$LOG" 2>/dev/null; }
@@ -103,18 +107,22 @@ if [ "$service_may_stop" = 1 ] && command -v systemctl >/dev/null 2>&1; then
 else
     log "kept independently changed/foreign wifi1b service; not stopping or disabling it"
 fi
-if [ -x "$RW_DIR/wifi1b_daemon" ]; then
-    "$RW_DIR/wifi1b_daemon" --mode off >> "$LOG" 2>&1 || fail "Wifi1b network cleanup failed; retain daemon for recovery"
+if [ "$service_may_stop" = 1 ]; then
+    if [ -x "$RW_DIR/wifi1b_daemon" ]; then
+        "$RW_DIR/wifi1b_daemon" --mode off >> "$LOG" 2>&1 || fail "Wifi1b network cleanup failed; retain daemon for recovery"
+    fi
+    rm -f /run/wifi1b/active 2>/dev/null || true
+    for p in /proc/[0-9]*; do
+        executable=$(readlink "$p/exe" 2>/dev/null || true)
+        case "$executable" in
+            "$RW_DIR/wifi1b_daemon"|"$RW_DIR/wifi1b_daemon (deleted)"|\
+            "$RW_DIR/bin/dropbearmulti"|"$RW_DIR/bin/dropbearmulti (deleted)")
+                kill -TERM "${p#/proc/}" 2>/dev/null || true ;;
+        esac
+    done
+else
+    log "kept foreign-modified service process; not stopping or cleaning its network state"
 fi
-rm -f /run/wifi1b/active 2>/dev/null || true
-for p in /proc/[0-9]*; do
-    executable=$(readlink "$p/exe" 2>/dev/null || true)
-    case "$executable" in
-        "$RW_DIR/wifi1b_daemon"|"$RW_DIR/wifi1b_daemon (deleted)"|\
-        "$RW_DIR/bin/dropbearmulti"|"$RW_DIR/bin/dropbearmulti (deleted)")
-            kill -TERM "${p#/proc/}" 2>/dev/null || true ;;
-    esac
-done
 for family in iptables ip6tables; do
     IPT=$(command -v "$family" 2>/dev/null || true)
     [ -n "$IPT" ] || continue
@@ -279,19 +287,23 @@ remove_wifi1b() {
     expected=$(cat "$marker" 2>/dev/null) || { log "cannot read account ownership marker: $marker"; return 0; }
     current=$(grep '^wifi1b:' "$f" 2>/dev/null || true)
     [ "$current" = "$expected" ] || { log "kept independently changed account in $f"; return 0; }
-    tmp=$(mktemp "$RW_DIR/.account-remove.XXXXXX" 2>/dev/null) || {
+    # Stage in the same directory and rename: a read error or short write must
+    # never truncate /etc/passwd or /etc/shadow.
+    tmp=$(mktemp "${f}.tmp.XXXXXX" 2>/dev/null) || {
         log "cannot stage account removal for $f"; return 0; }
-    if grep -v '^wifi1b:' "$f" > "$tmp" 2>/dev/null && cat "$tmp" > "$f" 2>/dev/null; then
-        rm -f "$tmp" "$marker"
+    if grep -v '^wifi1b:' "$f" > "$tmp" 2>/dev/null; then
         case "$f" in
-            *shadow*) chmod 600 "$f" 2>/dev/null || true ;;
-            *) chmod 644 "$f" 2>/dev/null || true ;;
+            *shadow*) chmod 600 "$tmp" 2>/dev/null || true ;;
+            *) chmod 644 "$tmp" 2>/dev/null || true ;;
         esac
-        log "removed owned wifi1b account entry from $f"
-    else
-        rm -f "$tmp" 2>/dev/null || true
-        log "FAILED to rewrite account file safely: $f"
+        if mv -f "$tmp" "$f" 2>/dev/null; then
+            rm -f "$marker"
+            log "removed owned wifi1b account entry from $f"
+            return 0
+        fi
     fi
+    rm -f "$tmp" 2>/dev/null || true
+    log "FAILED to rewrite account file safely: $f"
 }
 remove_wifi1b /etc/passwd
 remove_wifi1b /etc/passwd.legacy
@@ -309,9 +321,18 @@ rm -f "$RW_DIR/wifi1b_daemon" "$RW_DIR/status.json" "$RW_DIR/daemon.log" \
       "$RW_DIR/udhcpc.pid" "$RW_DIR/udhcpc.sh" "$RW_DIR/udhcpc.log" 2>/dev/null || true
 rm -f "$RW_DIR/bin/dropbearmulti" "$RW_DIR/bin/dropbear" "$RW_DIR/bin/dropbearkey" \
       "$RW_DIR/bin/wifi1b_qmlpatch" \
-      "$RW_DIR/ssh/authorized_keys" "$RW_DIR/ssh/dropbear.pid" \
-      "$RW_DIR/ssh/dropbear_ed25519_host_key" "$RW_DIR/ssh/dropbear_rsa_host_key" \
-      "$RW_DIR/home/.ssh/authorized_keys" 2>/dev/null || true
+      "$RW_DIR/ssh/dropbear.pid" \
+      "$RW_DIR/ssh/dropbear_ed25519_host_key" "$RW_DIR/ssh/dropbear_rsa_host_key" 2>/dev/null || true
+auth_ledger=0
+if [ -f "$LATEST/transaction/files" ] &&
+   grep -Fq "|$RW_DIR/ssh/authorized_keys" "$LATEST/transaction/files"; then
+    auth_ledger=1
+fi
+if [ "$auth_ledger" = 1 ]; then
+    rm -f "$RW_DIR/ssh/authorized_keys" "$RW_DIR/home/.ssh/authorized_keys" 2>/dev/null || true
+else
+    log "kept authorized_keys: no transaction ownership record"
+fi
 rmdir "$RW_DIR/bin" "$RW_DIR/ssh" "$RW_DIR/home/.ssh" "$RW_DIR/home" 2>/dev/null || true
 
 if [ -f "$LATEST/transaction/files" ]; then

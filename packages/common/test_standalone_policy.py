@@ -92,6 +92,19 @@ exit 0
     return packages
 
 
+def wrapper_from_template(digest: str) -> str:
+    helper = PACKAGES / "common/runtime_cleanup.sh"
+    cleanup_sha = hashlib.sha256(helper.read_bytes()).hexdigest()
+    text = (PACKAGES / "flat_wrapper.sh").read_text() \
+        .replace("@TARBALL_SHA256@", digest) \
+        .replace("@RUNTIME_CLEANUP_SHA256@", cleanup_sha) \
+        .replace("# @RUNTIME_CLEANUP_SHELL@", helper.read_text())
+    assert "@RUNTIME_CLEANUP_SHELL@" not in text
+    assert "@TARBALL_SHA256@" not in text
+    assert f'RUNTIME_CLEANUP_DIGEST="{cleanup_sha}"' in text
+    return text
+
+
 def make_wrapper(root: Path, tree: Path, stick_name: str) -> Path:
     stick = root / stick_name
     stick.mkdir()
@@ -99,13 +112,10 @@ def make_wrapper(root: Path, tree: Path, stick_name: str) -> Path:
     with tarfile.open(archive, "w:gz") as tar:
         for path in tree.iterdir():
             tar.add(path, arcname="./" + path.name)
-    shutil.copyfile(PACKAGES / "common/runtime_cleanup.sh", stick / "runtime_cleanup.sh")
     digest = hashlib.sha256(archive.read_bytes()).hexdigest()
-    cleanup_sha = hashlib.sha256((stick / "runtime_cleanup.sh").read_bytes()).hexdigest()
     wrapper = stick / "run_stuff.sh"
-    wrapper.write_text((PACKAGES / "flat_wrapper.sh").read_text()
-                       .replace("@TARBALL_SHA256@", digest)
-                       .replace("@RUNTIME_CLEANUP_SHA256@", cleanup_sha))
+    wrapper.write_text(wrapper_from_template(digest))
+    assert not (stick / "runtime_cleanup.sh").exists()
     return stick
 
 
@@ -216,13 +226,8 @@ with tempfile.TemporaryDirectory(prefix="standalone-policy-", dir="/tmp/opencode
                     info.mode = 0
                 return info
             tar.add(path, arcname="./" + path.name, filter=unreadable_marker)
-    shutil.copyfile(packages / "common/runtime_cleanup.sh", broken / "runtime_cleanup.sh")
     digest = hashlib.sha256((broken / "appcombo.tar.gz").read_bytes()).hexdigest()
-    cleanup_sha = hashlib.sha256((broken / "runtime_cleanup.sh").read_bytes()).hexdigest()
-    (broken / "run_stuff.sh").write_text(
-        (PACKAGES / "flat_wrapper.sh").read_text()
-        .replace("@TARBALL_SHA256@", digest)
-        .replace("@RUNTIME_CLEANUP_SHA256@", cleanup_sha))
+    (broken / "run_stuff.sh").write_text(wrapper_from_template(digest))
     order = Path(env["ORDER"])
     before = order.read_text()
     result = subprocess.run(["sh", str(broken / "run_stuff.sh")],
@@ -233,11 +238,34 @@ with tempfile.TemporaryDirectory(prefix="standalone-policy-", dir="/tmp/opencode
     assert "status=FAIL" in (broken / "wrapper_result.txt").read_text()
     marker.chmod(0o644)
 
+    # An unexpanded build placeholder must fail closed before the first
+    # runtime write; the two-file pair never relies on an external helper.
+    unexpanded = root / "unexpanded"
+    unexpanded.mkdir()
+    shutil.copyfile(stick / "appcombo.tar.gz", unexpanded / "appcombo.tar.gz")
+    digest = hashlib.sha256((unexpanded / "appcombo.tar.gz").read_bytes()).hexdigest()
+    cleanup_sha = hashlib.sha256((PACKAGES / "common/runtime_cleanup.sh").read_bytes()).hexdigest()
+    text = (PACKAGES / "flat_wrapper.sh").read_text() \
+        .replace("@TARBALL_SHA256@", digest) \
+        .replace("@RUNTIME_CLEANUP_SHA256@", cleanup_sha)
+    assert "@RUNTIME_CLEANUP_SHELL@" in text
+    (unexpanded / "run_stuff.sh").write_text(text)
+    before = order.read_text()
+    result = subprocess.run(["sh", str(unexpanded / "run_stuff.sh")],
+                            env=dict(env, USB_DIR=str(unexpanded)),
+                            capture_output=True, text=True, timeout=90)
+    assert result.returncode != 0
+    assert order.read_text() == before, "an unexpanded placeholder ran a stage"
+    assert "unexpanded_cleanup_helper" in (unexpanded / "wrapper_result.txt").read_text()
+    assert not (unexpanded / "runtime_cleanup.sh").exists()
+
     # The default build_flat source must request exactly the standalone set.
     source = (PACKAGES / "build_flat.sh").read_text()
     assert "SCOURGE_STANDALONE=1 sh \"$HERE/compose.sh\" \"$STAGE/tree\" battery,tweaks,wifi1b" in source
     assert "battery,tweaks,wifi1b,migrate" not in source
-    assert "THREE" in source and "UID 0" in source and "not car-validated" in source
+    assert "Copy BOTH files" in source and "Copy ALL THREE" not in source
+    assert "@RUNTIME_CLEANUP_SHELL@" in source
+    assert "UID 0" in source and "not car-validated" in source
 
 # WiFi-present combo: the WiFi stage owns the final BatteryTile bytes, so the
 # Battery "*" entry is deferred even though its own copy differs.
@@ -266,3 +294,4 @@ with tempfile.TemporaryDirectory(prefix="combo-policy-", dir="/tmp/opencode") as
 print("PASS: standalone default selects Battery/Tweaks/Wifi1b with combo/standalone marker, no WiFi or migration stage")
 print("PASS: BatteryTile is checked in standalone builds and deferred to the WiFi stage in combo builds")
 print("PASS: unreadable standalone marker fails closed before any stage")
+print("PASS: unexpanded cleanup placeholder fails closed before any stage/runtime helper write")

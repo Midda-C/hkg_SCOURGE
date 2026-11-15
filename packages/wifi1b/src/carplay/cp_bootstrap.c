@@ -720,10 +720,6 @@ static cp_boot_result handle_auth_certificate_request(
     int rc;
     cp_boot_result result;
 
-    st = cp_wire_decode_empty(view, CP_WIRE_MSG_AUTH_CERT_REQUEST);
-    if (st != CP_WIRE_OK) {
-        return error_result(session, CP_BOOT_ERR_WIRE);
-    }
     if (!session->identified) {
         return make_result(session, CP_BOOT_EV_START_REFUSED,
                            CP_BOOT_ERR_ORDER, 0u);
@@ -739,6 +735,10 @@ static cp_boot_result handle_auth_certificate_request(
         fail_authentication(session, CP_BOOT_EV_AUTH_FAILED,
                             CP_BOOT_ERR_ORDER, &result);
         return result;
+    }
+    st = cp_wire_decode_empty(view, CP_WIRE_MSG_AUTH_CERT_REQUEST);
+    if (st != CP_WIRE_OK) {
+        return error_result(session, CP_BOOT_ERR_WIRE);
     }
     if (session->auth_exchanges >= CP_BOOT_MAX_AUTH_EXCHANGES) {
         fail_authentication(session, CP_BOOT_EV_AUTH_FAILED,
@@ -788,12 +788,6 @@ static cp_boot_result handle_auth_challenge_request(cp_bootstrap *session,
     int rc;
     cp_boot_result result;
 
-    st = cp_wire_decode_challenge_request(view, &challenge, &challenge_len);
-    if (st != CP_WIRE_OK) {
-        fail_authentication(session, CP_BOOT_EV_AUTH_FAILED,
-                            CP_BOOT_ERR_WIRE, &result);
-        return result;
-    }
     if (!session->identified) {
         return make_result(session, CP_BOOT_EV_START_REFUSED,
                            CP_BOOT_ERR_ORDER, 0u);
@@ -801,9 +795,19 @@ static cp_boot_result handle_auth_challenge_request(cp_bootstrap *session,
     if (session->auth_state == CP_BOOT_AUTH_SUCCEEDED) {
         return make_result(session, CP_BOOT_EV_IGNORED, CP_BOOT_OK, 0u);
     }
+    if (session->auth_state == CP_BOOT_AUTH_FAILED) {
+        return make_result(session, CP_BOOT_EV_AUTH_FAILED,
+                           CP_BOOT_ERR_AUTH_FAILED, 0u);
+    }
     if (session->auth_state != CP_BOOT_AUTH_CERT_SENT) {
         fail_authentication(session, CP_BOOT_EV_AUTH_FAILED,
                             CP_BOOT_ERR_ORDER, &result);
+        return result;
+    }
+    st = cp_wire_decode_challenge_request(view, &challenge, &challenge_len);
+    if (st != CP_WIRE_OK) {
+        fail_authentication(session, CP_BOOT_EV_AUTH_FAILED,
+                            CP_BOOT_ERR_WIRE, &result);
         return result;
     }
     if (session->auth_exchanges >= CP_BOOT_MAX_AUTH_EXCHANGES) {
@@ -844,21 +848,25 @@ static cp_boot_result handle_auth_challenge_request(cp_bootstrap *session,
 static cp_boot_result handle_auth_succeeded(cp_bootstrap *session,
                                             const cp_wire_view *view)
 {
-    cp_wire_status st =
-        cp_wire_decode_empty(view, CP_WIRE_MSG_AUTH_SUCCEEDED);
+    cp_wire_status st;
     cp_boot_result result;
 
-    if (st != CP_WIRE_OK) {
-        fail_authentication(session, CP_BOOT_EV_AUTH_FAILED,
-                            CP_BOOT_ERR_WIRE, &result);
-        return result;
-    }
     if (session->auth_state == CP_BOOT_AUTH_SUCCEEDED) {
         return make_result(session, CP_BOOT_EV_IGNORED, CP_BOOT_OK, 0u);
+    }
+    if (session->auth_state == CP_BOOT_AUTH_FAILED) {
+        return make_result(session, CP_BOOT_EV_AUTH_FAILED,
+                           CP_BOOT_ERR_AUTH_FAILED, 0u);
     }
     if (session->auth_state != CP_BOOT_AUTH_RESPONSE_SENT) {
         fail_authentication(session, CP_BOOT_EV_AUTH_FAILED,
                             CP_BOOT_ERR_ORDER, &result);
+        return result;
+    }
+    st = cp_wire_decode_empty(view, CP_WIRE_MSG_AUTH_SUCCEEDED);
+    if (st != CP_WIRE_OK) {
+        fail_authentication(session, CP_BOOT_EV_AUTH_FAILED,
+                            CP_BOOT_ERR_WIRE, &result);
         return result;
     }
     session->auth_state = CP_BOOT_AUTH_SUCCEEDED;

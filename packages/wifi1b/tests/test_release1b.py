@@ -33,7 +33,7 @@ with zipfile.ZipFile(ROOT / "out/wifi1b_usb.zip") as archive:
     blob = b"".join(archive.read(n) for n in archive.namelist())
     # Synthetic fixture only: never embed an owner's credential, even as a
     # negative assertion. Owner inputs belong outside the release tree.
-    assert b"fixture-psk-1" not in blob
+    assert b"Sup3rSecretPass" not in blob
 ledger = set((tree / "payload/accepted-qml.md5").read_text().split())
 for line in (ROOT / "artifacts/accepted-qml-legacy.md5").read_text().splitlines():
     line = line.strip()

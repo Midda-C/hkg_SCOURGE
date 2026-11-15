@@ -95,6 +95,7 @@ Diagnostics:
   The Wifi1b page's Status/Logs tabs write wifi1b_logs_* bundles to the stick.
 EOT
 
+python3 scripts/package_release.py "$OUT" --metadata-only
 # Deterministic content stamp instead of a timestamp/PID: the loader's md5
 # gate re-runs the script when any installed payload byte changes, and
 # identical inputs produce identical bytes.  Metadata files are excluded
@@ -105,9 +106,8 @@ payload_digest=$(cd "$OUT" && find payload -type f \
 [ -n "$payload_digest" ] || { echo "cannot compute payload digest" >&2; exit 1; }
 printf '\n# WIFI1B_PAYLOAD_DIGEST=%s\n' "$payload_digest" >> "$OUT/run_stuff.sh"
 printf '\n# WIFI1B_PAYLOAD_DIGEST=%s\n' "$payload_digest" >> "$OUT/run_stuff_restore.sh"
-# Metadata must be written AFTER the digest stamp: build.json hashes
-# run_stuff.sh, and the manifest hashes build.json.  Writing either earlier
-# leaves a stale hash in the release tree.
+# Record the final script bytes in metadata before hashing the manifest; the
+# final package step then recomputes identical metadata.
 python3 scripts/package_release.py "$OUT" --metadata-only
 ( cd "$OUT" && find payload -type f -print0 | LC_ALL=C sort -z | xargs -0 md5sum > manifest.md5 )
 python3 scripts/package_release.py "$OUT"

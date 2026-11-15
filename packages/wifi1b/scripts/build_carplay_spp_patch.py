@@ -41,6 +41,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import stat
 import struct
 import subprocess
@@ -284,7 +285,7 @@ def _map_vaddr(data: bytes, phdrs: list[dict[str, int]], vaddr: int,
 def _reject_symlink_components(path: Path, what: str) -> None:
     absolute = Path(os.path.abspath(path))
     for component in [absolute, *absolute.parents]:
-        if component.exists() and component.is_symlink():
+        if component.is_symlink():
             raise BuildError(f"{what} path component is a symlink: {component}")
 
 
@@ -573,6 +574,23 @@ def _validate_hook_elf(data: bytes) -> dict[str, object]:
     }
 
 
+def _tool_identity(command: str) -> dict[str, str]:
+    executable = shutil.which(command)
+    if executable is None:
+        raise BuildError(f"build tool not found: {command}")
+    try:
+        version = subprocess.run(
+            [executable, "--version"], check=True, capture_output=True,
+            text=True, timeout=10,
+        ).stdout.splitlines()
+        digest = sha256_bytes(Path(executable).read_bytes())
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise BuildError(f"cannot identify build tool {command}: {exc}") from exc
+    if not version or len(version[0]) > 1024:
+        raise BuildError(f"invalid build tool version: {command}")
+    return {"name": Path(executable).name, "version": version[0], "sha256": digest}
+
+
 def build_blob(hook_source: Path = HOOK_SOURCE) -> dict[str, object]:
     """Compile and link the first-party hook into a validated contiguous blob."""
     hook_source = Path(hook_source)
@@ -584,6 +602,7 @@ def build_blob(hook_source: Path = HOOK_SOURCE) -> dict[str, object]:
     BUILD_ROOT.mkdir(parents=True, exist_ok=True)
     cc = os.environ.get("CP_SPP_RX_CC", os.environ.get("CC", "cc"))
     ld = os.environ.get("CP_SPP_RX_LD", os.environ.get("LD", "ld"))
+    toolchain = {"compiler": _tool_identity(cc), "linker": _tool_identity(ld)}
 
     with tempfile.TemporaryDirectory(prefix="cp-spp-rx-", dir=str(BUILD_ROOT)) as tmp:
         work = Path(tmp)
@@ -661,6 +680,18 @@ def build_blob(hook_source: Path = HOOK_SOURCE) -> dict[str, object]:
     result = _validate_hook_elf(linked)
     result["source_sha256"] = sha256_bytes(hook_source.read_bytes())
     result["header_sha256"] = sha256_bytes(HOOK_HEADER.read_bytes())
+    # Preserve flags without embedding private host paths in the manifest.
+    result["toolchain"] = toolchain
+    result["compile_flags"] = compile_cmd[1:compile_cmd.index("-I")] + [
+        "-I", "<header-dir>", "-I", "<source-dir>",
+        "-c", "<source>", "-o", "<object>",
+    ]
+    result["link_flags"] = [
+        "-nostdlib", "-static", "-T", "<linker-script>",
+        "--orphan-handling=error", "--build-id=none", "-z", "noexecstack",
+        "-o", "<hook-elf>", "<object>",
+    ]
+    result["linker_script_sha256"] = sha256_bytes(_linker_script().encode("ascii"))
     return result
 
 
@@ -695,6 +726,9 @@ def build_patch(input_path: Path, out_dir: Path,
     out_dir = Path(out_dir)
     locks_path = Path(locks_path)
 
+    if not allow_test_geometry and locks_path.resolve() != DEFAULT_LOCKS.resolve():
+        raise BuildError("production builds require canonical config/firmware_locks.env")
+
     _reject_symlink_components(input_path, "input")
     if input_path.is_symlink() or not input_path.is_file():
         raise BuildError(f"input is not a regular non-symlink file: {input_path}")
@@ -717,12 +751,18 @@ def build_patch(input_path: Path, out_dir: Path,
             f"VBTD63_SPP_RX_LEN is {function_len:#x}, expected {FUNCTION_LEN:#x}"
         )
 
-    input_stat = input_path.stat()
+    try:
+        input_stat = input_path.stat()
+    except OSError as exc:
+        raise BuildError(f"cannot stat input: {exc}") from exc
     if input_stat.st_size != stock_size:
         raise BuildError(
             f"whole input size {input_stat.st_size} != pinned {stock_size}"
         )
-    data = input_path.read_bytes()
+    try:
+        data = input_path.read_bytes()
+    except OSError as exc:
+        raise BuildError(f"cannot read input: {exc}") from exc
     if len(data) != stock_size:
         raise BuildError("input size changed while reading")
     whole_sha = sha256_bytes(data)
@@ -762,7 +802,10 @@ def build_patch(input_path: Path, out_dir: Path,
     if out_dir.exists() and (out_dir.is_symlink() or not out_dir.is_dir()):
         raise BuildError(f"output is not a real directory: {out_dir}")
     if not out_dir.exists():
-        out_dir.mkdir(parents=True, mode=0o700)
+        try:
+            out_dir.mkdir(parents=True, mode=0o700)
+        except OSError as exc:
+            raise BuildError(f"cannot create output directory: {exc}") from exc
     if not _is_ignored_outdir(out_dir):
         raise BuildError(
             "output directory is not ignored by Git and is not under "
@@ -774,6 +817,8 @@ def build_patch(input_path: Path, out_dir: Path,
     for candidate in (output_file, manifest_file):
         if candidate.is_symlink():
             raise BuildError(f"refusing symlink output path: {candidate}")
+        if candidate.exists():
+            raise BuildError(f"refusing existing output path: {candidate}")
 
     try:
         if output_file.exists() and os.path.samefile(output_file, input_path):
@@ -797,7 +842,8 @@ def build_patch(input_path: Path, out_dir: Path,
         "car_validated": False,
         "installer_activated": False,
         "oem_binary_executed": False,
-        "target": "vbtd-63",
+        "target": "synthetic-test-elf" if allow_test_geometry else "vbtd-63",
+        "test_fixture": bool(allow_test_geometry),
         "firmware_id": locks.get("SCOURGE_FIRMWARE_ID", "UNKNOWN"),
         "input_name": input_path.name,
         "input_size": len(data),
@@ -818,6 +864,11 @@ def build_patch(input_path: Path, out_dir: Path,
         "hook_source_sha256": blob_info["source_sha256"],
         "hook_header_sha256": blob_info["header_sha256"],
         "locks_sha256": sha256_bytes(locks_path.read_bytes()),
+        "builder_sha256": sha256_bytes(Path(__file__).read_bytes()),
+        "toolchain": blob_info["toolchain"],
+        "compile_flags": blob_info["compile_flags"],
+        "link_flags": blob_info["link_flags"],
+        "linker_script_sha256": blob_info["linker_script_sha256"],
         "notes": [
             "Build-only replacement of the exact VBTSppReceivedDataCfm span.",
             "Remaining bytes in the span are NOP-filled.",
@@ -856,9 +907,11 @@ def build_patch(input_path: Path, out_dir: Path,
             os.fsync(handle.fileno())
         os.chmod(tmp_manifest, 0o644)
 
-        os.replace(tmp_output, output_file)
+        os.link(tmp_output, output_file)
+        tmp_output.unlink()
         tmp_output = None
-        os.replace(tmp_manifest, manifest_file)
+        os.link(tmp_manifest, manifest_file)
+        tmp_manifest.unlink()
         tmp_manifest = None
     except OSError as exc:
         raise BuildError(f"cannot publish output: {exc}") from exc
@@ -901,13 +954,11 @@ def main(argv: list[str] | None = None) -> int:
                         help="stock /app/bin/vbtd-63 to read")
     parser.add_argument("--out", required=True,
                         help="ignored output directory (new files only)")
-    parser.add_argument("--locks", default=str(DEFAULT_LOCKS),
-                        help="firmware-lock file (default: config/firmware_locks.env)")
     args = parser.parse_args(argv)
 
     try:
-        result = build_patch(Path(args.input), Path(args.out), Path(args.locks))
-    except BuildError as exc:
+        result = build_patch(Path(args.input), Path(args.out))
+    except (BuildError, OSError) as exc:
         print(f"REFUSED: {exc}", file=sys.stderr)
         return 2
 

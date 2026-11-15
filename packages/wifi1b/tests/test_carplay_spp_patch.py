@@ -141,13 +141,14 @@ def test_source_policy() -> None:
         "--orphan-handling=error",
         "EXPERIMENTAL_BUILD_ONLY_NOT_CAR_VALIDATED",
         "oem_binary_executed",
-        "os.replace",
+        "os.link",
         "_map_vaddr",
     ):
         assert needle in builder, needle
     assert "shell=True" not in builder
     assert "os.system(" not in builder
     assert "--force" not in builder
+    assert 'add_argument("--locks"' not in builder
     # The input is read, never written in place.
     assert "input_path.write" not in builder
     assert "input_path.open(\"wb\")" not in builder
@@ -372,6 +373,52 @@ def test_synthetic_builder() -> None:
         assert report["car_validated"] is False
         assert report["installer_activated"] is False
         assert report["oem_binary_executed"] is False
+        assert report["test_fixture"] is True and report["target"] == "synthetic-test-elf"
+        for tool in ("compiler", "linker"):
+            assert len(report["toolchain"][tool]["sha256"]) == 64
+            assert report["toolchain"][tool]["version"]
+        assert "-fPIC" in report["compile_flags"]
+        assert "--build-id=none" in report["link_flags"]
+        assert report["builder_sha256"] == sha(BUILDER_PATH.read_bytes())
+        assert len(report["linker_script_sha256"]) == 64
+
+        # The production CLI/API cannot replace canonical pins with synthetic
+        # locks, even when the synthetic ELF has the production function VADDR.
+        bypass = tmp / "bypass.elf"
+        bypass_locks = tmp / "bypass.env"
+        make_synthetic_elf(bypass, segment_vaddr=FUNC_VADDR)
+        write_locks(bypass_locks, bypass, vaddr=FUNC_VADDR, offset=0x1000)
+        error = expect_refusal(BUILDER.build_patch, bypass, tmp / "bypass-api", bypass_locks)
+        assert "canonical" in error
+        cli = subprocess.run([sys.executable, str(BUILDER_PATH), "--input", str(bypass),
+                              "--out", str(tmp / "bypass-cli"), "--locks", str(bypass_locks)],
+                             capture_output=True, text=True, timeout=30)
+        assert cli.returncode == 2 and "unrecognized arguments" in cli.stderr
+        assert not (tmp / "bypass-cli").exists()
+        cli = subprocess.run([sys.executable, str(BUILDER_PATH), "--input", str(bypass),
+                              "--out", str(tmp / "canonical-refusal")],
+                             capture_output=True, text=True, timeout=30)
+        assert cli.returncode == 2 and "REFUSED:" in cli.stderr
+        assert not (tmp / "canonical-refusal").exists()
+
+        # Existing regular outputs are not silently replaced.
+        expect_refusal(BUILDER.build_patch, input_path, out, locks,
+                       allow_test_geometry=True)
+        assert patched.read_bytes() == written
+        for filename in ("vbtd-63.spp-rx.patched", "vbtd-63.spp-rx.manifest.json"):
+            existing = tmp / ("existing-" + filename)
+            existing.mkdir()
+            sentinel = existing / filename
+            sentinel.write_bytes(b"preserve-existing-output\n")
+            expect_refusal(BUILDER.build_patch, input_path, existing, locks,
+                           allow_test_geometry=True)
+            assert sentinel.read_bytes() == b"preserve-existing-output\n"
+
+        dangling = tmp / "dangling-output-parent"
+        dangling.symlink_to(tmp / "missing-parent", target_is_directory=True)
+        expect_refusal(BUILDER.build_patch, input_path, dangling / "out", locks,
+                       allow_test_geometry=True)
+        assert not (tmp / "missing-parent").exists()
 
         # A patched output is not accepted as an input.
         already_out = tmp / "already-out"
@@ -509,6 +556,8 @@ def test_optional_real_firmware() -> None:
         assert written[:FUNC_VADDR] == original[:FUNC_VADDR]
         assert written[FUNC_VADDR + FUNC_LEN:] == original[FUNC_VADDR + FUNC_LEN:]
         assert result["manifest"]["input_sha256"] == VBTD63_SHA
+        assert result["manifest"]["test_fixture"] is False
+        assert result["manifest"]["target"] == "vbtd-63"
         assert result["manifest"]["function_preimage_sha256"] == FUNC_STOCK_SHA
         blob = BUILDER.build_blob()["blob"]
         assert written[FUNC_VADDR:FUNC_VADDR + len(blob)] == blob

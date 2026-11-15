@@ -10,6 +10,7 @@ import hashlib
 import os
 from pathlib import Path
 import shlex
+import shutil
 import subprocess
 import tarfile
 import tempfile
@@ -205,12 +206,24 @@ def test_removed_wifi_evidence() -> None:
         for child in fixture.wifi.iterdir():
             if child.is_file():
                 child.unlink()
-        import shutil
         shutil.rmtree(fixture.wifi)
         fixture.wifi.symlink_to(target)
         result = fixture.shell(remove_call(fixture))
         assert (target / "config.conf").read_text() == "owner-credential\n", result.stdout
         assert "refused symlink WiFi runtime dir" in result.stdout
+    with tempfile.TemporaryDirectory(prefix="cleanup-wifi-dangling-", dir="/tmp/opencode") as d:
+        fixture = Fixture(Path(d))
+        marker_absent(fixture)
+        make_archive(fixture)
+        fixture.service.symlink_to(fixture.base / "missing-service")
+        result = fixture.shell(remove_call(fixture))
+        assert (fixture.wifi / "config.conf").read_text() == "owner-credential\n", result.stdout
+        assert "service still present" in result.stdout or "unsafe WiFi service path" in result.stdout
+        fixture.service.unlink()
+        (fixture.qml / "HomeScreen/WifiPage.qml").symlink_to(fixture.base / "missing-page")
+        result = fixture.shell(remove_call(fixture))
+        assert (fixture.wifi / "config.conf").read_text() == "owner-credential\n", result.stdout
+        assert "WiFi UI still present" in result.stdout
     with tempfile.TemporaryDirectory(prefix="cleanup-wifi-bundle-", dir="/tmp/opencode") as d:
         fixture = Fixture(Path(d))
         marker_absent(fixture)
@@ -223,7 +236,83 @@ def test_removed_wifi_evidence() -> None:
     print("PASS: removed-WiFi deletion needs readable absence evidence plus a verified archive; corrupt/missing bundle, symlinks and installed WiFi preserve owner state")
 
 
+def make_wrapper_bundle(fixture: Fixture, corrupt=False) -> Path:
+    stick = fixture.stick
+    source = fixture.base / "bundle"
+    source.mkdir()
+    (source / "run_stuff.sh").write_text(
+        '#!/bin/sh\nprintf "dummy master\\nstatus=OK\\n" > "$USB_DIR/run_stuff_result.txt"\nexit 0\n')
+    archive = stick / "appcombo.tar.gz"
+    with tarfile.open(archive, "w:gz") as output:
+        output.add(source / "run_stuff.sh", arcname="./run_stuff.sh")
+    if corrupt:
+        archive.write_bytes(archive.read_bytes() + b"corrupt")
+    digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+    cleanup_sha = hashlib.sha256(HELPER.read_bytes()).hexdigest()
+    wrapper = stick / "run_stuff.sh"
+    wrapper.write_text((PACKAGES / "flat_wrapper.sh").read_text()
+                       .replace("@TARBALL_SHA256@", digest)
+                       .replace("@RUNTIME_CLEANUP_SHA256@", cleanup_sha)
+                       .replace("# @RUNTIME_CLEANUP_SHELL@", HELPER.read_text()))
+    assert "@RUNTIME_CLEANUP_SHELL@" not in wrapper.read_text()
+    assert not (stick / "runtime_cleanup.sh").exists()
+    beep = fixture.runtime / "combo/bin/dbus-send"
+    beep.parent.mkdir(parents=True, exist_ok=True)
+    beep.write_text("#!/bin/sh\nexit 0\n")
+    beep.chmod(0o755)
+    return wrapper
+
+
+def run_wrapper(fixture: Fixture, wrapper: Path) -> subprocess.CompletedProcess:
+    env = dict(os.environ,
+               USB_DIR=str(fixture.stick),
+               COMBO_RW_DIR=str(fixture.runtime / "combo"),
+               COMBO_RUNTIME_ROOT=str(fixture.runtime),
+               COMBO_QML_DIR=str(fixture.qml),
+               CLEANUP_PROC_ROOT=str(fixture.proc),
+               CLEANUP_WIFI_SERVICE=str(fixture.service))
+    return subprocess.run(["sh", str(wrapper)], env=env, capture_output=True,
+                          text=True, timeout=90)
+
+
+def test_wrapper_cleanup() -> None:
+    with tempfile.TemporaryDirectory(prefix="cleanup-wrapper-", dir="/tmp/opencode") as d:
+        fixture = Fixture(Path(d))
+        marker_absent(fixture)
+        make_archive(fixture)
+        wrapper = make_wrapper_bundle(fixture)
+        result = run_wrapper(fixture, wrapper)
+        assert result.returncode == 0, (result.stdout, result.stderr,
+                                        (fixture.stick / "appcombo_install.log").read_text())
+        assert not fixture.wifi.exists(), "verified archive did not authorise wrapper cleanup"
+        assert (fixture.runtime / "combo/wifi-removed.receipt").exists()
+        assert "status=OK" in (fixture.stick / "wrapper_result.txt").read_text()
+    with tempfile.TemporaryDirectory(prefix="cleanup-wrapper-corrupt-", dir="/tmp/opencode") as d:
+        fixture = Fixture(Path(d))
+        marker_absent(fixture)
+        make_archive(fixture)
+        wrapper = make_wrapper_bundle(fixture, corrupt=True)
+        result = run_wrapper(fixture, wrapper)
+        assert result.returncode != 0
+        assert (fixture.wifi / "config.conf").read_text() == "owner-credential\n"
+        assert "status=FAIL" in (fixture.stick / "wrapper_result.txt").read_text()
+    with tempfile.TemporaryDirectory(prefix="cleanup-wrapper-marker-", dir="/tmp/opencode") as d:
+        fixture = Fixture(Path(d))
+        marker_absent(fixture)
+        make_archive(fixture)
+        advanced = fixture.qml / QML_FILES[0]
+        advanced.chmod(0)
+        wrapper = make_wrapper_bundle(fixture)
+        result = run_wrapper(fixture, wrapper)
+        assert result.returncode == 0, result.stderr
+        assert (fixture.wifi / "config.conf").read_text() == "owner-credential\n", \
+            "unreadable QML marker authorised credential deletion"
+        advanced.chmod(0o644)
+    print("PASS: flat wrapper cleans only with a verified archive, preserves state on a corrupt bundle and fails closed on an unreadable marker")
+
+
 test_bounded_logs()
 test_stale_temps()
 test_removed_wifi_evidence()
+test_wrapper_cleanup()
 print("PASS: runtime cleanup safety fixtures are host-isolated and preserve owner data")
