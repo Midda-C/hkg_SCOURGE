@@ -948,6 +948,37 @@ debug log level because the FUMO update target is logged at debug.
 A real run passes all seventeen checks. The positive download scenario remains
 `dmengine-fumo-download` (notice level, fourteen checks).
 
+## dmengine FUMO DownloadAndUpdate (Mode C)
+
+```sh
+python3 -B launch.py run --kernel compat --profile research \
+  --scenario dmengine-fumo-download-update --payload payload/tweaks-vm --timeout 320
+```
+
+Runs the combined FUMO command. The mock sends an Exec on
+`./ManagedObjects/FUMO/DownloadAndUpdate`; the lab tree's
+`DownloadAndUpdate/PkgURL` leaf is empty in the captured tree, so the probe
+inserts the loopback package URL before starting dmengine.
+
+The engine performs the authenticated DD/DP download, then logs:
+
+```text
+Got EXEC on "DownloadAndUpdate" node.
+FUMO_Plugin: FUMO DownloadAndUpdate executed in this session
+DL session complete
+calling VDM_FUMO_UA_executeUpdate
+confirmUpdateCB (response=0)
+Sent event to OEM handler = [77] ... strData = [/update//lab-fumo]
+```
+
+FUMO state advances `30 -> 40 -> 60` (update progressing). The engine hands
+event `77` with the downloaded package path to the OEM handler; it does not
+run the physical updater itself, so no install or update-success is claimed.
+The scenario runs dmengine at debug log level for the update handoff.
+
+A real run passes all seventeen checks. `dmengine-fumo-download` and
+`dmengine-fumo-update` remain separate positive/negative scenarios.
+
 ## dmengine startup (Mode C)
 
 ```sh

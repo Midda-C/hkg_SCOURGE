@@ -274,7 +274,8 @@ static void put_server_cred(struct buffer *buffer, const char *digest)
 static int build_response(const unsigned char *body, size_t length,
                           unsigned char *output, size_t capacity,
                           char *session, size_t session_size,
-                          int download_mode, int send_exec, int send_update)
+                          int download_mode, int send_exec, int send_update,
+                          int combined_mode)
 {
     static const char string_table[] = "-//SYNCML//DTD SyncML 1.2//EN";
     struct wbxml_string strings[MAX_STRINGS];
@@ -352,7 +353,9 @@ static int build_response(const unsigned char *body, size_t length,
     if (send_update)
         put_exec(&buffer, "./ManagedObjects/FUMO/Update", "");
     else if (send_exec)
-        put_exec(&buffer, "./ManagedObjects/FUMO/Download",
+        put_exec(&buffer, combined_mode
+                    ? "./ManagedObjects/FUMO/DownloadAndUpdate"
+                    : "./ManagedObjects/FUMO/Download",
                     "http://127.0.0.1:8002/package.bin");
     put_byte(&buffer, TOKEN_FINAL);
     put_byte(&buffer, WBXML_END);       /* SyncBody */
@@ -422,8 +425,10 @@ int main(int argc, char **argv)
     int port = argc > 1 ? atoi(argv[1]) : 8002;
     const char *log_path = argc > 2 ? argv[2] : "/tmp/mock-dm.log";
     int update_mode = argc > 3 && strcmp(argv[3], "update") == 0;
+    int combined_mode = argc > 3 && strcmp(argv[3], "combined") == 0;
     int download_mode = argc > 3
-        && (strcmp(argv[3], "download") == 0 || update_mode);
+        && (strcmp(argv[3], "download") == 0 || update_mode
+            || combined_mode);
     int server = socket(AF_INET, SOCK_STREAM, 0);
     int one = 1;
     struct sockaddr_in addr;
@@ -604,7 +609,7 @@ int main(int argc, char **argv)
                 request + body_offset, (size_t)used - body_offset,
                 response, sizeof(response), session, sizeof(session),
                 download_mode, download_mode && requests == 0,
-                update_mode && report);
+                update_mode && report, combined_mode);
             if (update_mode && report)
                 fprintf(log, "MOCK_DM_UPDATE_EXEC path=/dm/message\n");
         }

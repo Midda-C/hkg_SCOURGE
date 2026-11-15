@@ -102,6 +102,10 @@ VM-validated (vendor kernel):
   session with a FUMO Update Exec. The engine queues
   `./ManagedObjects/FUMO/Update` and rejects the structural DP with
   `0x6011` / FUMO `24593`; no completed update state is asserted (negative)
+- FUMO combined command (`dmengine-fumo-download-update`): Exec on
+  `./ManagedObjects/FUMO/DownloadAndUpdate` downloads the DD/DP, advances
+  state 30 -> 40 -> 60 and hands event 77 with `/update//lab-fumo` to the
+  OEM handler; no physical install is claimed
 - device-model regression (`device-model`): asserts Q35 host bridge, SDHCI
   root, ICH9 LPC/SATA and no virtio; substrate only, not captured BXT hardware
 - AppDMClient fota callback (`dmclient-fota-events`): `/fotaInterface`

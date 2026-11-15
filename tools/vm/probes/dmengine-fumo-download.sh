@@ -20,7 +20,9 @@ SERVER_PID=
 LOG=/log_data/AppUpgrade/fota/vdm.log
 MODE=${FUMO_MODE:-download}
 LOG_LEVEL=notice
-[ "$MODE" = update ] && LOG_LEVEL=debug
+case "$MODE" in
+    update|combined) LOG_LEVEL=debug ;;
+esac
 
 fail() {
     echo "HARNESS_FAIL $1"
@@ -78,6 +80,14 @@ sed -e '/<name>Addr<\/name>/,/<value>/ s#<value>.*</value>#<value>http://127.0.0
     -e '/<name>PkgURL<\/name>/,/<value>/ s#<value>.*</value>#<value>http://127.0.0.1:8002/package.bin</value>#' \
     -e '/<name>MinServerAuth<\/name>/,/<value>/ s#<value>.*</value>#<value>none</value>#' \
     /app/share/dmengine/tree.xml > /tmp/lab-tree.xml || fail 'fumo-tree-edit'
+if [ "$MODE" = combined ]; then
+    sed -i '/<name>DownloadAndUpdate<\/name>/,/<\/node>/{
+      /<name>PkgURL<\/name>/,/<\/leaf>/{
+        /<format>chr<\/format>/a\
+              <value>http://127.0.0.1:8002/package.bin</value>
+      }
+    }' /tmp/lab-tree.xml || fail 'fumo-tree-combined'
+fi
 cp /tmp/lab-tree.xml /update/fota/dme/tree.xml || fail 'fumo-tree-copy'
 cp /app/share/dmengine/version.txt /update/fota/dme/version.txt 2>/dev/null
 printf '0' > /update/fota/dm_state.txt || fail 'fumo-dm-state'
@@ -241,6 +251,39 @@ if ! grep -q 'Set state, 30' /tmp/vdm-delta.log \
 fi
 echo 'HARNESS_CHECK fumo-state PASS'
 
+if [ "$MODE" = combined ]; then
+    combined_wait=0
+    while [ "$combined_wait" -lt 45 ]; do
+        grep -q 'Set state, 60' /tmp/vdm-delta.log 2>/dev/null && break
+        sleep 1
+        combined_wait=$((combined_wait + 1))
+    done
+    sleep 2
+    tail -c +$((LOG_MARK + 1)) "$LOG" > /tmp/vdm-delta.log 2>/dev/null
+    if ! grep -qF 'Got EXEC on "DownloadAndUpdate" node.' /tmp/vdm-delta.log \
+        || ! grep -qF 'FUMO DownloadAndUpdate executed in this session' /tmp/vdm-delta.log; then
+        grep -aE 'DownloadAndUpdate|Got EXEC|FUMO_Plugin' /tmp/vdm-delta.log | tail -30
+        fail 'fumo-combined-command'
+    fi
+    echo 'HARNESS_CHECK fumo-combined-command PASS'
+
+    if ! grep -qF 'E_VDM_FUMO_STATE_update_progressing' /tmp/vdm-delta.log \
+        || ! grep -q 'Set state, 60' /tmp/vdm-delta.log; then
+        grep -aE 'update_progressing|Set state' /tmp/vdm-delta.log | tail -30
+        fail 'fumo-update-progressing'
+    fi
+    echo 'HARNESS_CHECK fumo-update-progressing PASS'
+
+    if ! grep -qF 'VDM_FUMO_UA_executeUpdate (forceUpdate=0)' /tmp/vdm-delta.log \
+        || ! grep -qF 'confirmUpdateCB (response=0)' /tmp/vdm-delta.log \
+        || ! grep -qF 'event to OEM handler = [77]' /tmp/vdm-delta.log \
+        || ! grep -qF 'strData = [/update//lab-fumo]' /tmp/vdm-delta.log; then
+        grep -aE 'executeUpdate|confirmUpdateCB|event to OEM handler|lab-fumo' /tmp/vdm-delta.log | tail -30
+        fail 'fumo-update-handoff'
+    fi
+    echo 'HARNESS_CHECK fumo-update-handoff PASS'
+fi
+
 if [ "$MODE" = update ]; then
     update_wait=0
     while [ "$update_wait" -lt 45 ]; do
@@ -287,7 +330,9 @@ grep -aE 'MOCK_DM_DD|MOCK_DM_DOWNLOAD' /tmp/mock-dm.log 2>/dev/null | head -8
 kill "$DM_PID" "$OEM_PID" "$DLOK_PID" "$SERVER_PID" 2>/dev/null || true
 sleep 1
 kill -9 "$DM_PID" "$OEM_PID" "$DLOK_PID" "$SERVER_PID" 2>/dev/null || true
-if [ "$MODE" = update ]; then
+if [ "$MODE" = combined ]; then
+    echo 'HARNESS_CHECK dmengine-fumo-download-update PASS'
+elif [ "$MODE" = update ]; then
     echo 'HARNESS_CHECK dmengine-fumo-update PASS'
 else
     echo 'HARNESS_CHECK dmengine-fumo-download PASS'

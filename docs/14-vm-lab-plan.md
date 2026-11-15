@@ -1111,6 +1111,15 @@ items beyond that.
   `dmengine-fumo-update` asserts the request, rejection and no completion
   (negative). Real run PASS with seventeen checks; 3 new tests; 538 tests
   (75 skipped); doctor green.
+- **2026-11-15 — combined FUMO DownloadAndUpdate reaches update handoff**:
+  the captured tree has an empty `DownloadAndUpdate/PkgURL` leaf, so the lab
+  probe now inserts the loopback URL there. The mock sends
+  `Exec ./ManagedObjects/FUMO/DownloadAndUpdate`; the engine downloads the
+  DD/DP, advances FUMO state 30 -> 40 -> 60 and sends event 77 with
+  `/update//lab-fumo` to the OEM handler (`confirmUpdateCB response=0`).
+  The physical updater is not run, so no install/update-success is claimed.
+  Real run PASS with seventeen checks; 3 new tests; 541 tests (75 skipped);
+  doctor green.
 - **2026-11-15 — NAS import verified**: 9.4 GB preservation copy complete;
   all archives, partitions, runtime files and the navi2 archive match.
   `meta/SOURCE.txt` was finalized after the original manifest, so its one
