@@ -664,6 +664,25 @@ arbitrary names. Exit 0/1 with a JSON report.
 The real `update-k.img` passes with 35 package entries, 2 manifest targets and
 header `NE_E.EUR.S5W_L.001.001.260128` / `IONIQ5_EU`.
 
+## DM/RDM tree validation and diff
+
+```sh
+python3 -B launch.py check-dm-tree <tree.xml> \
+  [--compare <other-tree.xml>] [--fail-on-diff]
+```
+
+Checks the `rdmtree` root and version, exactly one FUMO managed object
+(`urn:oma:mo:oma-fumo:1.0`) with integer `State`, `PkgVersion` and `PkgURL`,
+the DM account address/port, and `APPSRV`/`CLIENT` auth fields for every
+account. DTD/entity declarations and trees over 2 MiB are rejected.
+
+The report contains structural facts, FUMO state/version and auth types/levels
+only. It never prints addresses, account names, `AAuthName`, `AAuthSecret` or
+`AAuthData`. `--compare` reports changed/added/removed leaf paths with account
+segments replaced by `<accountN>`; `--fail-on-diff` turns a difference into
+exit 1. The captured stock and update trees are identical at leaf level
+(30 nodes, 63 leaves, FUMO state 10).
+
 ## Troubleshooting
 
 | Symptom | Action |

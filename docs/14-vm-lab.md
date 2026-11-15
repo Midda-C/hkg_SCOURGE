@@ -62,6 +62,8 @@ VM-validated (vendor kernel):
 - offline update-media validation (`check-update`): package-map grammar,
   manifest coverage and confinement, optional hashes and declared sizes for a
   directory or raw ext4 stick; no decryption or updater execution
+- DM/RDM tree validation and diff (`check-dm-tree`): FUMO state, account and
+  auth structure, DTD/entity rejection and credential-redacted leaf diffs
 - vendor systemd partial boot (`vendor-systemd`): real systemd reaches
   Multi-User; SMACK units fail, consistent with the missing vendor initramfs (documented)
 - vendor systemd D-Bus service/ordering (`vendor-systemd-dbus`): the research shell

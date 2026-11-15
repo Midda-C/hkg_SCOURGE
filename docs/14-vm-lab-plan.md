@@ -981,6 +981,13 @@ items beyond that.
   It never decrypts, extracts or runs the updater. The captured
   `update-k.img` passes with 35 entries and 2 manifest targets; 12 new tests.
   431 tests (72 skipped); doctor green.
+- **2026-11-15 — P2-7 DM/RDM tree gate**: `check-dm-tree <tree.xml>
+  [--compare other]` validates the FUMO object (`State`, `PkgVersion`,
+  `PkgURL`), account address/port and `APPSRV`/`CLIENT` auth fields, rejects
+  DTD/entities, and never emits addresses, account names or auth values.
+  `--compare` reports credential-redacted leaf-path diffs; the stock and
+  update trees are identical. 10 new tests; 441 tests (73 skipped); doctor
+  green.
 - **2026-11-15 — NAS import verified**: 9.4 GB preservation copy complete;
   all archives, partitions, runtime files and the navi2 archive match.
   `meta/SOURCE.txt` was finalized after the original manifest, so its one
