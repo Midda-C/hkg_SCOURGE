@@ -1021,6 +1021,30 @@ idle and does **not** enter success state `90`. The result is lab-supplied; the
 physical updater is not run, so no install claim is made. A real run passes all
 twenty-one checks.
 
+## dmengine FUMO invalid update result (Mode C, negative)
+
+```sh
+python3 -B launch.py run --kernel compat --profile research \
+  --scenario dmengine-fumo-update-invalid-result --payload payload/tweaks-vm --timeout 340
+```
+
+Runs the same combined download/update handoff, but the lab OEM handler reports
+an invalid result code `0`:
+
+```text
+VDMC_FUMO_updateReport] result = [0]
+validateResultCode - invalid result code (0). using UNDEFINED(409) instead.
+VDM_FUMO_triggerReportSession(0)
+Set state, 70
+Set state, 10
+DM session complete
+```
+
+The engine remaps the result to `409`, reports the failure through a DM
+session, returns to idle and never enters success state `90`. The result is
+lab-supplied; no physical install is claimed. A real run passes all
+twenty-two checks.
+
 ## dmengine startup (Mode C)
 
 ```sh

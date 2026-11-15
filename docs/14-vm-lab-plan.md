@@ -1130,6 +1130,13 @@ items beyond that.
   failure` asserts the failure report and absence of success (negative). Real
   run PASS with twenty-one checks; 3 new tests; 544 tests (75 skipped); doctor
   green.
+- **2026-11-15 — FUMO invalid update result**: result `0` is rejected by
+  `validateResultCode` and remapped to `UNDEFINED(409)`. The engine still
+  reports through a DM session, transitions state `70 -> 10`, and never enters
+  success state `90`. `dmengine-fumo-update-invalid-result` asserts the remap,
+  failure report and absence of success (negative validation path). Real run
+  PASS with twenty-two checks; 3 new tests; 550 tests (75 skipped); doctor
+  green.
 - **2026-11-15 — DP update-payload fixture**: `harness/dp.py` now builds and
   validates update-table entries and payload bounds. The mock serves a
   132-byte DP with one 16-byte `LABUPDATE-DATA01` payload; a loopback test

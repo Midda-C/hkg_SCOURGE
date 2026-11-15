@@ -21,6 +21,7 @@ SERVER_PID=
 LOG=/log_data/AppUpgrade/fota/vdm.log
 MODE=${FUMO_MODE:-download}
 RESULT_CODE=${FUMO_RESULT:-200}
+INVALID_RESULT=${FUMO_INVALID_RESULT:-0}
 LOG_LEVEL=notice
 case "$MODE" in
     update|combined) LOG_LEVEL=debug ;;
@@ -313,7 +314,15 @@ if [ "$MODE" = combined ]; then
         grep -aE 'triggerReportSession|Set state' /tmp/vdm-delta.log | tail -30
         fail 'fumo-update-result-accepted'
     fi
-    if grep -qF 'validateResultCode - invalid result code' /tmp/vdm-delta.log; then
+    if [ "$INVALID_RESULT" = 1 ]; then
+        if ! grep -qF "validateResultCode - invalid result code ($RESULT_CODE)" /tmp/vdm-delta.log \
+            || ! grep -qF 'using UNDEFINED(409)' /tmp/vdm-delta.log \
+            || ! grep -q 'Set state, 70' /tmp/vdm-delta.log; then
+            grep -aE 'validateResultCode|Set state' /tmp/vdm-delta.log | tail -20
+            fail 'fumo-update-invalid-remap'
+        fi
+        echo 'HARNESS_CHECK fumo-update-invalid-remap PASS'
+    elif grep -qF 'validateResultCode - invalid result code' /tmp/vdm-delta.log; then
         grep -aE 'validateResultCode' /tmp/vdm-delta.log | tail -10
         fail 'fumo-update-result-rejected'
     fi
@@ -385,7 +394,9 @@ kill "$DM_PID" "$OEM_PID" "$DLOK_PID" "$RESULT_PID" "$SERVER_PID" 2>/dev/null ||
 sleep 1
 kill -9 "$DM_PID" "$OEM_PID" "$DLOK_PID" "$RESULT_PID" "$SERVER_PID" 2>/dev/null || true
 if [ "$MODE" = combined ]; then
-    if [ "$RESULT_CODE" = 200 ]; then
+    if [ "$INVALID_RESULT" = 1 ]; then
+        echo 'HARNESS_CHECK dmengine-fumo-update-invalid-result PASS'
+    elif [ "$RESULT_CODE" = 200 ]; then
         echo 'HARNESS_CHECK dmengine-fumo-download-update PASS'
     else
         echo 'HARNESS_CHECK dmengine-fumo-update-failure PASS'
