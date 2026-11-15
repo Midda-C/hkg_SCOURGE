@@ -71,6 +71,7 @@ from harness.fumo import run_exchange, run_script
 from harness.mof import MofError, build_notification, decode_notification
 from harness.update_state import check_update_state
 from harness.update_media import check_update_media
+from harness.update_media_image import build_update_image
 from harness.result_schema import (check_all_bench, check_all_bench_dir,
                                    check_all_results, schema_state,
                                    validate_bench, validate_file,
@@ -1724,6 +1725,11 @@ def main() -> int:
     dmq.add_argument('--field2', type=int, default=0)
     dmq.add_argument('--text', default='')
     dmq.add_argument('--file', type=Path, default=None)
+    build_media = sub.add_parser(
+        'make-update-media', help='build a small synthetic update-stick image')
+    build_media.add_argument('--output', type=Path, required=True)
+    build_media.add_argument('--size-mb', type=int, default=32)
+    build_media.add_argument('--payload-size', type=int, default=65536)
     check_scenario = sub.add_parser('check-scenario',
                                     help='validate scenario JSON contracts')
     check_scenario.add_argument('scenario', nargs='?',
@@ -2257,6 +2263,15 @@ def main() -> int:
                                   chunk_size=args.chunk_size)
         print(json.dumps(report, indent=2))
         return 0 if report['ok'] else 1
+    if args.action == 'make-update-media':
+        try:
+            report = build_update_image(args.output, args.size_mb,
+                                        args.payload_size)
+        except (ValueError, OSError, RuntimeError) as exc:
+            print(json.dumps({'ok': False, 'error': str(exc)}, indent=2))
+            return 1
+        print(json.dumps({'ok': True, **report}, indent=2))
+        return 0
     if args.action == 'dmengine-queue':
         try:
             if args.queue_action == 'trace':

@@ -68,6 +68,9 @@ VM-validated (vendor kernel):
 - update-media preflight (`update-preflight`): read-only Mode V mount,
   package-map grammar/sizes, manifest hashes and opaque-payload checks without
   launching the updater
+- synthetic update media (`make-update-media`): vendor-4.1-mountable ext4
+  image with lab package map/manifest/payload, letting both preflight
+  scenarios run without OEM media
 - negative update preflight (`update-preflight-negative`): a disposable
   read-write overlay proves size/path/manifest corruption is rejected and the
   media is restored; the base stick is never modified

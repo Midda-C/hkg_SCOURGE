@@ -688,6 +688,22 @@ FUMO current/scheduled `NE_E.EUR...260128`, FUMO state 10, dm_state 0 and a
 next FUMO count of 1. A mismatch is reported as a warning where the vendor
 state cannot prove a hard failure.
 
+## Synthetic update-media image
+
+```sh
+python3 -B launch.py make-update-media --output /tmp/update.img --size-mb 24
+python3 -B launch.py check-update /tmp/update.img --verify-hashes --verify-files
+```
+
+Builds a small lab update stick with the real filenames and package-map
+grammar: `IONIQ5_EU.ver`, `MANIFEST.sha256`, `.lge.upgrade.xml` and an opaque
+`HU/images/mango-rootfs.tar.gz`. It contains no OEM bytes or credentials.
+
+The ext4 image uses 4K blocks, 256-byte inodes and disables
+`metadata_csum`/`64bit`/`orphan_file` so the vendor 4.1 kernel can mount it.
+It is accepted by both `update-preflight` and `update-preflight-negative`, so
+the preflight scenarios can run in a clean checkout without `update-k.img`.
+
 ## Update-media preflight (Mode V)
 
 ```sh

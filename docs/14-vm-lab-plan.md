@@ -1048,6 +1048,12 @@ items beyond that.
   dmengine events on key 0xd54 (and its own key 0xe9b) but sending no type
   0x36 command, so the missing AppDMClient event source is confirmed. 3 new
   tests; 499 tests (75 skipped); doctor green.
+- **2026-11-15 — synthetic update-media builder**: `make-update-media`
+  creates a vendor-4.1-mountable ext4 stick with lab `.ver`, manifest and
+  opaque payload. Both `update-preflight` and its negative variant run PASS
+  without `update-k.img`; the vendor kernel rejects default
+  `metadata_csum`/`64bit` features, so the builder pins 4K/256-byte
+  no-checksum features. 3 new tests; 502 tests (75 skipped); doctor green.
 - **2026-11-15 — NAS import verified**: 9.4 GB preservation copy complete;
   all archives, partitions, runtime files and the navi2 archive match.
   `meta/SOURCE.txt` was finalized after the original manifest, so its one
