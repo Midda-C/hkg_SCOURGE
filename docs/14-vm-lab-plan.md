@@ -1151,6 +1151,11 @@ items beyond that.
   proves the C fixture is byte-identical to the Python builder. All FUMO
   scenarios still download it. 3 new tests; 547 tests (75 skipped); doctor
   green.
+- **2026-11-15 — FUMO install notification**: the mock handles
+  `POST /notify`, logs `MOCK_DM_NOTIFY path=/notify bytes=11 body=900 Success`
+  and returns 200. `dmengine-fumo-download` asserts `fumo-notify`; the combined
+  scenario still passes with the same notification. Real download run PASS
+  with fifteen checks; 557 tests (75 skipped); doctor green.
 - **2026-11-15 — DP signature trailer**: `harness/dp.py` supports a lab
   HMAC-SHA256 trailer and `check-dp --key`; the mock serves a 184-byte object
   (132-byte body + 52-byte trailer). A loopback test verifies the C fixture

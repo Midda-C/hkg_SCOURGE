@@ -96,9 +96,10 @@ VM-validated (vendor kernel):
   Descriptor. OEM confirmation code 10 (`DMC_REQ_DL_OK`) lets the engine
   fetch a 184-byte object (132-byte DP body with component/update tables and
   a 16-byte payload, plus a 52-byte lab HMAC trailer); `DL session
-  complete` and FUMO state 30 -> 40 are asserted. `launch.py check-dp`
-  validates the container layout. The DP is a structural fixture, so this is
-  a download, not an install
+  complete` and FUMO state 30 -> 40 are asserted; the install-notification
+  POST `900 Success` is also checked. `launch.py check-dp` validates the
+  container layout. The DP is a structural fixture, so this is a download,
+  not an install
 - FUMO update request (`dmengine-fumo-update`): the mock answers the DM report
   session with a FUMO Update Exec. The engine queues
   `./ManagedObjects/FUMO/Update` and rejects the structural DP with

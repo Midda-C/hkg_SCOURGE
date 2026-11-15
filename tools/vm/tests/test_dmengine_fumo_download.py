@@ -21,7 +21,8 @@ class DmengineFumoDownloadTests(unittest.TestCase):
                          {'fumo-ready', 'fumo-http-post', 'fumo-response',
                           'fumo-syncml', 'fumo-trigger', 'fumo-command',
                           'fumo-server-auth', 'fumo-dd', 'fumo-confirm',
-                          'fumo-download', 'fumo-dl-complete', 'fumo-state',
+                          'fumo-download', 'fumo-notify', 'fumo-dl-complete',
+                          'fumo-state',
                           'fumo-no-production', 'dmengine-fumo-download'})
         self.assertIn('OMA Download Descriptor', scenario['description'])
         self.assertIn('DMC_REQ_DL_OK', scenario['description'])

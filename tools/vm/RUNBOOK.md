@@ -872,7 +872,17 @@ MOCK_DM_RESPONSE status=200 syncml=1 session=4D bytes=234
 ```
 
 The mock replies with a minimal **WBXML** SyncML DM response: `Status` 200 for
-the Alert/Replace commands and a `Final` element. The engine parses three
+the Alert/Replace commands and a `Final` element.
+
+After the download the engine posts the install notification to the DD's
+`installNotifyURI`:
+
+```text
+MOCK_DM_NOTIFY path=/notify bytes=11 body=900 Success
+```
+
+The mock returns an empty 200. The download scenario asserts `fumo-notify`
+alongside the DP GET. The engine parses three
 statuses (debug: `cmdType=STATUS ... resultCode=0200`), finishes setup with
 `result=0x600a`, and reports `SCOMO_Plugin_onSessionStateChange
 inType=[1], inState=[1], inLastError=[0]` with no `DM session aborted`.

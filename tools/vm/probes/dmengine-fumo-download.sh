@@ -280,6 +280,18 @@ if ! grep -q 'MOCK_DM_DOWNLOAD method=GET path=/object.bin bytes=184 preamble=Re
 fi
 echo 'HARNESS_CHECK fumo-download PASS'
 
+notify_wait=0
+while [ "$notify_wait" -lt 30 ]; do
+    grep -q 'MOCK_DM_NOTIFY path=/notify' /tmp/mock-dm.log 2>/dev/null && break
+    sleep 1
+    notify_wait=$((notify_wait + 1))
+done
+if ! grep -q 'MOCK_DM_NOTIFY path=/notify bytes=11 body=900 Success' /tmp/mock-dm.log; then
+    grep -a 'MOCK_DM_NOTIFY' /tmp/mock-dm.log 2>/dev/null
+    fail 'fumo-notify'
+fi
+echo 'HARNESS_CHECK fumo-notify PASS'
+
 sleep 5
 tail -c +$((LOG_MARK + 1)) "$LOG" > /tmp/vdm-delta.log 2>/dev/null
 if ! grep -q 'DL session complete' /tmp/vdm-delta.log; then

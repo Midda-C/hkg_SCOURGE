@@ -567,6 +567,27 @@ int main(int argc, char **argv)
             fflush(log);
             continue;
         }
+        if (strcmp(method, "POST") == 0 && strcmp(path, "/notify") == 0) {
+            static const char ok[] =
+                "HTTP/1.1 200 OK\r\n"
+                "Content-Length: 0\r\n"
+                "Connection: close\r\n\r\n";
+            char body[64];
+            size_t notify_length = (size_t)used > body_offset
+                ? (size_t)used - body_offset : 0;
+            size_t copy_length = notify_length < sizeof(body) - 1
+                ? notify_length : sizeof(body) - 1;
+            memcpy(body, request + body_offset, copy_length);
+            body[copy_length] = '\0';
+            send_all(client, (const unsigned char *)ok, sizeof(ok) - 1);
+            fprintf(log, "MOCK_DM_NOTIFY path=/notify bytes=%zu body=%s\n",
+                    notify_length, body);
+            fflush(log);
+            close(client);
+            free(request);
+            requests++;
+            continue;
+        }
         if (strcmp(method, "GET") == 0 && strcmp(path, "/object.bin") == 0) {
             unsigned char package[256];
             if (missing_mode) {
