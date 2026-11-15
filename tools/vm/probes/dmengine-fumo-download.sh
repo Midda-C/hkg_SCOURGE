@@ -23,6 +23,10 @@ MODE=${FUMO_MODE:-download}
 RESULT_CODE=${FUMO_RESULT:-200}
 INVALID_RESULT=${FUMO_INVALID_RESULT:-0}
 SKIP_RESULT=${FUMO_SKIP_RESULT:-0}
+case "$MODE" in
+    multidp) EXPECTED_OBJECT=291; EXPECTED_COMPONENTS=2 ;;
+    *) EXPECTED_OBJECT=184; EXPECTED_COMPONENTS=1 ;;
+esac
 LOG_LEVEL=notice
 case "$MODE" in
     update|combined) LOG_LEVEL=debug ;;
@@ -275,11 +279,19 @@ if ! grep -q 'MOCK_OEM_SENT code=10' /tmp/mock-oem-dlok.log 2>/dev/null; then
 fi
 echo 'HARNESS_CHECK fumo-confirm PASS'
 
-if ! grep -q 'MOCK_DM_DOWNLOAD method=GET path=/object.bin bytes=184 preamble=RedBendEFDPackage version=4 components=1' /tmp/mock-dm.log; then
+if ! grep -q "MOCK_DM_DOWNLOAD method=GET path=/object.bin bytes=$EXPECTED_OBJECT preamble=RedBendEFDPackage version=4 components=$EXPECTED_COMPONENTS" /tmp/mock-dm.log; then
     tail -40 /tmp/mock-dm.log
     fail 'fumo-download'
 fi
 echo 'HARNESS_CHECK fumo-download PASS'
+
+if [ "$MODE" = multidp ]; then
+    if ! grep -q 'MOCK_DM_MULTIDP method=GET path=/object.bin bytes=291 components=2 updates=3' /tmp/mock-dm.log; then
+        grep -a 'MOCK_DM_MULTIDP' /tmp/mock-dm.log 2>/dev/null
+        fail 'fumo-multidp'
+    fi
+    echo 'HARNESS_CHECK fumo-multidp PASS'
+fi
 
 if [ "$MODE" = badsig ]; then
     if ! grep -q 'MOCK_DM_BADSIG path=/object.bin bytes=184' /tmp/mock-dm.log; then
@@ -498,7 +510,9 @@ grep -aE 'MOCK_DM_DD|MOCK_DM_DOWNLOAD' /tmp/mock-dm.log 2>/dev/null | head -8
 kill "$DM_PID" "$OEM_PID" "$DLOK_PID" "$RESULT_PID" "$SERVER_PID" 2>/dev/null || true
 sleep 1
 kill -9 "$DM_PID" "$OEM_PID" "$DLOK_PID" "$RESULT_PID" "$SERVER_PID" 2>/dev/null || true
-if [ "$MODE" = badsig ]; then
+if [ "$MODE" = multidp ]; then
+    echo 'HARNESS_CHECK dmengine-fumo-download-multi PASS'
+elif [ "$MODE" = badsig ]; then
     echo 'HARNESS_CHECK dmengine-fumo-download-badsig PASS'
 elif [ "$MODE" = notifyfail ]; then
     echo 'HARNESS_CHECK dmengine-fumo-notify-failure PASS'

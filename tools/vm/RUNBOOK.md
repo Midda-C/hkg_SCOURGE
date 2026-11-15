@@ -927,7 +927,8 @@ python3 -B launch.py check-dp <package.dp> --key lab-dp-key
 
 It validates the preamble, version, declared body size, component-table
 range, update-table range, payload bounds, string offsets, installer type, NUL
-termination and the optional lab HMAC-SHA256 trailer. The trailer is an
+termination and the optional lab HMAC-SHA256 trailer. Multiple component and
+update entries are supported. The trailer is an
 integrity fixture, not a vendor firmware signature.
 
 The engine logs `DL session complete`, advances FUMO state `30` (downloading)
@@ -1212,6 +1213,33 @@ MOCK_DM_NOTIFY path=/notify bytes=11 body=900 Success
 No `Range: bytes=64-` is sent; the engine performs a full GET from zero and the
 download completes. This proves resume requires an ETag, not just
 `Accept-Ranges`. A real run passes all eight checks. No install is claimed.
+
+## dmengine FUMO multi-component download (Mode C)
+
+```sh
+python3 -B launch.py run --kernel compat --profile research \
+  --scenario dmengine-fumo-download-multi --payload payload/tweaks-vm --timeout 320
+```
+
+The mock serves a 291-byte object with a two-component, three-update DP body:
+
+```text
+MOCK_DM_DD method=GET path=/package.bin bytes=403 object=/object.bin object_bytes=291
+MOCK_DM_DOWNLOAD method=GET path=/object.bin bytes=291
+  preamble=RedBendEFDPackage version=4 components=2
+MOCK_DM_MULTIDP method=GET path=/object.bin bytes=291 components=2 updates=3
+MOCK_DM_NOTIFY path=/notify bytes=11 body=900 Success
+DL session complete
+Set state, 30
+Set state, 40
+```
+
+Layout: 52-byte header, two 28-byte component entries
+(`LABCOMP`/`LABID` and `LABCOMP2`/`LABID2`), three 8-byte update entries,
+59 bytes of strings, three 16-byte payloads (239-byte body) and the 52-byte
+lab HMAC trailer. The Python builder, parser and `check-dp --key` validate the
+same layout; a loopback test compares the C fixture byte-for-byte. A real run
+passes all sixteen checks. No install is claimed.
 
 ## dmengine startup (Mode C)
 

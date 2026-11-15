@@ -139,6 +139,9 @@ VM-validated (vendor kernel):
   `Accept-Ranges` but omits the ETag; the engine logs offset 64 with a null
   ETag, refuses to send `Range`, re-downloads the full object and completes
   (state 40)
+- FUMO multi-component download (`dmengine-fumo-download-multi`): the mock
+  serves a 291-byte object with two components and three update payloads; the
+  engine downloads it and completes state 30 -> 40
 - device-model regression (`device-model`): asserts Q35 host bridge, SDHCI
   root, ICH9 LPC/SATA and no virtio; substrate only, not captured BXT hardware
 - AppDMClient fota callback (`dmclient-fota-events`): `/fotaInterface`

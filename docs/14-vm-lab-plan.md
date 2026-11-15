@@ -1175,6 +1175,14 @@ items beyond that.
   offset, the fallback full GET, completion and notification. This shows
   resume requires an ETag, not just `Accept-Ranges`. Real run PASS with eight
   checks; 3 new tests; 576 tests (75 skipped); doctor green.
+- **2026-11-15 — DP multi-component/update fixture**: `build_dp_multi_package`
+  serves a 291-byte object with two 28-byte component entries, three update
+  entries and three 16-byte payloads (239-byte body plus the 52-byte trailer).
+  The Python builder/parser and a loopback test validate the same layout
+  byte-for-byte. `dmengine-fumo-download-multi` downloads it through the real
+  DD/auth/object flow and asserts the two-component marker, notification and
+  state 30 -> 40. Real run PASS with sixteen checks; 7 new tests; 583 tests
+  (75 skipped); doctor green.
 - **2026-11-15 — FUMO bad-signature boundary**: the mock flips one bit in
   the lab HMAC trailer. The engine still downloads the 184-byte object, posts
   the install notification and advances to state 40. `check-dp --key` rejects

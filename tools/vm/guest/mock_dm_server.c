@@ -436,6 +436,69 @@ static int build_dp_package(unsigned char *out, size_t capacity)
     return (int)total_length;
 }
 
+/* Multi-component lab DP: two 28-byte component entries, three update-table
+ * entries, eight strings, three 16-byte payloads and a 52-byte lab HMAC
+ * trailer. Layout: header 52, components 56, updates 24, strings 59,
+ * payloads 48, trailer 52 (total 291). This is a lab fixture, not bootable. */
+static int build_dp_multi_package(unsigned char *out, size_t capacity)
+{
+    static const char preamble[] = "RedBendEFDPackage";
+    const size_t body_length = 239;
+    const size_t total_length = 291;
+    static const unsigned char signature[32] = {
+        0x35, 0x42, 0x95, 0x96, 0xf0, 0x3e, 0xff, 0xd7,
+        0x7c, 0x17, 0x41, 0xd8, 0x6a, 0x47, 0x56, 0x6f,
+        0x39, 0x00, 0xae, 0x28, 0xbd, 0x3e, 0x1e, 0x3b,
+        0x00, 0xcb, 0x56, 0xc4, 0x5f, 0x4b, 0x80, 0x3a
+    };
+    if (capacity < total_length)
+        return 0;
+    memset(out, 0, total_length);
+    memcpy(out, preamble, sizeof(preamble) - 1);
+    put_u32(out, 20, 4);
+    put_u32(out, 24, 2);
+    put_u32(out, 28, (unsigned int)body_length);
+    put_u32(out, 32, 0);
+    put_u32(out, 36, 0);
+    put_u32(out, 44, 52);
+    put_u32(out, 48, 132);
+    put_u32(out, 52, 132);
+    put_u32(out, 56, 140);
+    put_u32(out, 60, 146);
+    put_u32(out, 64, 150);
+    put_u32(out, 68, 0);
+    put_u32(out, 72, 2);
+    put_u32(out, 76, 108);
+    put_u32(out, 80, 160);
+    put_u32(out, 84, 169);
+    put_u32(out, 88, 176);
+    put_u32(out, 92, 180);
+    put_u32(out, 96, 1);
+    put_u32(out, 100, 1);
+    put_u32(out, 104, 124);
+    put_u32(out, 108, 191);
+    put_u32(out, 112, 16);
+    put_u32(out, 116, 207);
+    put_u32(out, 120, 16);
+    put_u32(out, 124, 223);
+    put_u32(out, 128, 16);
+    memcpy(out + 132, "LABCOMP", 8);
+    memcpy(out + 140, "LABID", 6);
+    memcpy(out + 146, "1.0", 4);
+    memcpy(out + 150, "LABVENDOR", 10);
+    memcpy(out + 160, "LABCOMP2", 9);
+    memcpy(out + 169, "LABID2", 7);
+    memcpy(out + 176, "2.0", 4);
+    memcpy(out + 180, "LABVENDOR2", 11);
+    memcpy(out + 191, "LABUPDATE-DATA01", 16);
+    memcpy(out + 207, "LABUPDATE-DATA02", 16);
+    memcpy(out + 223, "LABUPDATE-DATA03", 16);
+    memcpy(out + body_length, "RedBendEFDSig", 13);
+    put_u32(out, (unsigned int)body_length + 16, 32);
+    memcpy(out + body_length + 20, signature, sizeof(signature));
+    return (int)total_length;
+}
+
 int main(int argc, char **argv)
 {
     int port = argc > 1 ? atoi(argv[1]) : 8002;
@@ -448,10 +511,12 @@ int main(int argc, char **argv)
     int partial_mode = argc > 3 && strcmp(argv[3], "partial") == 0;
     int resume_mode = argc > 3 && strcmp(argv[3], "resume") == 0;
     int noetag_mode = argc > 3 && strcmp(argv[3], "noetag") == 0;
+    int multidp_mode = argc > 3 && strcmp(argv[3], "multidp") == 0;
     int download_mode = argc > 3
         && (strcmp(argv[3], "download") == 0 || update_mode
             || combined_mode || missing_mode || notify_fail_mode
-            || badsig_mode || partial_mode || resume_mode || noetag_mode);
+            || badsig_mode || partial_mode || resume_mode || noetag_mode
+            || multidp_mode);
     int server = socket(AF_INET, SOCK_STREAM, 0);
     int one = 1;
     struct sockaddr_in addr;
@@ -535,11 +600,13 @@ int main(int argc, char **argv)
         }
         prefix[prefix_len] = '\0';
         if (strcmp(method, "GET") == 0 && strcmp(path, "/package.bin") == 0) {
-            unsigned char package[256];
+            unsigned char package[512];
             char dd[768];
             char header[256];
             int header_length;
-            int package_length = build_dp_package(package, sizeof(package));
+            int package_length = multidp_mode
+                ? build_dp_multi_package(package, sizeof(package))
+                : build_dp_package(package, sizeof(package));
             int dd_length = snprintf(
                 dd, sizeof(dd),
                 "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
@@ -605,7 +672,7 @@ int main(int argc, char **argv)
             continue;
         }
         if (strcmp(method, "GET") == 0 && strcmp(path, "/object.bin") == 0) {
-            unsigned char package[256];
+            unsigned char package[512];
             if (missing_mode) {
                 static const char not_found[] =
                     "HTTP/1.1 404 Not Found\r\n"
@@ -622,7 +689,9 @@ int main(int argc, char **argv)
             }
             char header[256];
             int header_length;
-            int package_length = build_dp_package(package, sizeof(package));
+            int package_length = multidp_mode
+                ? build_dp_multi_package(package, sizeof(package))
+                : build_dp_package(package, sizeof(package));
             if (badsig_mode && package_length > 0)
                 package[package_length - 1] ^= 0x01;
             if (noetag_mode) {
@@ -732,7 +801,12 @@ int main(int argc, char **argv)
             send_all(client, package, (size_t)package_length);
             fprintf(log, "MOCK_DM_DOWNLOAD method=GET path=/object.bin "
                          "bytes=%d preamble=RedBendEFDPackage version=4 "
-                         "components=1\n", package_length);
+                         "components=%d\n", package_length,
+                        multidp_mode ? 2 : 1);
+            if (multidp_mode)
+                fprintf(log, "MOCK_DM_MULTIDP method=GET path=/object.bin "
+                             "bytes=%d components=2 updates=3\n",
+                        package_length);
             if (badsig_mode)
                 fprintf(log, "MOCK_DM_BADSIG path=/object.bin bytes=%d\n",
                         package_length);
