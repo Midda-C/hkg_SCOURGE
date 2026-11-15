@@ -1045,6 +1045,25 @@ session, returns to idle and never enters success state `90`. The result is
 lab-supplied; no physical install is claimed. A real run passes all
 twenty-two checks.
 
+## dmengine FUMO missing object (Mode C, negative)
+
+```sh
+python3 -B launch.py run --kernel compat --profile research \
+  --scenario dmengine-fumo-download-missing --payload payload/tweaks-vm --timeout 300
+```
+
+Parses the DD, authenticates and sends the OEM download confirmation, but the
+mock returns 404 for `/object.bin`:
+
+```text
+MOCK_DM_MISSING method=GET path=/object.bin
+DL session aborted, 0x6306
+FUMO_Plugin_onSessionStateChange(DL) : fumo result : 407, last error : 25350
+```
+
+The engine retries and reports the failure; no successful object download or
+update is claimed. A real run passes all fourteen checks.
+
 ## dmengine startup (Mode C)
 
 ```sh

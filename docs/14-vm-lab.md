@@ -114,6 +114,9 @@ VM-validated (vendor kernel):
 - FUMO invalid result (`dmengine-fumo-update-invalid-result`): result 0 is
   remapped to `UNDEFINED(409)`, reported through a DM session, and state 90 is
   never reached (negative validation path)
+- FUMO missing object (`dmengine-fumo-download-missing`): the DD parses and
+  confirmation is sent, but `/object.bin` returns 404; the engine aborts the
+  DL session with `0x6306`, FUMO result 407 / error 25350 (negative)
 - device-model regression (`device-model`): asserts Q35 host bridge, SDHCI
   root, ICH9 LPC/SATA and no virtio; substrate only, not captured BXT hardware
 - AppDMClient fota callback (`dmclient-fota-events`): `/fotaInterface`

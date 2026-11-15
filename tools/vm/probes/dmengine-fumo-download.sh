@@ -215,6 +215,47 @@ if ! grep -q 'MOCK_DM_DD method=GET path=/package.bin' /tmp/mock-dm.log \
 fi
 echo 'HARNESS_CHECK fumo-dd PASS'
 
+if [ "$MODE" = missing ]; then
+    : > /tmp/mock-oem-dlok.log
+    /tmp/mock-oem 10 /tmp/mock-oem-dlok.log 15 0 0 >/tmp/mock-oem-dlok.out 2>&1 &
+    DLOK_PID=$!
+    missing_wait=0
+    while [ "$missing_wait" -lt 60 ]; do
+        grep -q 'MOCK_DM_MISSING method=GET path=/object.bin' /tmp/mock-dm.log 2>/dev/null && break
+        sleep 1
+        missing_wait=$((missing_wait + 1))
+    done
+    kill "$DLOK_PID" 2>/dev/null
+    wait "$DLOK_PID" 2>/dev/null
+    DLOK_PID=
+    sleep 5
+    tail -c +$((LOG_MARK + 1)) "$LOG" > /tmp/vdm-delta.log 2>/dev/null
+
+    if ! grep -q 'MOCK_OEM_SENT code=10' /tmp/mock-oem-dlok.log 2>/dev/null; then
+        cat /tmp/mock-oem-dlok.log 2>/dev/null
+        fail 'fumo-confirm'
+    fi
+    echo 'HARNESS_CHECK fumo-confirm PASS'
+
+    if ! grep -q 'MOCK_DM_MISSING method=GET path=/object.bin' /tmp/mock-dm.log 2>/dev/null; then
+        tail -30 /tmp/mock-dm.log
+        fail 'fumo-missing-request'
+    fi
+    echo 'HARNESS_CHECK fumo-missing-request PASS'
+
+    if ! grep -q 'DL session aborted, 0x6306' /tmp/vdm-delta.log \
+        || ! grep -q 'fumo result : 407, last error : 25350' /tmp/vdm-delta.log; then
+        grep -aE 'DL session|fumo result|onSessionStateChange|lastError' /tmp/vdm-delta.log | tail -30
+        fail 'fumo-missing-error'
+    fi
+    echo 'HARNESS_CHECK fumo-missing-error PASS'
+
+    if grep -q 'MOCK_DM_DOWNLOAD method=GET path=/object.bin' /tmp/mock-dm.log 2>/dev/null; then
+        grep -a 'MOCK_DM_DOWNLOAD' /tmp/mock-dm.log
+        fail 'fumo-missing-no-download'
+    fi
+    echo 'HARNESS_CHECK fumo-missing-no-download PASS'
+else
 : > /tmp/mock-oem-dlok.log
 /tmp/mock-oem 10 /tmp/mock-oem-dlok.log 15 0 0 >/tmp/mock-oem-dlok.out 2>&1 &
 DLOK_PID=$!
@@ -377,6 +418,7 @@ if [ "$MODE" = update ]; then
     fi
     echo 'HARNESS_CHECK fumo-update-no-completion PASS'
 fi
+fi
 
 if grep -q '210.183.168.13' /tmp/vdm-delta.log /tmp/mock-dm.log /tmp/lab-tree.xml /tmp/lab-dm-config.txt; then
     fail 'fumo-production-address'
@@ -393,7 +435,9 @@ grep -aE 'MOCK_DM_DD|MOCK_DM_DOWNLOAD' /tmp/mock-dm.log 2>/dev/null | head -8
 kill "$DM_PID" "$OEM_PID" "$DLOK_PID" "$RESULT_PID" "$SERVER_PID" 2>/dev/null || true
 sleep 1
 kill -9 "$DM_PID" "$OEM_PID" "$DLOK_PID" "$RESULT_PID" "$SERVER_PID" 2>/dev/null || true
-if [ "$MODE" = combined ]; then
+if [ "$MODE" = missing ]; then
+    echo 'HARNESS_CHECK dmengine-fumo-download-missing PASS'
+elif [ "$MODE" = combined ]; then
     if [ "$INVALID_RESULT" = 1 ]; then
         echo 'HARNESS_CHECK dmengine-fumo-update-invalid-result PASS'
     elif [ "$RESULT_CODE" = 200 ]; then

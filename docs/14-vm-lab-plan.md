@@ -1137,6 +1137,13 @@ items beyond that.
   failure report and absence of success (negative validation path). Real run
   PASS with twenty-two checks; 3 new tests; 550 tests (75 skipped); doctor
   green.
+- **2026-11-15 — FUMO missing-object download**: the DD parses and the OEM
+  confirmation is sent, but `/object.bin` returns 404. The engine retries,
+  logs `DL session aborted, 0x6306` and FUMO result 407 / error 25350, and no
+  successful object download occurs. `dmengine-fumo-download-missing` asserts
+  the 404, abort code, FUMO error and absence of a downloaded object (negative).
+  Real run PASS with fourteen checks; 3 new tests; 553 tests (75 skipped);
+  doctor green.
 - **2026-11-15 — DP update-payload fixture**: `harness/dp.py` now builds and
   validates update-table entries and payload bounds. The mock serves a
   132-byte DP with one 16-byte `LABUPDATE-DATA01` payload; a loopback test

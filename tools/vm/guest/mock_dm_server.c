@@ -431,9 +431,10 @@ int main(int argc, char **argv)
     const char *log_path = argc > 2 ? argv[2] : "/tmp/mock-dm.log";
     int update_mode = argc > 3 && strcmp(argv[3], "update") == 0;
     int combined_mode = argc > 3 && strcmp(argv[3], "combined") == 0;
+    int missing_mode = argc > 3 && strcmp(argv[3], "missing") == 0;
     int download_mode = argc > 3
         && (strcmp(argv[3], "download") == 0 || update_mode
-            || combined_mode);
+            || combined_mode || missing_mode);
     int server = socket(AF_INET, SOCK_STREAM, 0);
     int one = 1;
     struct sockaddr_in addr;
@@ -557,6 +558,20 @@ int main(int argc, char **argv)
         }
         if (strcmp(method, "GET") == 0 && strcmp(path, "/object.bin") == 0) {
             unsigned char package[256];
+            if (missing_mode) {
+                static const char not_found[] =
+                    "HTTP/1.1 404 Not Found\r\n"
+                    "Content-Length: 0\r\n"
+                    "Connection: close\r\n\r\n";
+                send_all(client, (const unsigned char *)not_found,
+                         sizeof(not_found) - 1);
+                fprintf(log, "MOCK_DM_MISSING method=GET path=/object.bin\n");
+                fflush(log);
+                close(client);
+                free(request);
+                requests++;
+                continue;
+            }
             char header[256];
             int header_length;
             int package_length = build_dp_package(package, sizeof(package));
