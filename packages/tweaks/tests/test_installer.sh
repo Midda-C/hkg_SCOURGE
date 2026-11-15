@@ -248,7 +248,7 @@ grep -q 'TWEAKS_PAYLOAD_260128' "$Q/HomeScreen/QHMI_HomeScreenMain_Advanced.qml"
 grep -q 'TweaksPage' "$Q/HomeScreen/QHMI_HomeScreenMain_Advanced.qml"
 grep -q 'tweaksTile2' "$Q/HomeScreen/QHMI_HomeScreenMain_Advanced.qml"
 if [ "$EXPECT_GLOBAL" = 1 ]; then
-    grep -q 'property var slot: firstEmptySlot' "$Q/HomeScreen/QHMI_HomeScreenMain_Advanced.qml"
+    grep -q 'property var slot: root.firstEmptySlot' "$Q/HomeScreen/QHMI_HomeScreenMain_Advanced.qml"
     if grep -q 'tweaksTargetPage' "$Q/HomeScreen/QHMI_HomeScreenMain_Advanced.qml"; then
         echo "old per-page helper leaked into $KIND" >&2
         exit 1
@@ -450,6 +450,30 @@ test ! -f "$TMP/rw/disclaimer_auto"
 test ! -f "$TMP/rw/tzdata_version"
 test "$(cat "$TMP/root/update/offline_status")" = "0"
 test ! -f "$TMP/rw/ota_block_owned"
+
+# A raw-only helper that merely mentions SetCANFixedMicomRecv in a comment
+# must not be exec'd with "fixed" during restore: the fixed-mode case label
+# is required, otherwise the restore falls back to dbus-send.
+printf '#!/bin/sh\n# SetCANFixedMicomRecv is not implemented here\necho called >> "%s"\nexit 0\n' \
+    "$TMP/raw_called" > "$TMP/battery/bin/micom-send"
+chmod 755 "$TMP/battery/bin/micom-send"
+printf 'can_service=%s\n' "$TMP/battery/bin/micom-send" > "$TMP/rw/config.conf"
+printf '1' > "$TMP/rw/blu_forced"
+: > "$TMP/rw/restore.log"
+TWEAKS_QML_ROOT="$TMP/root/app/share/AppHomeScreen" \
+TWEAKS_RW_DIR="$TMP/rw" \
+TWEAKS_SERVICE="$TMP/etc/systemd/system/tweaks-daemon.service" \
+TWEAKS_STANDBY_ROOT="$TMP/root/app/share/AppStandbyClock" \
+TWEAKS_OFFLINE_STATUS="$TMP/root/update/offline_status" \
+TWEAKS_WRANDR="$TMP/root/usr/bin/wrandr" \
+TWEAKS_WRANDR_REAL="$TMP/root/usr/bin/wrandr.real" \
+USB_DIR="$TMP/usb" \
+PATH="$TMP/root/usr/bin:$PATH" \
+sh "$TMP/restore.sh"
+grep -q 'status=OK' "$TMP/usb/run_stuff_result.txt"
+test ! -f "$TMP/raw_called"
+! grep -q "restored cluster blue-light off via $TMP/battery/bin/micom-send" "$TMP/rw/restore.log"
+echo "raw-only restore helper rejected OK"
 
 # The Reboot fallback requires the floor label.  A failed SMACK readback or a
 # daemon running outside the installer label must fail the install, not warn.

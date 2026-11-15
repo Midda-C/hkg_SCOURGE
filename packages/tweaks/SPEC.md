@@ -41,7 +41,9 @@
 - No replacement of the vendor blue-light UI.
 - No immediate hard reset in the normal path: Reboot asks systemd first and
   only falls back to the micom watchdog when the clean reboot does not start.
-- No reboot while driving or while a firmware update process is running.
+- No reboot while a firmware update process is running.
+- No parked/driving lockout: Reboot is deliberately usable while the vehicle
+  is powered or moving (see §11).
 
 ## 4. Architecture
 
@@ -207,11 +209,16 @@ package; it has no separate daemon or AppLauncher ID.
   `com.lge.car.micom.ihu` — the exact call `/etc/weston-crash.sh` uses. A
   failed clean command triggers the fallback immediately. The fallback is
   attempted once.
-- **Guards:** the QML refuses on `AppHomeModel.drivingRestriction`; the daemon
-  refuses with `409 update_in_progress` while `AppUpgrade`/`AppScomoDM` runs.
-  The modal is disabled while `AppHomeModel.sysPopupShowing`.
-- **CSRF:** `/reboot` requires `X-Reboot-App: 1` and rejects requests with an
-  `Origin` header. It binds to `127.0.0.1` only.
+- **Driving:** there is no `AppHomeModel.drivingRestriction` gate. The modal
+  warns that navigation, media and camera views will be unavailable, but Yes
+  remains available while driving or in gear. This is a deliberate UX
+  exception for recovering a misbehaving head unit without shutting the car
+  down.
+- **Guards:** the daemon refuses with `409 update_in_progress` while
+  `AppUpgrade`/`AppScomoDM` runs. The modal is disabled while
+  `AppHomeModel.sysPopupShowing`.
+- **CSRF:** `/reboot` requires `X-Reboot-App: 1` and rejects http(s) `Origin`
+  headers. It binds to `127.0.0.1` only.
 - **Home/Star:** the daemon watches the session bus for
   `NotifyRequestHomeScreen` and `custom_key_value` key 7 and exposes
   `home_seq`; the page closes when the counter changes (seeded on open).
@@ -357,7 +364,13 @@ tzdata, and releases the OTA offline flag.
     dead; the hardware reset pinhole remains the last resort.
 11. The Reboot app ships inside Tweaks, so it cannot be uninstalled
     independently without restoring the pre-Tweaks backup.
-12. The car validation of the Reboot path is still pending. The clean command,
+12. **Deliberate UX exception:** Reboot is usable while driving or in gear.
+    Navigation, media and camera views can be unavailable for about a minute
+    while the head unit restarts. The confirmation warns about this, but there
+    is no parked/`drivingRestriction` gate. This exists so a misbehaving head
+    unit can be recovered without shutting the car down; it is a product
+    decision, not an oversight.
+13. The car validation of the Reboot path is still pending. The clean command,
     `/status` schema, installer gates and fallback invocation are host-tested
     with a fake `dbus-send`; the actual micom reset is derived from the vendor
     `weston-crash.sh` and remains unverified on the car.

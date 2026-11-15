@@ -285,7 +285,8 @@ def main():
         print("start micom burst ok:", new[0])
 
         send(s, 0x2AD, [0, 0x05, 0, 0x40, 0xFF, 0xFF, 0xFF, 0x0F])
-        wait_state("preparing")
+        st = wait_state("preparing")
+        assert st["precond_confirmed"] is True, st
         send(s, 0x2AD, [0, 0x15, 0, 0x40, 0xFF, 0xFF, 0xFF, 0x0F])
         wait_state("active")
         print("state machine ok: preparing -> active")
@@ -578,8 +579,9 @@ def main():
             else:
                 raise AssertionError("fast daemon did not start")
 
-            # No status frames: one burst, then assume ACTIVE after the
-            # started timeout (WiCAN wait_starting_tick).
+            # No status frames: one burst, then report an UNCONFIRMED
+            # request after the started timeout. Never claim heating
+            # without evidence.
             before = read_log(dbus_log)
             r = http2("/start", "POST")
             assert r["ok"] is True, r
@@ -607,9 +609,24 @@ def main():
                     break
                 time.sleep(0.1)
             assert disp and "0x00,0x00,0x00,0x00,0x01,0x00,0x04,0x00" in disp[0], disp
-            st = wait_state2("active", timeout=4.0)
-            assert st["message"] == "active", st
-            print("no-status start assumes active after timeout ok")
+            st = wait_state2("timeout", timeout=4.0)
+            assert st["message"] == "requested_unconfirmed", st
+            assert st["precond_confirmed"] is False, st
+            print("no-status start reports unconfirmed, not active")
+
+            # A sustained idle report ends the unconfirmed request without
+            # /stop; a single transient frame must not (2 s debounce).
+            send(s, 0x2AD, [0, 0x00, 0, 0x40, 0xFF, 0xFF, 0xFF, 0x0F])
+            time.sleep(2.3)
+            st = wait_state2("idle", timeout=3.0)
+            assert st["message"] == "idle", st
+            print("unconfirmed request ends on sustained idle ok")
+
+            # A late BMS start after that idle is still followed.
+            send(s, 0x2AD, [0, 0x05, 0, 0x40, 0xFF, 0xFF, 0xFF, 0x0F])
+            st = wait_state2("preparing", timeout=3.0)
+            assert st["precond_confirmed"] is True, st
+            print("late BMS start after timeout recovery ok")
 
             # Status appears (BMS off): start retries 4x, then the WiCAN
             # cleanup stop burst (one shot, no stop retries) -> "stopped".

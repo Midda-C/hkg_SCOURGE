@@ -4,27 +4,44 @@
 # Call io_init before writes, io_restore_root from the installer's EXIT trap.
 # Helpers use subshells so their variables cannot clobber callers' src/dst/f.
 
-io_root_options() {
-    awk -v root="$IO_ROOT" '$2 == root { print $4; exit }' "$IO_MOUNTS"
-}
+io_root_options() (
+    # Vendor BusyBox awk aborts on this path (V6 car readback). Keep the
+    # safety-critical mount parser in ash; never interpret parser failure as ro.
+    [ -r "$IO_MOUNTS" ] || { log "ERROR: cannot read mount table: $IO_MOUNTS"; return 1; }
+    found=""
+    while IFS=' ' read -r device point filesystem options rest; do
+        [ "$point" = "$IO_ROOT" ] || continue
+        [ -z "$found" ] || { log "ERROR: ambiguous root mount: $IO_ROOT"; return 1; }
+        case ",$options," in
+            *,ro,*) case ",$options," in *,rw,*) log "ERROR: conflicting root mount options"; return 1;; esac ;;
+            *,rw,*) : ;;
+            *) log "ERROR: malformed root mount options: $IO_ROOT"; return 1 ;;
+        esac
+        found=$options
+    done < "$IO_MOUNTS"
+    [ -n "$found" ] || { log "ERROR: root mount not found: $IO_ROOT"; return 1; }
+    printf '%s\n' "$found"
+)
 
 io_init() {
     IO_ROOT=${INSTALL_IO_ROOT:-/}
     IO_MOUNTS=${INSTALL_IO_MOUNTS:-/proc/mounts}
-    IO_ORIGINAL_OPTIONS=$(io_root_options)
-    [ -n "$IO_ORIGINAL_OPTIONS" ] || { log "ERROR: root mount not found: $IO_ROOT"; return 1; }
+    IO_ACTIVE=0
+    IO_ORIGINAL_OPTIONS=$(io_root_options) || return 1
     IO_ACTIVE=1
     ASSET_WARNINGS=0
     log "root mount before install: $IO_ORIGINAL_OPTIONS"
 }
 
 io_ensure_rw() {
-    case ",$(io_root_options)," in
+    IO_CURRENT_OPTIONS=$(io_root_options) || return 1
+    case ",$IO_CURRENT_OPTIONS," in
         *,rw,*) return 0 ;;
     esac
     log "root is not writable; remounting $IO_ROOT rw"
     mount -o remount,rw "$IO_ROOT" >> "$LOG" 2>&1 || return 1
-    case ",$(io_root_options)," in *,rw,*) return 0 ;; esac
+    IO_CURRENT_OPTIONS=$(io_root_options) || return 1
+    case ",$IO_CURRENT_OPTIONS," in *,rw,*) return 0 ;; esac
     log "ERROR: root still not rw after remount"
     return 1
 }
@@ -116,6 +133,23 @@ io_asset() {
     fi
     return 0
 }
+
+# Private diagnostic snapshot of only the known UI files. Never copy config
+# or credentials. Best-effort: a full stick must not invalidate an install.
+io_capture_qml() (
+    tree=$1
+    output=$2
+    mkdir -p "$output" || return 1
+    for file in HomeScreen/QHMI_HomeScreenMain_Advanced.qml \
+        HomeScreen/QHMI_HomeScreenMain_Wide.qml HomeScreen/Screen_HomeScreen_AllMenus.qml \
+        HomeScreen/Screen_HomeScreen_Submenu_Setup.qml component/QCustomizedMenuListAllowEmpty.qml \
+        component/BatteryTile.qml component/WifiTile.qml component/TweaksTile.qml component/RebootTile.qml component/Wifi1bTile.qml; do
+        [ -f "$tree/$file" ] || continue
+        mkdir -p "$output/$(dirname "$file")" || return 1
+        cp "$tree/$file" "$output/$file" || return 1
+    done
+    (cd "$output" && find . -type f ! -name hashes.md5 -exec "${MD5SUM_BIN:-md5sum}" '{}' ';') > "$output/hashes.md5"
+)
 
 io_remove() (
     for attempt in 1 2 3; do

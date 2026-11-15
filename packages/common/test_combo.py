@@ -38,14 +38,17 @@ with tempfile.TemporaryDirectory(prefix="combo-regression-", dir="/tmp/opencode"
         if name == "tweaks":
             qml = out / "payload/qml/AppHomeScreen/qml_eco3.0/HomeScreen/QHMI_HomeScreenMain_Advanced.battery_tile_wifi.qml"
             qml.parent.mkdir(parents=True)
-            text = ""
+            # The composer gate requires the reactive V2 layout; this
+            # fixture mirrors the packed Tweaks artifact.
+            text = ("// SCOURGE_LAYOUT_V2\n"
+                    "property bool customLayoutReady: false\n")
             for page in (1, 2, 3):
                 text += "QMenuPageNoDrag{ }\n"
                 for index, tile in enumerate(("battery", "wifi", "tweaks", "reboot")):
                     text += f'''{tile.capitalize()}Tile {{
  id: {tile}Tile{page}
- property var slot: firstEmptySlot({index})
- visible: slot !== null && slot.page === {page - 1}
+ property var slot: root.firstEmptySlot({index})
+ visible: slot !== null && slot !== undefined && slot.page === {page - 1}
  x: slot.index
  y: slot.index
  width: k_itemWidth

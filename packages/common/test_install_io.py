@@ -13,6 +13,8 @@ import os,sys,pathlib,json
 p=pathlib.Path(os.environ['CASE'])
 s=json.loads((p/'state').read_text())
 name=pathlib.Path(sys.argv[0]).name
+if name=='awk':
+ print('injected vendor awk failure',file=sys.stderr);sys.exit(134)
 def save(): (p/'state').write_text(json.dumps(s))
 def opts(value): (p/'mounts').write_text('device '+str(p/'root')+' ext4 '+value+' 0 0\\n')
 if name=='mount':
@@ -39,7 +41,7 @@ sys.exit(1)
 
 def case(flags, body, initial="ro", restricted_bin=None, md5_coreutils=False, real_cp=False):
     import json
-    with tempfile.TemporaryDirectory(prefix="install-io-", dir="/tmp/opencode") as d:
+    with tempfile.TemporaryDirectory(prefix="install-io-") as d:
         p = Path(d)
         (p / "root").mkdir()
         (p / "bin").mkdir()
@@ -47,7 +49,7 @@ def case(flags, body, initial="ro", restricted_bin=None, md5_coreutils=False, re
         tool.write_text(FAKE)
         tool.chmod(0o755)
         if restricted_bin is None:
-            for name in ("mount", "sleep", "cp"):
+            for name in ("mount", "sleep", "cp", "awk"):
                 if real_cp and name == "cp":
                     continue
                 (p / "bin" / name).symlink_to(tool)
@@ -56,9 +58,9 @@ def case(flags, body, initial="ro", restricted_bin=None, md5_coreutils=False, re
             # Firmware-like toolbox: md5sum exists only as md5sum.coreutils.
             # PATH deliberately excludes the host dirs so a bare `md5sum`
             # cannot resolve; every other helper the library needs is present.
-            for name in ("awk", "cut", "ls", "rm", "tail", "stat", "basename", "dirname", "mktemp", "chmod", "chown", "cat"):
+            for name in ("cut", "ls", "rm", "tail", "stat", "basename", "dirname", "mktemp", "chmod", "chown", "cat"):
                 (p / "bin" / name).symlink_to("/usr/bin/" + name)
-            for name in ("mount", "sleep", "cp"):
+            for name in ("mount", "sleep", "cp", "awk"):
                 (p / "bin" / name).symlink_to(tool)
             if md5_coreutils:
                 (p / "bin" / "md5sum.coreutils").symlink_to("/usr/bin/md5sum")
@@ -132,3 +134,29 @@ io_copy "$CASE/source" "$CASE/target"
 ''', "rw", real_cp=True)
 assert result["target"] == "expected bytes\n"
 print("PASS: real cp -f keeps the destination inode (SMACK attributes survive)")
+
+# Read-only preflight: failures must neither remount nor enable cleanup writes.
+with tempfile.TemporaryDirectory(prefix="mount-parser-") as d:
+    p = Path(d)
+    for contents, good in (
+        ("/dev/root / ext4 ro,noatime 0 0\n", True),
+        ("rootfs /old ext4 rw 0 0\n/dev/root / ext4 rw,noatime 0 0\n", True),
+        ("/dev/root /other ext4 rw 0 0\n", False),
+        ("/dev/root / ext4 errors=remount-ro 0 0\n", False),
+        ("/dev/root / ext4 ro,rw 0 0\n", False),
+        ("/dev/root / ext4 rw 0 0\n/dev/other / ext4 ro 0 0\n", False),
+        ("", False),
+    ):
+        (p / "mounts").write_text(contents)
+        env = dict(os.environ, INSTALL_IO_MOUNTS=str(p / 'mounts'), INSTALL_IO_ROOT='/')
+        proc = subprocess.run(['/bin/sh', '-c', f'''
+LOG=/dev/null
+log() {{ :; }}
+. "{LIB}"
+if io_init; then [ "$IO_ACTIVE" = 1 ]; else [ "$IO_ACTIVE" = 0 ]; exit 9; fi
+'''], env=env)
+        assert (proc.returncode == 0) == good, contents
+    (p / 'mounts').unlink()
+    assert subprocess.run(['/bin/sh', '-c', f'log() {{ :; }}; . "{LIB}"; io_init'],
+                          env=env).returncode != 0
+print("PASS: awk-independent parser; missing, unreadable, malformed and ambiguous mount tables fail closed")

@@ -8,8 +8,10 @@ ROOT=$(dirname "$HERE")
 Q="$ROOT/artifacts/qml/AppHomeScreen/qml_eco3.0"
 ADV="$Q/HomeScreen"
 COMP="$Q/component"
-python3 "$ROOT/../common/check_layout.py" \
-    "$ROOT/out/usb/payload/qml/AppHomeScreen/qml_eco3.0/HomeScreen/QHMI_HomeScreenMain_Advanced.battery_tile_wifi.qml"
+for variant in battery_tile_wifi hello_battery_tile_wifi; do
+    python3 "$ROOT/../common/check_layout.py" \
+        "$ROOT/out/usb/payload/qml/AppHomeScreen/qml_eco3.0/HomeScreen/QHMI_HomeScreenMain_Advanced.$variant.qml"
+done
 python3 "$ROOT/../common/test_layout.py" \
     "$ROOT/out/usb/payload/qml/AppHomeScreen/qml_eco3.0/HomeScreen/QHMI_HomeScreenMain_Advanced.battery_tile_wifi.qml"
 
@@ -42,12 +44,12 @@ check_adv_global() {
     skip="$2"
     for n in 1 2 3; do
         grep -q "id: tweaksTile$n" "$file" || { echo "missing tweaksTile$n in $file" >&2; exit 1; }
-        grep -q "visible: slot !== null && slot.page === $((n - 1))" "$file" || {
+        grep -q "visible: slot !== null && slot !== undefined && slot.page === $((n - 1))" "$file" || {
             echo "missing global page visibility tweaksTile$n in $file" >&2; exit 1; }
     done
     [ "$(grep -c 'function firstEmptySlot' "$file")" = "1" ] || {
         echo "unexpected firstEmptySlot count in $file" >&2; exit 1; }
-    grep -Fq "property var slot: firstEmptySlot($skip)" "$file" || {
+    grep -Fq "property var slot: root.firstEmptySlot($skip)" "$file" || {
         echo "unexpected global slot index in $file (expected $skip)" >&2; exit 1; }
     if grep -q 'tweaksTargetPage' "$file"; then
         echo "old per-page helper leaked into $file" >&2; exit 1
@@ -119,7 +121,7 @@ for f in "$ADV"/QHMI_HomeScreenMain_Advanced.*.qml; do
     for n in 1 2 3; do
         grep -q "id: rebootTile$n" "$f" || {
             echo "missing rebootTile$n in $f" >&2; exit 1; }
-        grep -q "visible: slot !== null && slot.page === $((n - 1))" "$f" || {
+        grep -Eq "visible: slot !== null && (slot !== undefined && )?slot.page === $((n - 1))" "$f" || {
             echo "missing Reboot slot guard $n in $f" >&2; exit 1; }
     done
     grep -q 'onClicked: rebootPage.open()' "$f" || {
@@ -197,7 +199,13 @@ need("ConstantModel.APP_HOME_POPUP_1LINE_HEIGHT" in page, "popup height token mi
 need("ConstantModel.APP_HOME_POPUP_BUTTON_HEIGHT" in page, "popup button token missing")
 need("GENERAL_OPACITY_PERCENT_70" in page, "popup dim missing")
 need("X-Reboot-App" in page, "QML does not send the reboot header")
-need("AppHomeModel.drivingRestriction" in page, "driving lockout missing")
+need("drivingRestriction" not in page,
+     "Reboot must not gate on drivingRestriction")
+need('"blocked"' not in page, "Reboot still has a parked/blocked modal state")
+need("Do not restart while driving" not in page,
+     "Reboot still tells the user not to restart while driving")
+need("Navigation, media, and camera views will be unavailable" in page,
+     "neutral driving warning missing")
 need("update_in_progress" in page, "update guard message missing")
 need("TranslationsModel.STR_HOME_YES" in page, "Yes label missing")
 need("TranslationsModel.STR_HOME_NO" in page, "No label missing")

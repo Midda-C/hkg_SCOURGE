@@ -44,10 +44,13 @@ silently blocks every cluster CAN write while the front display still works.
   (`SetETCCPUWDTReset array:byte:0x00`) — the same call `/etc/weston-crash.sh`
   uses. This is the software equivalent of the pinhole reset when systemd is
   stuck.
-- Refuses while `AppHomeModel.drivingRestriction` is true, while an update
-  process (`AppUpgrade`/`AppScomoDM`) is running, while a system popup is
-  showing, or when the daemon is unreachable. No/outside/Home closes it
-  without rebooting.
+- **Does not require the car to be parked.** Reboot is allowed while driving
+  or in gear; the modal warns that navigation, media and camera views will be
+  unavailable for about a minute. This is a deliberate exception to the normal
+  driving-lockout rule.
+- Refuses while an update process (`AppUpgrade`/`AppScomoDM`) is running, while
+  a system popup is showing, or when the daemon is unreachable.
+  No/outside/Home closes it without rebooting.
 - The modal follows the stock popup rules: 70 % dim, 100 ms InOutQuad fade,
   `APP_HOME_POPUP_*` geometry, stock buttons, beep on release, and the
   steering-wheel Home/Star key closes it via the daemon `home_seq` counter.

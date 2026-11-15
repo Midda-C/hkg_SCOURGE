@@ -132,21 +132,32 @@ fi
 # Use the same micom helper the daemon used: the vendor service whitelists the
 # sender's executable basename, so a plain dbus-send child is silently
 # dropped (see packages/battery/docs/MICOM_WHITELIST.md).
+micom_fixed_capable() {
+    [ -f "$1" ] || return 1
+    grep -q 'SetCANFixedMicomRecv' "$1" 2>/dev/null || return 1
+    # Require the case label, not just the method string: an older raw-only
+    # wrapper may mention SetCANFixedMicomRecv in a comment, and exec'ing it
+    # with "fixed" would send a malformed raw frame.
+    grep -q '^fixed)' "$1" 2>/dev/null || return 1
+    return 0
+}
+
 if [ -f "$RW_DIR/blu_forced" ]; then
     can_conf=$(sed -n 's/^can_service=//p' "$RW_DIR/config.conf" 2>/dev/null | tail -n 1)
     can=""
     for cand in "$can_conf" "$RW_DIR/bin/micom-send" /rw_data/battery/bin/micom-send; do
         [ -n "$cand" ] || continue
         [ -x "$cand" ] || continue
-        # An older Battery helper has no fixed mode; calling it with "fixed"
-        # would send a malformed raw frame.
-        grep -q 'SetCANFixedMicomRecv' "$cand" 2>/dev/null || continue
+        micom_fixed_capable "$cand" || continue
         can=$cand
         break
     done
     if [ -n "$can" ]; then
-        "$can" fixed 0x06 0x3f 26 2 1 >> "$LOG" 2>&1 || true
-        log "restored cluster blue-light off via $can"
+        if "$can" fixed 0x06 0x3f 26 2 1 >> "$LOG" 2>&1; then
+            log "restored cluster blue-light off via $can"
+        else
+            log "WARNING: cluster blue-light restore failed via $can"
+        fi
     elif command -v dbus-send >/dev/null 2>&1; then
         dbus-send --system --print-reply --reply-timeout=8000 \
             --dest=com.lge.car.micom /Can \

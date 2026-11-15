@@ -230,24 +230,34 @@ cat > "$HELPER_DIR/micom-send" <<EOF
 #   micom-send fixed <idhi> <idlo> <start> <size> <data>
 #                                             SetCANFixedMicomRecv
 # --print-reply keeps this process alive while the micom resolves
-# /proc/<pid>/exe. Exit 0 even when the micom does not reply (factory
-# senders use no-reply), so callers treat the frame as queued.
+# /proc/<pid>/exe. A missing reply is normal (factory senders use
+# no-reply) and still counts as queued. A real transport error (unknown
+# service/method, access denied) exits non-zero so callers can tell
+# "frame queued" from "the micom was never reached".
+send() {
+    method=\$1
+    shift
+    out=\$("$HELPER_DIR/CANService" --system --type=method_call --print-reply \\
+        --reply-timeout=500 --dest=com.lge.car.micom /Can \\
+        "\$method" "\$@" 2>&1)
+    rc=\$?
+    [ \$rc -eq 0 ] && exit 0
+    case "\$out" in
+        *NoReply*|*"Did not receive a reply"*) exit 0 ;;
+    esac
+    printf '%s\n' "\$out" >&2
+    exit \$rc
+}
 case "\$1" in
 fixed)
-    "$HELPER_DIR/CANService" --system --type=method_call --print-reply \
-        --reply-timeout=500 --dest=com.lge.car.micom /Can \
-        com.lge.car.micom.can.SetCANFixedMicomRecv \
-        "array:byte:\$2,\$3" "int32:\$4" "int32:\$5" "int32:\$6" >/dev/null 2>&1
-    exit 0
+    send com.lge.car.micom.can.SetCANFixedMicomRecv \\
+        "array:byte:\$2,\$3" "int32:\$4" "int32:\$5" "int32:\$6"
     ;;
 raw)
     shift
     ;;
 esac
-"$HELPER_DIR/CANService" --system --type=method_call --print-reply \
-    --reply-timeout=500 --dest=com.lge.car.micom /Can \
-    com.lge.car.micom.can.SetCANMicomRecv "\$1" >/dev/null 2>&1
-exit 0
+send com.lge.car.micom.can.SetCANMicomRecv "\$1"
 EOF
 chmod 755 "$HELPER_DIR/micom-send" 2>/dev/null || true
 chown root:root "$HELPER_DIR/micom-send" 2>/dev/null || true
