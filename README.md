@@ -115,7 +115,7 @@ If a markdown file in this repo is handwritten, I will highlight that. The READM
 | `scripts/` | The build pipeline (fetch → stage → decrypt → patch → repack → verify → package → image → preflight → Pi deploy) |
 | `payload/` | What gets baked into the rootfs: the failsafe, the six-stub patch tables, the sample run_stuff.sh |
 | `packages/` | Battery, WiFi (+CarPlay+SSH), Tweaks (incl. the Reboot overlay) — sources, patchers, installers — plus `compose.sh` (the combo-stick builder) |
-| `tools/` | First-party firmware-format tools, the update-debug (both_copies) tooling, the optional Ghidra/carve porting aids, and `tools/micom/` (command-table and MCU-image readers) |
+| `tools/` | First-party firmware-format tools, the update-debug (both_copies) tooling, the optional Ghidra/carve porting aids, and `tools/micom/` (command/signal-table and MCU-image readers) |
 | `verify/` | Offline package verification |
 | `config/` | `firmware_locks.env` (the compatibility pins), `third_party.lock` (fetch pins), paths/key examples |
 

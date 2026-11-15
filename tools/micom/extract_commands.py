@@ -27,10 +27,11 @@ emit a partial table.
 
 Usage
 -----
-    python3 tools/micom/extract_commands.py moc   --elf PATH [--json OUT]
-    python3 tools/micom/extract_commands.py table --elf PATH --export DIR [--json OUT]
-    python3 tools/micom/extract_commands.py diff  --old ELF --new ELF [--json OUT]
-    python3 tools/micom/extract_commands.py render --json TABLE.json --doc DOC.md
+    python3 tools/micom/extract_commands.py moc     --elf PATH [--json OUT]
+    python3 tools/micom/extract_commands.py table   --elf PATH --export DIR [--json OUT]
+    python3 tools/micom/extract_commands.py signals --elf PATH [--notes JSON] [--json OUT]
+    python3 tools/micom/extract_commands.py diff    --old ELF --new ELF [--json OUT]
+    python3 tools/micom/extract_commands.py render  --json TABLE.json [--signals-json SIGNALS.json] --doc DOC.md
     python3 tools/micom/extract_commands.py callers --db INDEX.db [--json OUT]
 
 Every command that reads an ELF is hash-gated against
@@ -282,14 +283,13 @@ def find_metaobjects(img: Image) -> List[MocClass]:
 # ---------------------------------------------------------------------------
 
 
-def embedded_signatures(img: Image) -> Dict[Tuple[str, str], Tuple[List[str], List[str]]]:
-    """Parse the service's own ``com.lge.car.micom.*`` interface XML.
+def _interface_roots(img: Image):
+    """Yield ``(interface suffix, root element)`` for each embedded interface XML.
 
     qt5 embeds each interface as a NUL-terminated string literal in .rodata.
     Scanning for the interface prefix and walking to the terminator is stable
-    across builds and keeps the In/Out columns reproducible from the ELF alone.
+    across builds and keeps the signatures reproducible from the ELF alone.
     """
-    sigs: Dict[Tuple[str, str], Tuple[List[str], List[str]]] = {}
     for sec in img.elf.iter_sections():
         if sec.name not in (".rodata", ".data.rel.ro", ".data"):
             continue
@@ -309,14 +309,39 @@ def embedded_signatures(img: Image) -> Dict[Tuple[str, str], Tuple[List[str], Li
             except ET.ParseError as exc:
                 raise GateError(f"cannot parse embedded interface XML: {exc}")
             iface = root.get("name", "").split("com.lge.car.micom.")[-1]
-            for m in root:
-                if m.tag != "method":
-                    continue
-                ins = [a.get("type") for a in m if a.get("direction") == "in"]
-                outs = [a.get("type") for a in m if a.get("direction") == "out"]
-                sigs[(iface, m.get("name"))] = (ins, outs)
+            if iface not in IFACE_TITLES:
+                raise GateError(f"unexpected interface name {root.get('name')!r}")
+            yield iface, root
+
+
+def embedded_signatures(img: Image) -> Dict[Tuple[str, str], Tuple[List[str], List[str]]]:
+    """Parse the service's own method declarations and their D-Bus signatures."""
+    sigs: Dict[Tuple[str, str], Tuple[List[str], List[str]]] = {}
+    for iface, root in _interface_roots(img):
+        for m in root:
+            if m.tag != "method":
+                continue
+            ins = [a.get("type") for a in m if a.get("direction") == "in"]
+            outs = [a.get("type") for a in m if a.get("direction") == "out"]
+            sigs[(iface, m.get("name"))] = (ins, outs)
     if not sigs:
         raise GateError("no com.lge.car.micom interface XML found in the ELF")
+    return sigs
+
+
+def embedded_signals(img: Image) -> Dict[Tuple[str, str], List[str]]:
+    """Parse the service's own signal declarations and their D-Bus out types."""
+    sigs: Dict[Tuple[str, str], List[str]] = {}
+    for iface, root in _interface_roots(img):
+        for m in root:
+            if m.tag != "signal":
+                continue
+            key = (iface, m.get("name"))
+            if key in sigs:
+                raise GateError(f"duplicate signal declaration {key[0]}.{key[1]}")
+            sigs[key] = [a.get("type") for a in m if a.get("direction") == "out"]
+    if not sigs:
+        raise GateError("no com.lge.car.micom signal XML found in the ELF")
     return sigs
 
 
@@ -636,6 +661,122 @@ def cmd_table(args) -> int:
     return 0
 
 
+def _load_signal_notes(path: Path) -> Dict[Tuple[str, str], Dict[str, str]]:
+    """Load the inferred signal annotations and validate their shape.
+
+    The notes are first-party interpretation (AGENTS.md rule 10): every signal
+    must have one, and no note may name a signal the ELF does not declare.
+    """
+    try:
+        raw = json.loads(path.read_text())
+    except OSError as exc:
+        raise GateError(f"{path}: cannot read signal notes ({exc})")
+    except ValueError as exc:
+        raise GateError(f"{path}: unreadable signal notes ({exc})")
+    if not isinstance(raw, dict):
+        raise GateError(f"{path}: signal notes must be an object keyed by interface")
+    notes: Dict[Tuple[str, str], Dict[str, str]] = {}
+    for iface, entries in raw.items():
+        if iface.startswith("_"):
+            continue
+        if iface not in IFACE_TITLES:
+            raise GateError(f"{path}: unknown interface {iface!r}")
+        if not isinstance(entries, dict):
+            raise GateError(f"{path}: {iface} must map signal names to notes")
+        for name, note in entries.items():
+            if not isinstance(note, dict):
+                raise GateError(f"{path}: {iface}.{name} note must be an object")
+            meaning = note.get("meaning")
+            example = note.get("example", "—")
+            if not isinstance(meaning, str) or not meaning.strip():
+                raise GateError(f"{path}: {iface}.{name} has no meaning")
+            if not isinstance(example, str) or not example.strip():
+                raise GateError(f"{path}: {iface}.{name} has no example")
+            notes[(iface, name)] = {"meaning": meaning.strip(),
+                                    "example": example.strip()}
+    return notes
+
+
+def cmd_signals(args) -> int:
+    """List the declared signals, optionally merging inferred annotations."""
+    sha = gate_elf(args.elf, args.locks, args.pin)
+    img = Image(args.elf)
+    classes = find_metaobjects(img)
+    declared = embedded_signals(img)
+    notes: Dict[Tuple[str, str], Dict[str, str]] = {}
+    if args.notes:
+        notes = _load_signal_notes(args.notes)
+        missing = set(declared) - set(notes)
+        extra = set(notes) - set(declared)
+        if missing:
+            raise GateError(f"{args.notes}: missing note(s) for "
+                            f"{', '.join(f'{i}.{n}' for i, n in sorted(missing))}")
+        if extra:
+            raise GateError(f"{args.notes}: note(s) for undeclared signal(s) "
+                            f"{', '.join(f'{i}.{n}' for i, n in sorted(extra))}")
+
+    moc: Dict[Tuple[str, str], List[int]] = {}
+    for cls in classes:
+        base = cls.name.lower()
+        if base not in IFACE_TITLES:
+            continue
+        for m in cls.methods:
+            if m.kind == "signal":
+                moc.setdefault((base, m.name), []).append(m.argc)
+
+    rows = []
+    for (iface, name), outs in declared.items():
+        argcs = moc.get((iface, name))
+        if not argcs:
+            raise GateError(f"{iface}.{name}: declared signal has no moc signal")
+        if len(set(argcs)) != 1:
+            raise GateError(f"{iface}.{name}: moc signal has inconsistent arity "
+                            f"{sorted(set(argcs))}")
+        argc = argcs[0]
+        if argc != len(outs):
+            raise GateError(f"{iface}.{name}: moc argc {argc} != XML out count "
+                            f"{len(outs)}")
+        note = notes.get((iface, name), {"meaning": "", "example": "—"})
+        rows.append({
+            "iface": iface,
+            "name": name,
+            "out": outs,
+            "argc": argc,
+            "meaning": note["meaning"],
+            "example": note["example"],
+        })
+
+    moc_only = []
+    for cls in classes:
+        base = cls.name.lower()
+        if base not in IFACE_TITLES:
+            continue
+        for m in cls.methods:
+            if m.kind == "signal" and (base, m.name) not in declared:
+                moc_only.append({"iface": base, "name": m.name, "argc": m.argc})
+
+    rows.sort(key=lambda r: (IFACE_ORDER.index(r["iface"]), r["name"].lower()))
+    moc_only.sort(key=lambda r: (IFACE_ORDER.index(r["iface"]), r["name"].lower()))
+    with_payload = sum(1 for r in rows if r["out"])
+    print(f"{len(rows)} declared signals ({with_payload} with a payload, "
+          f"{len(rows) - with_payload} without); {len(moc_only)} moc-only "
+          f"signal(s) outside the XML", file=sys.stderr)
+    for r in moc_only:
+        print(f"  moc-only: {r['iface']}.{r['name']} (argc={r['argc']})",
+              file=sys.stderr)
+    print(f"elf sha256 {sha}", file=sys.stderr)
+
+    if args.json:
+        Path(args.json).write_text(json.dumps(
+            {"declared": rows, "moc_only": moc_only}, indent=2) + "\n")
+        print(f"wrote {args.json}", file=sys.stderr)
+        return 0
+    for r in rows:
+        print(f"{r['iface']:6s} {_fmt(r['out']):4s} {r['name']}"
+              f"{'  # ' + r['meaning'] if r['meaning'] else ''}")
+    return 0
+
+
 def cmd_diff(args) -> int:
     old_sha = gate_elf(args.old, args.locks, args.old_pin)
     new_sha = gate_elf(args.new, args.locks, args.new_pin)
@@ -732,6 +873,32 @@ def _replace_block(text: str, key: str, body: str) -> str:
     return text[:i + len(begin)] + "\n\n" + body + "\n\n" + text[j:]
 
 
+def _star(text: str) -> str:
+    return text if text.endswith("*") else text + "*"
+
+
+def _signal_table(rows: List[dict]) -> str:
+    out = ["| Interface | Signal | Out | Meaning (inferred)* | "
+           "Example payload (inferred)* |", "|---|---|---|---|---|"]
+    for r in rows:
+        try:
+            iface = r["iface"]
+            name = r["name"]
+            outs = r["out"]
+            meaning = r["meaning"].replace("|", "\\|")
+            example = r["example"].replace("|", "\\|")
+        except (KeyError, TypeError) as exc:
+            raise GateError(f"signals JSON entry is not a signal row: {exc}")
+        if not isinstance(outs, list) or not isinstance(meaning, str):
+            raise GateError(f"{iface}.{name}: malformed signal row")
+        if not meaning:
+            raise GateError(f"{iface}.{name}: signal has no meaning annotation")
+        sample = "—" if example == "—" else _star(example)
+        out.append(f"| `{iface}` | `{name}` | {_fmt(outs)} | "
+                   f"{_star(meaning)} | {sample} |")
+    return "\n".join(out)
+
+
 def cmd_render(args) -> int:
     rows = _visible(json.loads(Path(args.json).read_text()))
     doc = Path(args.doc)
@@ -753,6 +920,13 @@ def cmd_render(args) -> int:
     out += [f"| `{r['class'].lower()}` | `{r['method']}` | "
             f"{_fmt(r['args_in'])} | {_fmt(r['args_out'])} |" for r in sel]
     text = _replace_block(text, "nonuart", "\n".join(out))
+
+    if args.signals_json:
+        data = json.loads(Path(args.signals_json).read_text())
+        signals = data.get("declared") if isinstance(data, dict) else data
+        if not isinstance(signals, list) or not signals:
+            raise GateError(f"{args.signals_json}: no declared signals")
+        text = _replace_block(text, "signals", _signal_table(signals))
 
     doc.write_text(text)
     print(f"rendered {doc}", file=sys.stderr)
@@ -818,6 +992,15 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--json", type=Path)
     p.set_defaults(func=cmd_table)
 
+    p = sub.add_parser("signals", help="list declared D-Bus signals")
+    p.add_argument("--elf", type=Path, required=True)
+    p.add_argument("--notes", type=Path,
+                   help="inferred meaning/example annotations (signal_notes.json)")
+    p.add_argument("--locks", type=Path, default=_LOCKS)
+    p.add_argument("--pin", default="MICOM_MANAGER_SHA256")
+    p.add_argument("--json", type=Path)
+    p.set_defaults(func=cmd_signals)
+
     p = sub.add_parser("diff", help="compare the command surface of two ELFs")
     p.add_argument("--old", type=Path, required=True)
     p.add_argument("--new", type=Path, required=True)
@@ -829,6 +1012,8 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     p = sub.add_parser("render", help="fill the markdown tables in docs/15")
     p.add_argument("--json", type=Path, required=True)
+    p.add_argument("--signals-json", type=Path,
+                   help="the --json output of the signals command")
     p.add_argument("--doc", type=Path, required=True)
     p.set_defaults(func=cmd_render)
 

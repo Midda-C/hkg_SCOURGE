@@ -81,6 +81,16 @@ python3 tools/micom/extract_commands.py table \
     --elf   path/to/micommanager_userspace \
     --export path/to/ghidra/export/bin_e5f040ffc41cc980 \
     --json  work/micom/commands.json
+
+python3 tools/micom/extract_commands.py signals \
+    --elf   path/to/micommanager_userspace \
+    --notes tools/micom/signal_notes.json \
+    --json  work/micom/signals.json
+
+python3 tools/micom/extract_commands.py render \
+    --json         work/micom/commands.json \
+    --signals-json work/micom/signals.json \
+    --doc          docs/15-micom-commands.md
 ```
 
 The tool joins three independent sources and **aborts rather than emit a
@@ -91,10 +101,16 @@ partial table**:
    kind)`. This half needs no decompiler.
 2. **interface XML** — the service embeds its own
    `<interface name="com.lge.car.micom.…">` strings in `.rodata`; parsing them
-   gives the In/Out D-Bus types, also without a decompiler.
+   gives the In/Out D-Bus types, also without a decompiler. The same pass
+   yields the 124 signal declarations and their `Out` types.
 3. **opcode half** — the `qt_static_metacall` switch maps `(class, index)` to
    the slot function, whose body contains `FUN_0010ec60(manager, 0xNNNN)` or
    `FUN_0010f400(manager, 0xNNNN, …)`. This needs the Ghidra export.
+
+When given `--notes`, `signals` refuses to run if a declared signal lacks an
+entry in `tools/micom/signal_notes.json`, or if the notes name a signal the
+ELF does not declare. The notes themselves are first-party **inference**
+(AGENTS.md rule 10); they are not decoded protocol fields.
 
 Gates, all of which abort:
 
@@ -274,7 +290,7 @@ number. Treat it as an observation, not a definition.
 
 ---
 
-## 6. The command table
+## 6. The command and signal tables
 
 Columns: the opcode as it appears on the wire, the D-Bus method, and the
 direction-tagged argument types from the interface XML that the service itself
@@ -604,6 +620,163 @@ value synchronously; where it has none the reply is empty.
 | `0x0266` | `AskHWRTCInfo` | — | ay |
 
 <!-- END:hdr -->
+
+**Parameter note (`*`).** The only command with more than one D-Bus argument
+is `CAN.SetCANFixedMicomRecv` (`ay, i, i, i`). The vendor wrapper uses it as
+`array:byte:idhi,idlo`, `int32:start`, `int32:size`, `int32:data`; that is
+usage-derived (`*`), not a decoded MCU payload. See
+`packages/battery/docs/MICOM_WHITELIST.md`.
+
+### Signals
+
+The service declares **124 signals**. They travel from the micom to the head
+unit; a client subscribes, it does not call them. 123 carry one `ay` byte
+array; `ENG.NotifyMPAutoModeTestStartEvent` carries no payload. The interface,
+signal name and `Out` type below come from the embedded interface XML and moc
+metadata.
+
+The two right-hand columns are **inferred**. `*` marks a statement that is not
+decoded from the micom protocol: the meaning comes from the signal name and
+the surrounding interface, and the example is a well-formed guess, not a
+captured value. Capture real payloads with `dbus-monitor` while the signal
+fires.
+
+<!-- BEGIN:signals -->
+
+| Interface | Signal | Out | Meaning (inferred)* | Example payload (inferred)* |
+|---|---|---|---|---|
+| `ihu` | `NotifyCANNodeStatusEvent` | ay | CAN node online state* | `array:byte:0x01`* |
+| `ihu` | `NotifyDiagAdvancedSecurityKeyEvent` | ay | diagnostic security key* | — |
+| `ihu` | `NotifyDiagBTInspectionEndEvent` | ay | Bluetooth inspection end* | — |
+| `ihu` | `NotifyDiagBTInspectionStartEvent` | ay | Bluetooth inspection start* | — |
+| `ihu` | `NotifyDiagSessionInfoEvent` | ay | diagnostic session info* | — |
+| `ihu` | `NotifyDMBCASIDSetEvent` | ay | DMB CAS ID* | — |
+| `ihu` | `NotifyETCCANSleepEvent` | ay | CAN sleep state* | `array:byte:0x01`* |
+| `ihu` | `NotifyETCCarIFStatusEvent` | ay | vehicle-interface status* | `array:byte:0x01`* |
+| `ihu` | `NotifyETCDayNightStatusEvent` | ay | day/night state* | `array:byte:0x01`* |
+| `ihu` | `NotifyEtcDCOffSetStatusEvent` | ay | audio DC offset status* | `array:byte:0x01`* |
+| `ihu` | `NotifyETCILLPWMStatusEvent` | ay | illumination PWM value* | — |
+| `ihu` | `NotifyEtcLcd2SensorNotSupportPwmControl` | ay | LCD2 PWM unsupported* | `array:byte:0x01`* |
+| `ihu` | `NotifyEtcLcd2SensorSupportPwmControl` | ay | LCD2 PWM supported* | `array:byte:0x01`* |
+| `ihu` | `NotifyETCLCDSetInfoEvent` | ay | LCD setting* | — |
+| `ihu` | `NotifyETCNaviSCCMsgTriggerEvent` | ay | navigation-to-SCC trigger* | — |
+| `ihu` | `NotifyETCPeriodicAVNStatusEvent` | ay | periodic AVN status* | — |
+| `ihu` | `NotifyETCPopupEvent` | ay | popup request* | — |
+| `ihu` | `NotifyETCPowerKeyEvent` | ay | power-key event* | `array:byte:0x01`* |
+| `ihu` | `NotifyETCSleepRequest` | ay | sleep request* | `array:byte:0x01`* |
+| `ihu` | `NotifyFactoryModeInfoByFScan` | ay | factory-mode F-scan info* | — |
+| `ihu` | `NotifyHUDAbsentStatusEvent` | ay | HUD present/absent* | `array:byte:0x01`* |
+| `ihu` | `NotifyInfoFaultCodeStatusEvent` | ay | fault-code status* | `array:byte:0x01`* |
+| `ihu` | `NotifyMonitorPowerEvent` | ay | monitor power state* | `array:byte:0x01`* |
+| `ihu` | `NotifyMPCANTestEvent` | ay | media-player CAN test event* | — |
+| `ihu` | `NotifyRearMonitorStatusEvent` | ay | rear monitor state* | `array:byte:0x01`* |
+| `ihu` | `NotifyRecoveryModeEvent` | ay | recovery-mode state* | `array:byte:0x01`* |
+| `ihu` | `NotifyScheduledUpdateEvent` | ay | scheduled update state* | `array:byte:0x01`* |
+| `ihu` | `NotifySerialNumberSetEvent` | ay | serial number set* | — |
+| `ihu` | `NotifySpeedValueEvent` | ay | vehicle speed* | `array:byte:0x00`* |
+| `ihu` | `NotifySystemHashDataEvent` | ay | system hash data* | — |
+| `ihu` | `NotifySYSVariantOptionSetEvent` | ay | variant option set* | — |
+| `ihu` | `NotifyTraceDateSetEvent` | ay | trace date* | — |
+| `ihu` | `NotifyUpdateTouchICControl` | ay | touch-IC update status* | `array:byte:0x01`* |
+| `ihu` | `NotifyVehicleOtaSessionInfoEvent` | ay | OTA session information* | — |
+| `can` | `NotifyBCANEachMsg` | ay | body-CAN frame* | — |
+| `can` | `NotifyCANTPMicomSend` | ay | CAN-TP send* | — |
+| `can` | `NotifyCANTPMicomSendException` | ay | CAN-TP send exception* | — |
+| `can` | `NotifyCANTPRECVMsg` | ay | CAN-TP receive* | — |
+| `can` | `NotifyEDTStatusEvent` | ay | EDT status* | `array:byte:0x01`* |
+| `can` | `NotifyExtMMCanRxEvent` | ay | external MM-CAN frame* | — |
+| `can` | `NotifyICANEachMsg` | ay | I-CAN frame* | — |
+| `can` | `NotifyICANRxExtMsg` | ay | external I-CAN frame* | — |
+| `can` | `NotifyKeyCCPEvent` | ay | CCP key event* | `array:byte:0x01`* |
+| `can` | `NotifyKeyFrontPannelEvent` | ay | front-panel key event* | `array:byte:0x01`* |
+| `can` | `NotifyKeyFrontSpecialEvent` | ay | special front-panel key event* | `array:byte:0x01`* |
+| `can` | `NotifyKEYPressCounterEvent` | ay | key-press counter* | `array:byte:0x01`* |
+| `can` | `NotifyKeyREAREvent` | ay | rear key event* | `array:byte:0x01`* |
+| `can` | `NotifyKeyRRCEvent` | ay | RRC key event* | `array:byte:0x01`* |
+| `can` | `NotifyKeySWRCEvent` | ay | steering-wheel key event* | `array:byte:0x01`* |
+| `can` | `NotifyMCANEachMsg` | ay | M-CAN frame* | — |
+| `eng` | `NotifyAFTraceLogResponse` | ay | AF trace log* | — |
+| `eng` | `NotifyAMResponse` | ay | AM tuner response* | — |
+| `eng` | `NotifyANTConnectivityStatusInfoResponse` | ay | antenna connectivity status* | `array:byte:0x01`* |
+| `eng` | `NotifyEngAirConditionKeyTest` | ay | A/C key test* | — |
+| `eng` | `NotifyFMNewInfoResponse` | ay | FM new information* | — |
+| `eng` | `NotifyFMResponse` | ay | FM tuner response* | — |
+| `eng` | `NotifyHDAFResponse` | ay | HD AF response* | — |
+| `eng` | `NotifyHDRConfigInfoAdvance` | ay | HD configuration, advanced* | — |
+| `eng` | `NotifyHDRConfigInfoBasic` | ay | HD configuration, basic* | — |
+| `eng` | `NotifyHDTunerStatusResponse` | ay | HD tuner status* | — |
+| `eng` | `NotifyMPAutoModeTestMsgEvent` | ay | media-player auto-mode test message* | — |
+| `eng` | `NotifyMPAutoModeTestStartEvent` | — | media-player auto-mode test start* | — |
+| `eng` | `NotifyMsgSelfEmergencyGO` | ay | emergency self-programming start* | `array:byte:0x01`* |
+| `eng` | `NotifyRDSAFLogResponse` | ay | RDS AF log* | — |
+| `eng` | `NotifySaturnStatusResponse` | ay | Saturn tuner status* | — |
+| `eng` | `NotifySndAResponse` | ay | sound processor A response* | — |
+| `eng` | `NotifySndBResponse` | ay | sound processor B response* | — |
+| `eng` | `NotifyTMCResponse` | ay | TMC response* | — |
+| `eng` | `NotifyTunerStatusResponse` | ay | tuner status* | — |
+| `tmu` | `NotifyTMUBCANCARIFEvent` | ay | body-CAN vehicle-interface event* | — |
+| `tmu` | `NotifyTMUDIAGUROBOTConnectEvent` | ay | diagnostic robot connection* | — |
+| `tmu` | `NotifyTMUDIAGVINInformEvent` | ay | VIN reported for diagnostics* | — |
+| `tmu` | `NotifyTMUFuelConsumptionEvent` | ay | fuel consumption data* | — |
+| `tmu` | `NotifyTMUKeyPressEvent` | ay | key press via TMU* | `array:byte:0x01`* |
+| `tmu` | `NotifyTMUMCANStatusEvent` | ay | M-CAN status* | `array:byte:0x01`* |
+| `tmu` | `NotifyTMUPanicEvent` | ay | panic/alarm state* | `array:byte:0x01`* |
+| `tmu` | `NotifyTMUPowerConditionEvent` | ay | TMU power condition* | `array:byte:0x01`* |
+| `tmu` | `NotifyTMURMKEYEvent` | ay | remote-key button* | `array:byte:0x01`* |
+| `tmu` | `NotifyTMURMKeyStuckEvent` | ay | stuck remote key* | `array:byte:0x01`* |
+| `tmu` | `NotifyTMUServiceAlarmEvent` | ay | telematics service alarm* | — |
+| `tmu` | `NotifyTMUServiceBootStatusEvent` | ay | TMU service boot status* | `array:byte:0x01`* |
+| `tmu` | `NotifyTMUVCRMResponseEvent` | ay | VCRM response* | — |
+| `tmu` | `NotifyTMUVRMResponseEvent` | ay | VRM response* | — |
+| `tmu` | `NotifyTMUVRMResponseexceptionEvent` | ay | VRM response exception* | — |
+| `audio` | `NotifyAudioMainCHChange` | ay | new main audio channel/source* | `array:byte:0x01`* |
+| `audio` | `NotifyAudioMixingCHChange` | ay | new mixing channel (navigation/voice overlay)* | `array:byte:0x01`* |
+| `audio` | `NotifyAudioSetupControl` | ay | changed sound setting* | — |
+| `audio` | `NotifyAudioVolumeStep` | ay | current volume step* | `array:byte:0x01`* |
+| `audio` | `NotifyAudioVolumeStepChangeEvent` | ay | volume step delta* | `array:byte:0x01`* |
+| `audio` | `NotifySetAudioVolume` | ay | applied volume value* | `array:byte:0x01`* |
+| `audio` | `NotifySoundMICStatus` | ay | microphone on/off status* | `array:byte:0x01`* |
+| `radio` | `NotifyAMRefreshEvent` | ay | AM refresh result* | — |
+| `radio` | `NotifyITMNoSignalStatusChange` | ay | no-signal state* | `array:byte:0x01`* |
+| `radio` | `NotifyRadioBSMPreset` | ay | BSM/autostore result* | — |
+| `radio` | `NotifyRadioFreqUpdate` | ay | tuned frequency* | — |
+| `radio` | `NotifyRadioPresetDelete` | ay | deleted preset index* | — |
+| `radio` | `NotifyRadioSearchFinish` | ay | search result/station* | — |
+| `radio` | `NotifyRefreshFinishEvent` | ay | refresh completion* | — |
+| `radio` | `NotifyStationListUpdate` | ay | station list data* | — |
+| `radio` | `NotifyTPEGSearchFinish` | ay | TPEG search result* | — |
+| `radio` | `NotifyTPEGUpdate` | ay | TPEG traffic data* | — |
+| `radio` | `NotifyTuneStressTest` | ay | stress-test tune result* | — |
+| `tmc` | `NotifyDABToFMCoChannelDetect` | ay | DAB/FM co-channel detection* | — |
+| `tmc` | `NotifyDABToFMPICodeEvent` | ay | DAB-to-FM PI code* | — |
+| `tmc` | `NotifyDABToFMQuality` | ay | DAB/FM quality comparison* | — |
+| `tmc` | `NotifyRDSInfoFinishEvent` | ay | RDS information end* | — |
+| `tmc` | `NotifyRDSInfoStartEvent` | ay | RDS information start* | — |
+| `tmc` | `NotifyRDSRTPlusUpdateEvent` | ay | RT+ data* | — |
+| `tmc` | `NotifyRDSStationListUpdate` | ay | RDS station list* | — |
+| `tmc` | `NotifyRDSTextUpdateEvent` | ay | RDS radio text* | — |
+| `tmc` | `NotifyRDSTPLossEvent` | ay | TP-flag loss* | `array:byte:0x01`* |
+| `tmc` | `NotifyTMCInfoUpdateEvent` | ay | TMC traffic information* | — |
+| `hdr` | `NotifyFactoryResetCompleteEvent` | ay | factory reset complete* | `array:byte:0x01`* |
+| `hdr` | `NotifyHDRAECommand` | ay | HD AE command/data* | — |
+| `hdr` | `NotifyHDRAEDataUpdate` | ay | HD AE data update* | — |
+| `hdr` | `NotifyHDRCommercialMessage` | ay | commercial message* | — |
+| `hdr` | `NotifyHDRCommonMessage` | ay | general HD message* | — |
+| `hdr` | `NotifyHDRiTuneStatus` | ay | iTunes tagging status* | `array:byte:0x01`* |
+| `hdr` | `NotifyHDROnOffStatusEvent` | ay | HD on/off state* | `array:byte:0x01`* |
+| `hdr` | `NotifyHDRPSDData` | ay | PSD title/artist* | — |
+| `hdr` | `NotifyHDRSISData` | ay | SIS station name/info* | — |
+| `hdr` | `NotifyHDRStatusInfo` | ay | HD status and signal strength* | — |
+| `hdr` | `NotifyRBDSDataUpdateEvent` | ay | RBDS data* | — |
+| `hdr` | `NotifyTaggingTokenData` | ay | tagging token* | — |
+
+<!-- END:signals -->
+
+Two moc signal implementations are outside the 124 declared entries:
+`CAN.NotifyCanDTCFinishEvent` (the XML declares that name as a method) and
+`CAN.NotifyMPCANTestEvent` (a same-named signal in the `CAN` class, also
+declared under `IHU`). They are not counted in the table.
+
 ---
 
 ## 7. Methods that emit no micom frame
@@ -888,7 +1061,10 @@ Recorded so nobody re-derives them as if they were settled:
   command we know the opcode, the name and the D-Bus argument types, but not
   what the bytes mean to the MCU. The two `ay` blobs that *are* understood are
   in `packages/battery/docs/MICOM_WHITELIST.md`.
-- **Signal payloads** (the 124 `Notify…` methods) are out of scope here.
+- **Signal payload bytes are not decoded.** §6 lists the 124 declared signals,
+  their `Out` types and an inferred meaning for each; the byte layout of the
+  `ay` payload is unknown. The `*` marks in that table are inference, not
+  protocol facts.
 - **The `…Adaptor` classes** are not exact mirrors. `IHUAdaptor` has 106 slots
   against `IHU`'s 107, and `ENGAdaptor` 26 against `ENG`'s 28 — the adaptors
   omit exactly the three undeclared slots described in §7. That is also why
@@ -930,8 +1106,8 @@ machine and the CRC-32/MPEG-2 loop.
 
 Tools:
 
-- `tools/micom/extract_commands.py` — moc parse, XML signatures, opcode join,
-  version diff, doc-table render, caller index.
+- `tools/micom/extract_commands.py` — moc parse, XML signatures, signal
+  declarations, opcode join, version diff, doc-table render, caller index.
 - `tools/micom/mcu_image.py` — MCU container layout and the updater's CRC.
 
 Related:
