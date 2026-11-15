@@ -63,6 +63,7 @@ from harness.visual import baseline as visual_baseline
 from harness.visual import compare as visual_compare
 from harness.visual import list_baselines
 from harness.capture import check_capture
+from harness.update_media import check_update_media
 from harness.result_schema import (check_all_bench, check_all_bench_dir,
                                    check_all_results, schema_state,
                                    validate_bench, validate_file,
@@ -1668,6 +1669,15 @@ def main() -> int:
     check_capture_parser.add_argument(
         '--reject-maps', action='store_true',
         help='fail when an archive or raw image looks like map data')
+    check_update_parser = sub.add_parser(
+        'check-update', help='validate an offline update directory or ext4 image')
+    check_update_parser.add_argument('path', type=Path)
+    check_update_parser.add_argument(
+        '--verify-hashes', action='store_true',
+        help='hash every MANIFEST.sha256 target (slow for large payloads)')
+    check_update_parser.add_argument(
+        '--verify-files', action='store_true',
+        help='compare declared IONIQ5_EU.ver sizes for files present on the media')
     check_scenario = sub.add_parser('check-scenario',
                                     help='validate scenario JSON contracts')
     check_scenario.add_argument('scenario', nargs='?',
@@ -2172,6 +2182,11 @@ def main() -> int:
     if args.action == 'check-capture':
         report = check_capture(args.path, verify_hashes=args.verify_hashes,
                                reject_maps=args.reject_maps)
+        print(json.dumps(report, indent=2))
+        return 0 if report['ok'] else 1
+    if args.action == 'check-update':
+        report = check_update_media(args.path, verify_hashes=args.verify_hashes,
+                                    verify_files=args.verify_files)
         print(json.dumps(report, indent=2))
         return 0 if report['ok'] else 1
     if args.action == 'check-bench':

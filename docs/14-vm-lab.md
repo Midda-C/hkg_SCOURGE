@@ -59,6 +59,9 @@ VM-validated (vendor kernel):
 - repeat-update recovery (`recovery-repeat-update`): media-level verify,
   corruption detection, backup repair, re-verify and rediscovery; not the
   AppUpgrade engine's credential-gated repeat path
+- offline update-media validation (`check-update`): package-map grammar,
+  manifest coverage and confinement, optional hashes and declared sizes for a
+  directory or raw ext4 stick; no decryption or updater execution
 - vendor systemd partial boot (`vendor-systemd`): real systemd reaches
   Multi-User; SMACK units fail, consistent with the missing vendor initramfs (documented)
 - vendor systemd D-Bus service/ordering (`vendor-systemd-dbus`): the research shell

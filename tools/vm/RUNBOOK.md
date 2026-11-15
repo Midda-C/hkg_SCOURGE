@@ -637,6 +637,33 @@ driver attach enters uninterruptible sleep in `__driver_attach` during
 Use it when the default image lives on a slow network share. `doctor` and
 `daemon start` accept the same option.
 
+## Offline update media validation
+
+Validate an update stick directory or raw ext4 image without decrypting,
+extracting or running the updater:
+
+```sh
+python3 -B launch.py check-update <dir-or-ext4-image> \
+  [--verify-hashes] [--verify-files]
+```
+
+The report checks the required `.lge.upgrade.xml`, `IONIQ5_EU.ver` and
+`MANIFEST.sha256`. It parses the package-map header (7 fields) and entries
+(6 fields), requires integer ids/sizes/flags, confines package paths to the
+declared product, rejects unsafe filenames and duplicate entries, and checks
+that the manifest covers `IONIQ5_EU.ver`, confines every path and has no
+duplicates. Missing manifest targets fail the report.
+
+`--verify-hashes` streams each manifest target through `debugfs` in image mode
+or hashes it directly in directory mode. `--verify-files` compares
+`IONIQ5_EU.ver` declared sizes for files that are actually present; absent
+package payloads are not failures because a stick may carry only a subset.
+Image mode requires simple paths without whitespace; directory mode supports
+arbitrary names. Exit 0/1 with a JSON report.
+
+The real `update-k.img` passes with 35 package entries, 2 manifest targets and
+header `NE_E.EUR.S5W_L.001.001.260128` / `IONIQ5_EU`.
+
 ## Troubleshooting
 
 | Symptom | Action |

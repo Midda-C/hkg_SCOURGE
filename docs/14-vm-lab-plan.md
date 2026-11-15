@@ -975,6 +975,12 @@ items beyond that.
   steering and Gen2 `0x56e`/`0x55a`. The `vehicle-state` run asserts real
   values, the `(raw+1) > 0x3fe` refusal and the Gen2 sentinel; 12 checks
   PASS in a real boot. Lab frames and the no-DBC limitation remain explicit.
+- **2026-11-15 — P2-7 offline media gate**: `check-update <dir|image>` parses
+  the real `IONIQ5_EU.ver` package map and `MANIFEST.sha256`, enforces path
+  confinement/duplicates and optionally verifies hashes or declared sizes.
+  It never decrypts, extracts or runs the updater. The captured
+  `update-k.img` passes with 35 entries and 2 manifest targets; 12 new tests.
+  431 tests (72 skipped); doctor green.
 - **2026-11-15 — NAS import verified**: 9.4 GB preservation copy complete;
   all archives, partitions, runtime files and the navi2 archive match.
   `meta/SOURCE.txt` was finalized after the original manifest, so its one
