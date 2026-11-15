@@ -1535,9 +1535,24 @@ static bool w2_route_token_u32(const char *text, unsigned int *out)
     char *end = NULL;
     unsigned long value;
     if (text == NULL || *text == '\0' || out == NULL) return false;
+    if (*text == '-') return false;
     for (const char *p = text; *p; p++) if (*p < '0' || *p > '9') return false;
     errno = 0;
     value = strtoul(text, &end, 10);
+    if (errno != 0 || end == text || *end != '\0' || value > 0xffffffffUL)
+        return false;
+    *out = (unsigned int)value;
+    return true;
+}
+
+static bool w2_route_token_proto(const char *text, unsigned int *out)
+{
+    char *end = NULL;
+    unsigned long value;
+    if (text == NULL || *text == '\0' || out == NULL) return false;
+    if (*text == '-') return false;
+    errno = 0;
+    value = strtoul(text, &end, 0);
     if (errno != 0 || end == text || *end != '\0' || value > 0xffffffffUL)
         return false;
     *out = (unsigned int)value;
@@ -1586,7 +1601,7 @@ static bool w2_route_line_matches(const char *line, const char *gateway,
     char copy[512], *tokens[64] = {0};
     int count = 0;
     char *save = NULL;
-    char metric_text[16], proto_text[16];
+    char metric_text[16];
 
     if (line == NULL || gateway == NULL || iface == NULL) return false;
     snprintf(copy, sizeof(copy), "%s", line);
@@ -1595,13 +1610,16 @@ static bool w2_route_line_matches(const char *line, const char *gateway,
         tokens[count++] = tok;
     if (count == 0 || strcmp(tokens[0], "default") != 0) return false;
     snprintf(metric_text, sizeof(metric_text), "%u", metric);
-    snprintf(proto_text, sizeof(proto_text), "%u", proto);
     bool via = false, dev = false, met = false, pro = false;
     for (int i = 0; i + 1 < count; i++) {
         if (!strcmp(tokens[i], "via") && !strcmp(tokens[i + 1], gateway)) via = true;
         else if (!strcmp(tokens[i], "dev") && !strcmp(tokens[i + 1], iface)) dev = true;
         else if (!strcmp(tokens[i], "metric") && !strcmp(tokens[i + 1], metric_text)) met = true;
-        else if (!strcmp(tokens[i], "proto") && !strcmp(tokens[i + 1], proto_text)) pro = true;
+        else if (!strcmp(tokens[i], "proto")) {
+            unsigned int parsed = 0;
+            if (w2_route_token_proto(tokens[i + 1], &parsed) && parsed == proto)
+                pro = true;
+        }
     }
     return via && dev && met && pro;
 }
@@ -1658,14 +1676,14 @@ static bool w2_route_select_metric(unsigned int *metric)
             tokens[count++] = tok;
         unsigned int value = 0;
         bool have_metric = false;
-        for (int i = 0; i + 1 < count; i++) {
+        for (int i = 0; i < count; i++) {
             if (!strcmp(tokens[i], "metric")) {
-                if (!w2_route_token_u32(tokens[i + 1], &value)) {
+                if (have_metric || i + 1 >= count ||
+                    !w2_route_token_u32(tokens[i + 1], &value)) {
                     log_msg("dhcp client: refusing malformed default metric: %s", p);
                     return false;
                 }
                 have_metric = true;
-                break;
             }
         }
         if (!have_metric) value = 0; /* kernel omits metric 0 */
@@ -1685,9 +1703,11 @@ static bool w2_route_select_metric(unsigned int *metric)
 
 static bool w2_owned_route_cleanup(void)
 {
-    char ledger[1024], buf[4096];
+    char ledger[1024];
+    if (access(WIFI1B_CLIENT_ROUTE_LEDGER, F_OK) != 0) return true;
     int n = read_file(WIFI1B_CLIENT_ROUTE_LEDGER, ledger, sizeof(ledger));
-    if (n <= 0) return true;
+    if (n < 0) return false;
+    if (n == 0) return true;
     w2_owned_route_t route;
     if (!w2_owned_route_parse(ledger, &route)) {
         log_msg("dhcp client: refusing to act on malformed route ledger");
@@ -1710,7 +1730,6 @@ static bool w2_owned_route_cleanup(void)
         return false;
     if (present) return false;
     unlink(WIFI1B_CLIENT_ROUTE_LEDGER);
-    (void)buf;
     return true;
 }
 
@@ -1748,6 +1767,12 @@ static bool w2_client_route_install(uint32_t gateway, const char *iface)
     if (gateway == 0) {
         snprintf(g_dhcp_error, sizeof(g_dhcp_error),
                  "DHCP lease has no router/gateway option");
+        return false;
+    }
+    if (gateway == 0xffffffffU || (gateway >> 28) >= 14 ||
+        (gateway >> 24) == 127) {
+        snprintf(g_dhcp_error, sizeof(g_dhcp_error),
+                 "DHCP gateway is not a usable unicast address");
         return false;
     }
     w2_ip4_str(gateway, gw, sizeof(gw));
@@ -2094,6 +2119,10 @@ static bool w2_dhcp_apply_ack(const struct w2_dhcp_packet *rep, size_t n,
 
     w2_ip4_str(ip, ipbuf, sizeof(ipbuf));
     if (!getenv("WIFI1B_DHCP_TEST_NOAPPLY")) {
+        if (g_dhcp_lease.ip &&
+            (g_dhcp_lease.ip != ip || g_dhcp_lease.prefix != prefix) &&
+            !strcmp(g_dhcp_lease.iface, iface))
+            w2_dhcp_remove_own_address(iface);
         if (!w2_ip_command("addr replace %s/%d dev %s", ipbuf, prefix, iface) &&
             !w2_ip_command("addr add %s/%d dev %s", ipbuf, prefix, iface)) {
             snprintf(g_dhcp_error, sizeof(g_dhcp_error),
@@ -2154,6 +2183,7 @@ static bool w2_dhcp_client_run(w2_dhcp_step_t step, const char *iface_in,
         if (!w2_owned_route_cleanup()) {
             snprintf(g_dhcp_error, sizeof(g_dhcp_error),
                      "cannot remove previous owned default route");
+            w2_dhcp_remove_own_address(iface);
             g_dhcp_lease.valid = false;
             g_dhcp_lease.route_ok = false;
             g_dhcp_lease.updated = true;
@@ -2166,7 +2196,7 @@ static bool w2_dhcp_client_run(w2_dhcp_step_t step, const char *iface_in,
         snprintf(g_dhcp_error, sizeof(g_dhcp_error), "no active lease to renew");
         return false;
     }
-    g_dhcp_lease.updated = false;
+    g_dhcp_lease.updated = step == W2_DHCP_ACQUIRE;
 
     uint8_t mac[6];
     if (!w2_read_iface_mac(iface, mac)) {
@@ -2732,10 +2762,21 @@ static bool apply_mode_work(bool pair)
         bool vbt_off = false;
         vbt_set_wireless_carplay(false, &vbt_off);
         restart_vbtd_if_needed(vbt_off);
-        if (!ensure_wifi_ready()) { ssh_stop(); return false; }
+        if (!ensure_wifi_ready()) {
+            (void)w2_owned_route_cleanup();
+            g_dhcp_lease.valid = false;
+            g_dhcp_lease.route_ok = false;
+            g_dhcp_lease.updated = true;
+            ssh_stop();
+            return false;
+        }
         if (!client_connect()) {
             char why[256];
             str_copy(why, sizeof(why), g_last_msg);
+            (void)w2_owned_route_cleanup();
+            g_dhcp_lease.valid = false;
+            g_dhcp_lease.route_ok = false;
+            g_dhcp_lease.updated = true;
             ssh_stop();
             set_msg("client mode failed: %s", why);
             return false;
@@ -2745,6 +2786,18 @@ static bool apply_mode_work(bool pair)
         set_msg("client mode: %s", g_cfg.ssid);
         return true;
     }
+
+    /* Leaving client mode: remove only the exact ledged default route. */
+    if (!w2_owned_route_cleanup()) {
+        g_dhcp_lease.valid = false;
+        g_dhcp_lease.route_ok = false;
+        g_dhcp_lease.updated = true;
+        set_msg("client: owned default route cleanup failed; CarPlay not started");
+        return false;
+    }
+    g_dhcp_lease.valid = false;
+    g_dhcp_lease.route_ok = false;
+    g_dhcp_lease.updated = true;
 
     if (g_ap_restart_requested) {
         ssh_stop();
