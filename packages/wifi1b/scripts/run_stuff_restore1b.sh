@@ -23,6 +23,10 @@ ALL="HomeScreen/Screen_HomeScreen_AllMenus.qml"
 SETUP="HomeScreen/Screen_HomeScreen_Submenu_Setup.qml"
 CUSTOM="component/QCustomizedMenuListAllowEmpty.qml"
 
+if [ -L "$RW_DIR" ]; then
+    printf 'WIFI1B_RESTORE\nstatus=FAIL\nerror=runtime directory is a symlink\n' > "$OUT" 2>/dev/null || true
+    exit 1
+fi
 mkdir -p "$RW_DIR" 2>/dev/null
 : > "$LOG" 2>/dev/null
 log() { echo "$(date -u 2>/dev/null) $*" >> "$LOG" 2>/dev/null; }
@@ -48,29 +52,77 @@ fi
 
 LATEST="$RW_DIR/backup/latest"
 [ -d "$LATEST" ] || fail "no backup/latest; cannot restore"
+[ ! -L "$RW_DIR/backup" ] || fail "backup directory is a symlink; refusing restore"
+LATEST_REAL=$(readlink -f "$LATEST" 2>/dev/null || true)
+case "$LATEST_REAL" in
+    "$RW_DIR"/backup/*) : ;;
+    *) fail "restore point escapes the Wifi1b backup directory" ;;
+esac
 
 . "$PAYLOAD/lib/install_io.sh"
 io_init || fail "cannot determine root mount state"
 io_capture_qml "$QML_DIR" "$USB_DIR/qml_before" || true
 io_settle_root || fail "root did not settle writable"
 
-# Stop Wifi1b and release wlan0.  Never stop wifi-daemon.service.
-if command -v systemctl >/dev/null 2>&1; then
+# Read the original service transaction.  A pre-existing file and its
+# enablement/active state are restored; a foreign-modified service is never
+# removed or stopped.  Missing/legacy ledger entries preserve the file.
+SERVICE_ITEM=""
+SERVICE_EXISTED=""
+SERVICE_ENABLED=""
+SERVICE_ACTIVE=""
+if [ -f "$LATEST/transaction/files" ]; then
+    while IFS='|' read -r _item _existed _destination; do
+        [ "$_destination" = "$SERVICE" ] || continue
+        SERVICE_ITEM=$_item
+        SERVICE_EXISTED=$_existed
+    done < "$LATEST/transaction/files"
+fi
+if [ -f "$LATEST/transaction/service.state" ]; then
+    SERVICE_ENABLED=$(sed -n 's/^enabled=//p' "$LATEST/transaction/service.state" 2>/dev/null)
+    SERVICE_ACTIVE=$(sed -n 's/^active=//p' "$LATEST/transaction/service.state" 2>/dev/null)
+fi
+[ -n "$SERVICE_ENABLED" ] || SERVICE_ENABLED=unknown
+[ -n "$SERVICE_ACTIVE" ] || SERVICE_ACTIVE=0
+service_is_owned=0
+if [ -f "$SERVICE" ] && [ ! -L "$SERVICE" ] &&
+   cmp -s "$SERVICE" "$PAYLOAD/systemd/wifi1b-daemon.service"; then
+    service_is_owned=1
+fi
+service_may_stop=0
+if [ "$service_is_owned" = 1 ]; then
+    service_may_stop=1
+elif [ ! -e "$SERVICE" ] && [ ! -L "$SERVICE" ]; then
+    # No service file, but a stale unit process may still need stopping.
+    service_may_stop=1
+fi
+
+# Stop Wifi1b and release wlan0.  Never stop/disable a foreign-modified
+# service: only exact owned bytes (or an absent service) are touched.
+if [ "$service_may_stop" = 1 ] && command -v systemctl >/dev/null 2>&1; then
     systemctl stop wifi1b-daemon.service 2>/dev/null || true
-    systemctl disable wifi1b-daemon.service 2>/dev/null || true
+    if [ "$SERVICE_EXISTED" = 0 ] && [ "$service_is_owned" = 1 ]; then
+        systemctl disable wifi1b-daemon.service 2>/dev/null || true
+    fi
+else
+    log "kept independently changed/foreign wifi1b service; not stopping or disabling it"
 fi
-if [ -x "$RW_DIR/wifi1b_daemon" ]; then
-    "$RW_DIR/wifi1b_daemon" --mode off >> "$LOG" 2>&1 || fail "Wifi1b network cleanup failed; retain daemon for recovery"
+if [ "$service_may_stop" = 1 ]; then
+    if [ -x "$RW_DIR/wifi1b_daemon" ]; then
+        "$RW_DIR/wifi1b_daemon" --mode off >> "$LOG" 2>&1 || fail "Wifi1b network cleanup failed; retain daemon for recovery"
+    fi
+    rm -f /run/wifi1b/active 2>/dev/null || true
+    for p in /proc/[0-9]*; do
+        executable=$(readlink "$p/exe" 2>/dev/null || true)
+        case "$executable" in
+            "$RW_DIR/wifi1b_daemon"|"$RW_DIR/wifi1b_daemon (deleted)"|\
+            "$RW_DIR/bin/dropbearmulti"|"$RW_DIR/bin/dropbearmulti (deleted)")
+                kill -TERM "${p#/proc/}" 2>/dev/null || true ;;
+        esac
+    done
+else
+    log "kept foreign-modified service process; not stopping or cleaning its network state"
 fi
-rm -f /run/wifi1b/active 2>/dev/null || true
-for p in /proc/[0-9]*; do
-    executable=$(readlink "$p/exe" 2>/dev/null || true)
-    case "$executable" in
-        "$RW_DIR/wifi1b_daemon"|"$RW_DIR/wifi1b_daemon (deleted)"|\
-        "$RW_DIR/bin/dropbearmulti"|"$RW_DIR/bin/dropbearmulti (deleted)")
-            kill -TERM "${p#/proc/}" 2>/dev/null || true ;;
-    esac
-done
 for family in iptables ip6tables; do
     IPT=$(command -v "$family" 2>/dev/null || true)
     [ -n "$IPT" ] || continue
@@ -122,7 +174,62 @@ for source in "$PAYLOAD/assets/wifi1b/"*; do
     if cmp -s "$source" "$target"; then rm -f "$target" 2>/dev/null || true; fi
 done
 rmdir "$ASSET_DIR" 2>/dev/null || true
-rm -f "$SERVICE" 2>/dev/null || true
+
+# Restore the service file and its original enabled/active state from the
+# install transaction.  Never remove or stop an owner-modified/foreign file.
+restore_service() {
+    if [ "$SERVICE_EXISTED" = 1 ]; then
+        if [ -n "$SERVICE_ITEM" ] &&
+           { [ ! -e "$SERVICE" ] && [ ! -L "$SERVICE" ] || [ "$service_is_owned" = 1 ]; }; then
+            io_restore_entry "$LATEST/transaction/$SERVICE_ITEM" "$SERVICE" || \
+                fail "cannot restore original wifi1b service"
+            chmod 644 "$SERVICE" 2>/dev/null || true
+            log "restored pre-existing wifi1b service from transaction"
+            if command -v systemctl >/dev/null 2>&1; then
+                systemctl daemon-reload >> "$LOG" 2>&1 || true
+                case "$SERVICE_ENABLED" in
+                    enabled) systemctl enable wifi1b-daemon.service >> "$LOG" 2>&1 || \
+                                 log "WARNING: could not re-enable pre-existing wifi1b service" ;;
+                    disabled) systemctl disable wifi1b-daemon.service >> "$LOG" 2>&1 || true ;;
+                esac
+                if [ "$SERVICE_ACTIVE" = 1 ]; then
+                    systemctl start wifi1b-daemon.service >> "$LOG" 2>&1 || \
+                        log "WARNING: could not re-start pre-existing wifi1b service"
+                else
+                    systemctl stop wifi1b-daemon.service >> "$LOG" 2>&1 || true
+                fi
+            fi
+        else
+            log "kept independently changed/foreign wifi1b service; no restore"
+        fi
+        return 0
+    fi
+    if [ -z "$SERVICE_EXISTED" ]; then
+        # Legacy ledger without a service entry: remove only exact owned bytes.
+        if [ "$service_is_owned" = 1 ]; then
+            rm -f "$SERVICE" 2>/dev/null || true
+            command -v systemctl >/dev/null 2>&1 && \
+                systemctl disable wifi1b-daemon.service >> "$LOG" 2>&1 || true
+            log "removed owned wifi1b service (legacy ledger)"
+        else
+            log "kept unknown wifi1b service: legacy ledger has no ownership entry"
+        fi
+        return 0
+    fi
+    # Originally absent: remove only our exact bytes, never a foreign file.
+    if [ "$service_is_owned" = 1 ]; then
+        rm -f "$SERVICE" 2>/dev/null || true
+        if command -v systemctl >/dev/null 2>&1; then
+            systemctl disable wifi1b-daemon.service >> "$LOG" 2>&1 || true
+            systemctl stop wifi1b-daemon.service >> "$LOG" 2>&1 || true
+            systemctl daemon-reload >> "$LOG" 2>&1 || true
+        fi
+        log "removed owned wifi1b service"
+    else
+        log "kept foreign wifi1b service (originally absent)"
+    fi
+}
+restore_service
 MDNS_DROPIN="${WIFI1B_MDNS_DROPIN:-/etc/systemd/system/carplay_mdnsd.service.d/60-wifi1b-foreground.conf}"
 if cmp -s "$MDNS_DROPIN" "$PAYLOAD/systemd/60-wifi1b-foreground.conf"; then
     # An identical override may have existed before installation. Preserve it
@@ -173,18 +280,26 @@ fi
 # Remove only the wifi1b: entries this installer recorded.
 remove_wifi1b() {
     f="$1"
-    [ -f "$f" ] || return 0
+    [ -f "$f" ] && [ ! -L "$f" ] && [ -r "$f" ] && [ -w "$f" ] || {
+        log "kept unreadable/unwritable account file: $f"; return 0; }
     marker="$RW_DIR/backup/accounts/$(basename "$f")"
-    [ -f "$marker" ] || return 0
-    expected=$(cat "$marker")
+    [ -f "$marker" ] && [ ! -L "$marker" ] && [ -r "$marker" ] || return 0
+    expected=$(cat "$marker" 2>/dev/null) || { log "cannot read account ownership marker: $marker"; return 0; }
     current=$(grep '^wifi1b:' "$f" 2>/dev/null || true)
     [ "$current" = "$expected" ] || { log "kept independently changed account in $f"; return 0; }
-        tmp="/tmp/wifi1b-remove.$$"
-    grep -v '^wifi1b:' "$f" > "$tmp" 2>/dev/null || true
-    cat "$tmp" > "$f" 2>/dev/null || true
-    rm -f "$tmp"
-    rm -f "$marker"
-    case "$f" in *shadow*) chmod 600 "$f" 2>/dev/null || true;; *) chmod 644 "$f" 2>/dev/null || true;; esac
+    tmp=$(mktemp "$RW_DIR/.account-remove.XXXXXX" 2>/dev/null) || {
+        log "cannot stage account removal for $f"; return 0; }
+    if grep -v '^wifi1b:' "$f" > "$tmp" 2>/dev/null && cat "$tmp" > "$f" 2>/dev/null; then
+        rm -f "$tmp" "$marker"
+        case "$f" in
+            *shadow*) chmod 600 "$f" 2>/dev/null || true ;;
+            *) chmod 644 "$f" 2>/dev/null || true ;;
+        esac
+        log "removed owned wifi1b account entry from $f"
+    else
+        rm -f "$tmp" 2>/dev/null || true
+        log "FAILED to rewrite account file safely: $f"
+    fi
 }
 remove_wifi1b /etc/passwd
 remove_wifi1b /etc/passwd.legacy
@@ -202,9 +317,18 @@ rm -f "$RW_DIR/wifi1b_daemon" "$RW_DIR/status.json" "$RW_DIR/daemon.log" \
       "$RW_DIR/udhcpc.pid" "$RW_DIR/udhcpc.sh" "$RW_DIR/udhcpc.log" 2>/dev/null || true
 rm -f "$RW_DIR/bin/dropbearmulti" "$RW_DIR/bin/dropbear" "$RW_DIR/bin/dropbearkey" \
       "$RW_DIR/bin/wifi1b_qmlpatch" \
-      "$RW_DIR/ssh/authorized_keys" "$RW_DIR/ssh/dropbear.pid" \
-      "$RW_DIR/ssh/dropbear_ed25519_host_key" "$RW_DIR/ssh/dropbear_rsa_host_key" \
-      "$RW_DIR/home/.ssh/authorized_keys" 2>/dev/null || true
+      "$RW_DIR/ssh/dropbear.pid" \
+      "$RW_DIR/ssh/dropbear_ed25519_host_key" "$RW_DIR/ssh/dropbear_rsa_host_key" 2>/dev/null || true
+auth_ledger=0
+if [ -f "$LATEST/transaction/files" ] &&
+   grep -Fq "|$RW_DIR/ssh/authorized_keys" "$LATEST/transaction/files"; then
+    auth_ledger=1
+fi
+if [ "$auth_ledger" = 1 ]; then
+    rm -f "$RW_DIR/ssh/authorized_keys" "$RW_DIR/home/.ssh/authorized_keys" 2>/dev/null || true
+else
+    log "kept authorized_keys: no transaction ownership record"
+fi
 rmdir "$RW_DIR/bin" "$RW_DIR/ssh" "$RW_DIR/home/.ssh" "$RW_DIR/home" 2>/dev/null || true
 
 if [ -f "$LATEST/transaction/files" ]; then

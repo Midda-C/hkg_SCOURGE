@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def build_id():
     paths = [ROOT / "src/Makefile", ROOT.parent / "common/radio_owner.h",
              ROOT.parent / "common/install_io.sh",
+             ROOT.parent / "common/runtime_cleanup.sh",
              ROOT / "artifacts/accepted-qml-legacy.md5",
              ROOT / "artifacts/systemd/60-connman-nodevice.conf"]
     for directory, suffixes in [("src", {".c", ".h", ".inc"}),

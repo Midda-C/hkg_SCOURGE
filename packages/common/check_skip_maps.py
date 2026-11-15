@@ -32,7 +32,7 @@ for stage in stages:
         if line.startswith("!"):
             assert line[1:].startswith("/"), f"{stage}: !path must be absolute: {line}"
             continue
-        if line.startswith("?"):
+        if line.startswith(("?", "*")):
             line = line[1:]
         assert "|" in line, f"{stage}: malformed map line: {line}"
         rel, dst = line.split("|", 1)

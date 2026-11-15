@@ -157,7 +157,7 @@ per clone via `core.hooksPath scripts/githooks`:
   listed in `scripts/known_test_failures.txt` (reviewed,
   environment-dependent reds) do not block, **new failures block**, and
   stale entries print a warning so the list cannot rot.
-- **second opinion (rule 11)** — pre-push also warns (does not block) for
+- **independent Flash-Max review (rule 11)** — pre-push also warns (does not block) for
   pushed commits with no `Second-Opinion:` trailer. The hook cannot
   verify a real review happened, so this is a reminder; the recorded
   verdict is the actual control.

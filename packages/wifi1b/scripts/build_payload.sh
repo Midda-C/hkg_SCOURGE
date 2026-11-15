@@ -28,6 +28,7 @@ mkdir -p "$OUT/payload/bin" "$OUT/payload/assets/wifi1b" "$OUT/payload/systemd" 
           "$OUT/backup"
 mkdir -p "$OUT/payload/lib"
 cp "$ROOT/../common/install_io.sh" "$OUT/payload/lib/"
+cp "$ROOT/../common/runtime_cleanup.sh" "$OUT/payload/lib/"
 python3 scripts/accepted_qml.py "$OUT/payload/accepted-qml.md5"
 
 cp src/wifi1b_daemon "$OUT/payload/bin/wifi1b_daemon"
@@ -50,18 +51,20 @@ printf 'Wifi1b backups are written here by the installer.\n' > "$OUT/backup/READ
 
 cp scripts/run_stuff1b.sh "$OUT/run_stuff.sh"
 cp scripts/run_stuff_restore1b.sh "$OUT/run_stuff_restore.sh"
-# The initial-root loader md5-gates run_stuff.sh.  Change its content on
-# every build so a rebuilt payload actually runs.
-printf '\n# WIFI1B_STANDALONE_STAMP=%s\n' "$(date -u +%Y%m%dT%H%M%SZ 2>/dev/null)-$$" >> "$OUT/run_stuff.sh"
-printf '\n# WIFI1B_RESTORE_STAMP=%s\n' "$(date -u +%Y%m%dT%H%M%SZ 2>/dev/null)-$$" >> "$OUT/run_stuff_restore.sh"
 chmod 755 "$OUT/run_stuff.sh" "$OUT/run_stuff_restore.sh"
 
 cat > "$OUT/README.txt" <<'EOT'
-Wifi1b — static wpa_supplicant + own DHCP + SSH, beside WiFi
-===========================================================
+Wifi1b — static wpa_supplicant + own DHCP + SSH
+===============================================
 
-Install WiFi first.  Wifi1b deliberately refuses to patch an unknown
-home screen and does not modify WiFi's page, tile, service, config or status.
+This is the standalone Wifi1b payload. It needs the canonical Battery/Tweaks
+(or Battery/Tweaks/WiFi) shared home screen, but it does NOT install or
+reinstall the WiFi app and has no migration stage. It works beside an
+existing WiFi app and on the no-WiFi standalone layout.
+
+WORK IN PROGRESS: offline-tested, not car-validated. Do not present it as a
+verified fix and do not deploy it to a vehicle without explicit owner
+authorization.
 
 Install:
   1. Copy this USB tree to a FAT/exFAT stick.
@@ -69,25 +72,44 @@ Install:
   3. Plug it in; check run_stuff_result.txt.
   4. Reboot if the result says REBOOT_REQUIRED.
 
-The installer adds a "WiFi 1b" tile and a separate Wifi1b page.  Wifi1b starts
-idle: importing credentials does not enable WLAN, a mode, or SSH.  Use the
-Wifi1b page to start Client or CarPlay AP.
+The installer adds a "WiFi 1b" tile and a separate Wifi1b page. Wifi1b starts
+idle: importing credentials does not enable WLAN, a mode, or SSH. Use the
+Wifi1b page to start Client or CarPlay AP. The preflight stops only this
+bundle's own radio daemons; no manual WiFi Off step is needed.
 
 CarPlay AP defaults:
   SSID IONIQ5-CarPlay-B, 5 GHz channel 36, country GB
   static 10.42.0.1/24, own DHCP pool 10.42.0.10-200
-  SSH user wifi1b, key-only, port 2224
+  SSH user wifi1b, UID 0, key-only, port 2224, bind-all
+
+The UID 0 wifi1b account is a deliberate product default, not a hidden
+credential, and it is NOT car-validated. Owner keys in /rw_data/wifi1b are
+preserved unless a replacement authorized_keys is supplied.
 
 Restore:
-  Copy run_stuff_restore.sh over run_stuff.sh and plug it in.  This restores
-  the shared QML to its pre-Wifi1b state and leaves WiFi installed.
+  Copy run_stuff_restore.sh over run_stuff.sh and plug it in. This restores
+  the shared QML, the service file and its enabled/active state from the
+  original install transaction, and leaves the pre-existing WiFi app as it was.
 
 Diagnostics:
   The Wifi1b page's Status/Logs tabs write wifi1b_logs_* bundles to the stick.
 EOT
 
 python3 scripts/package_release.py "$OUT" --metadata-only
-( cd "$OUT" && find payload -type f -print0 | sort -z | xargs -0 md5sum > manifest.md5 )
+# Deterministic content stamp instead of a timestamp/PID: the loader's md5
+# gate re-runs the script when any installed payload byte changes, and
+# identical inputs produce identical bytes.  Metadata files are excluded
+# because package_release rewrites them after this digest is taken.
+payload_digest=$(cd "$OUT" && find payload -type f \
+    ! -name build.json ! -name build-id.txt -print0 | LC_ALL=C sort -z | \
+    xargs -0 sha256sum | sha256sum | cut -d' ' -f1)
+[ -n "$payload_digest" ] || { echo "cannot compute payload digest" >&2; exit 1; }
+printf '\n# WIFI1B_PAYLOAD_DIGEST=%s\n' "$payload_digest" >> "$OUT/run_stuff.sh"
+printf '\n# WIFI1B_PAYLOAD_DIGEST=%s\n' "$payload_digest" >> "$OUT/run_stuff_restore.sh"
+# Record the final script bytes in metadata before hashing the manifest; the
+# final package step then recomputes identical metadata.
+python3 scripts/package_release.py "$OUT" --metadata-only
+( cd "$OUT" && find payload -type f -print0 | LC_ALL=C sort -z | xargs -0 md5sum > manifest.md5 )
 python3 scripts/package_release.py "$OUT"
 
 echo "== done =="

@@ -1,10 +1,14 @@
 # SPDX-FileCopyrightText: 2026 The SCOURGE Project contributors
 # SPDX-License-Identifier: AGPL-3.0-only
-.PHONY: all payload test
+.PHONY: all payload test test-carplay
 all: payload
 payload:
 	sh scripts/build_payload.sh
-test: payload
+test-carplay:
+	@set -e; for test in tests/test_carplay_*.py; do \
+		PYTHONDONTWRITEBYTECODE=1 python3 "$$test"; \
+	done
+test: payload test-carplay
 	python3 tests/test_release1b.py
 	python3 tests/test_qml1b.py
 	python3 tests/test_qmlpatch.py

@@ -5,8 +5,10 @@
 #
 # Proven pattern (combo v3): each package ships its own installer as
 # combo/<pkg>/stage.sh (+ restore.sh); the master run_stuff.sh runs the
-# selected installers in a fixed order — battery -> wifi -> tweaks — because
-# each installer detects the current QML base and picks a matching variant.
+# selected installers in a fixed dependency order — battery -> wifi -> tweaks
+# -> wifi1b -> migrate — because each installer detects the current QML base
+# and picks a matching variant.  A Wifi1b selection without wifi/migrate is
+# the standalone layout and is marked combo/standalone.
 # Restore runs in reverse. The failsafe's md5 gate re-runs the master script
 # whenever its content (the MODE= line) changes.
 #
@@ -60,6 +62,31 @@ for pkg in $AVAILABLE; do
     case " $REQUESTED " in *" $pkg "*) SELECTED="${SELECTED:+$SELECTED }$pkg" ;; esac
 done
 
+# A Wifi1b-only selection beside Battery/Tweaks is the standalone layout: it
+# never reinstalls WiFi and has no one-way migration stage.  build_flat.sh
+# requests this explicitly; an interactive selection gets the same treatment.
+STANDALONE=0
+case " $SELECTED " in
+    *" wifi1b "*)
+        case " $SELECTED " in
+            *" wifi "*|*" migrate "*) ;;
+            *) STANDALONE=1 ;;
+        esac ;;
+esac
+if [ "${SCOURGE_STANDALONE:-0}" = 1 ]; then
+    case " $SELECTED " in
+        *" wifi "*|*" migrate "*)
+            echo "standalone bundle must not include wifi or migrate" >&2; exit 1 ;;
+    esac
+    for required in battery tweaks wifi1b; do
+        case " $SELECTED " in
+            *" $required "*) ;;
+            *) echo "standalone bundle requires $required" >&2; exit 1 ;;
+        esac
+    done
+    STANDALONE=1
+fi
+
 # --- build each selected package -------------------------------------------------
 if [ "${SCOURGE_SKIP_BUILD:-0}" != "1" ]; then
     for pkg in $SELECTED; do
@@ -86,9 +113,25 @@ fi
 STAGE=$(mktemp -d "${TMPDIR:-/tmp}/scourge_compose.XXXXXX")
 trap 'rm -rf "$STAGE"; [ -z "${BATTERY_BUILD:-}" ] || rm -rf "$BATTERY_BUILD"' EXIT
 mkdir -p "$STAGE/combo"
-# Independently manifest the preflight helper; verify it before sourcing on-car.
+# Independently manifest the preflight helpers; verify them before sourcing
+# on-car.  runtime_cleanup.sh is shared by the wrapper and the master so the
+# cleanup policy has one implementation and one integrity gate.
 cp "$HERE/common/install_io.sh" "$STAGE/combo/install_io.sh"
-(cd "$STAGE" && md5sum combo/install_io.sh > combo/preflight.md5)
+cp "$HERE/common/runtime_cleanup.sh" "$STAGE/combo/runtime_cleanup.sh"
+RUNTIME_CLEANUP_MD5=$(md5sum "$STAGE/combo/runtime_cleanup.sh" | cut -d' ' -f1)
+if [ "$STANDALONE" = 1 ]; then
+    printf 'standalone=1\nlayout=battery,tweaks,wifi1b\n' > "$STAGE/combo/standalone"
+    STANDALONE_MD5=$(md5sum "$STAGE/combo/standalone" | cut -d' ' -f1)
+else
+    STANDALONE_MD5=""
+fi
+(
+    cd "$STAGE" &&
+    md5sum combo/install_io.sh combo/runtime_cleanup.sh > combo/preflight.md5 &&
+    [ -z "$STANDALONE_MD5" ] || md5sum combo/standalone >> combo/preflight.md5
+)
+BUNDLE_LAYOUT=combo
+[ "$STANDALONE" = 0 ] || BUNDLE_LAYOUT=standalone
 
 stage_pkg() {
     name="$1"
@@ -150,11 +193,12 @@ done
 ORDER=$(echo "$SELECTED" | tr ' ' ',')
 ORDER_SPACES="$SELECTED"
 
-# Digest of every staged installer/manifest. The loader re-runs the master
-# script when its bytes change, so a same-selection rebuild with different
-# package payloads still triggers an install on the next plug-in.
-PAYLOAD_ID=$(cd "$STAGE" && find combo -type f \( -name manifest.md5 -o -name stage.sh -o -name restore.sh \) -print0 \
-    | sort -z | xargs -0 md5sum | md5sum | cut -c1-16)
+# Digest of every staged installer/manifest/helper. The loader re-runs the
+# master script when its bytes change, so a same-selection rebuild with
+# different package payloads still triggers an install on the next plug-in.
+PAYLOAD_ID=$(cd "$STAGE" && find combo -type f \( -name manifest.md5 -o -name stage.sh -o -name restore.sh \
+    -o -name runtime_cleanup.sh -o -name standalone \) -print0 \
+    | LC_ALL=C sort -z | xargs -0 md5sum | md5sum | cut -c1-16)
 
 cat > "$STAGE/run_stuff.sh" <<EOF
 #!/bin/sh
@@ -168,6 +212,12 @@ cat > "$STAGE/run_stuff.sh" <<EOF
 # PAYLOAD_ID is a digest of the selected stage installers + manifests. It is
 # part of this file, so a rebuilt package changes the loader's md5 gate.
 PAYLOAD_ID="$PAYLOAD_ID"
+# The bundle shape and the helper digest are baked in: a missing/unreadable
+# standalone marker or cleanup helper fails closed before any stage runs.
+BUNDLE_LAYOUT="$BUNDLE_LAYOUT"
+RUNTIME_CLEANUP_MD5="$RUNTIME_CLEANUP_MD5"
+STANDALONE_MARKER_MD5="$STANDALONE_MD5"
+STAGE_ORDER="$ORDER_SPACES"
 #
 # MODE (edit the line below; the md5 change makes the loader re-run it):
 #   all       every selected package, in dependency-safe order (default)
@@ -182,34 +232,41 @@ STICK_DIR="\${SCOURGE_STICK_DIR:-\$USB_DIR}"
 COMBO="\$USB_DIR/combo"
 RW_DIR="\${COMBO_RW_DIR:-/rw_data/combo}"
 RUNTIME_ROOT="\${COMBO_RUNTIME_ROOT:-/rw_data}"
-# FIRST: reclaim runtime log space.  A full /rw_data makes every later
-# write (including this installer's own state) fail, so truncate the
-# append-only daemon logs and drop stale atomic-write temp files before
-# anything else.  Truncation frees space without deleting restore data.
-for _app in wifi1b battery tweaks; do
-    for _f in daemon.log daemon.log.1 wpa_supplicant.log wpa_supplicant.log.1 \\
-              ssh.log ssh.log.1 dhcpd.log dhcpd.log.1 tweaks_failures.log; do
-        [ ! -f "\$RUNTIME_ROOT/\$_app/\$_f" ] || : > "\$RUNTIME_ROOT/\$_app/\$_f" 2>/dev/null || true
-    done
-    for _f in "\$RUNTIME_ROOT/\$_app"/*.tmp.*; do
-        [ -e "\$_f" ] || continue
-        rm -f "\$_f" 2>/dev/null || true
-    done
-done
-# The standalone layout has no WiFi app.  Delete its /rw_data/wifi
-# leftovers (daemon, dropbear, config, keys, backups) only when the WiFi
-# QML is absent, so a still-installed app is untouched.
 QML_BASE="\${COMBO_QML_DIR:-/app/share/AppHomeScreen/qml_eco3.0}"
-WIFI_PAGE="\$QML_BASE/HomeScreen/WifiPage.qml"
-WIFI_MARKER="\$QML_BASE/HomeScreen/QHMI_HomeScreenMain_Advanced.qml"
-if [ ! -e "\$WIFI_PAGE" ] && \\
-   [ ! -e /etc/systemd/system/wifi-daemon.service ] && \\
-   ! grep -q 'WIFI_PAYLOAD_260128' "\$WIFI_MARKER" 2>/dev/null; then
-    [ ! -d "\$RUNTIME_ROOT/wifi" ] || rm -rf "\$RUNTIME_ROOT/wifi" 2>/dev/null || true
+RUN_DIR="\${COMBO_RUN_DIR:-/run}"
+WIFI1B_SERVICE="\${WIFI1B_SERVICE:-/etc/systemd/system/wifi1b-daemon.service}"
+WIFI_SERVICE="\${WIFI_SERVICE:-/etc/systemd/system/wifi-daemon.service}"
+MD5SUM_BIN=md5sum
+command -v "\$MD5SUM_BIN" >/dev/null 2>&1 || MD5SUM_BIN=md5sum.coreutils
+SHA256SUM_BIN=sha256sum
+command -v "\$SHA256SUM_BIN" >/dev/null 2>&1 || SHA256SUM_BIN=sha256sum.coreutils
+RUNTIME_CLEANUP_SHA256="\$SHA256SUM_BIN"
+
+# FIRST: verify and load the cleanup helper without writing anything, then
+# reclaim bounded runtime log space before any other runtime write.  A full
+# /rw_data makes every later write fail.  Stale temps are handled later, only
+# after owned radios are verified stopped.
+CLEANUP_LIB="\$COMBO/runtime_cleanup.sh"
+if [ ! -f "\$CLEANUP_LIB" ] || [ -L "\$CLEANUP_LIB" ] || [ ! -r "\$CLEANUP_LIB" ]; then
+    printf 'SCOURGE_COMBO\nstatus=FAIL\nerror=cleanup_helper_missing\n' \
+        > "\$USB_DIR/run_stuff_result.txt" 2>/dev/null || true
+    exit 1
 fi
+_cleanup_md5=\$("\$MD5SUM_BIN" "\$CLEANUP_LIB" 2>/dev/null | cut -d' ' -f1)
+if [ -z "\$_cleanup_md5" ] || [ "\$_cleanup_md5" != "\$RUNTIME_CLEANUP_MD5" ]; then
+    printf 'SCOURGE_COMBO\nstatus=FAIL\nerror=cleanup_helper_integrity\n' \
+        > "\$USB_DIR/run_stuff_result.txt" 2>/dev/null || true
+    exit 1
+fi
+. "\$CLEANUP_LIB"
+RUNTIME_CLEANUP_LOG=""
+cleanup_bounded_logs "\$RUNTIME_ROOT" || true
+
 mkdir -p "\$RW_DIR" 2>/dev/null || RW_DIR="\$USB_DIR"
 LOG="\$RW_DIR/combo.log"
 : > "\$LOG" 2>/dev/null
+RUNTIME_CLEANUP_LOG="\$LOG"
+[ -z "\$RUNTIME_CLEANUP_NOTES" ] || printf 'cleanup: %s\n' "\$RUNTIME_CLEANUP_NOTES" >> "\$LOG" 2>/dev/null
 log(){ echo "\$(date -u 2>/dev/null) \$*" >> "\$LOG" 2>/dev/null; }
 
 result(){
@@ -270,6 +327,26 @@ stage_digest(){
         esac
     ) | "\$MD5SUM_BIN" | cut -d' ' -f1
 }
+stage_owns_destination(){
+    # True when another selected stage ships this exact destination.  A
+    # "final stage owns it" entry in skip.map is then left to that stage.
+    _own_from=\$1; _own_dst=\$2; _own_seen=0
+    for _own_s in \$STAGE_ORDER; do
+        if [ "\$_own_s" = "\$_own_from" ]; then _own_seen=1; continue; fi
+        [ "\$_own_seen" = 1 ] || continue
+        [ -f "\$COMBO/\$_own_s/skip.map" ] || continue
+        while IFS= read -r _own_line; do
+            [ -n "\$_own_line" ] || continue
+            case "\$_own_line" in \#*|'!'*) continue ;; esac
+            _own_line=\${_own_line#\?}
+            _own_line=\${_own_line#\*}
+            [ "\${_own_line#*|}" = "\$_own_dst" ] || continue
+            [ -f "\$COMBO/\$_own_s/\${_own_line%%|*}" ] || continue
+            return 0
+        done < "\$COMBO/\$_own_s/skip.map"
+    done
+    return 1
+}
 stage_skippable(){
     _s=\$1; _d="\$COMBO/\$_s"
     [ -f "\$_d/skip.map" ] || return 1
@@ -285,8 +362,15 @@ stage_skippable(){
         case "\$_left" in
         \!*) [ -e "\${_left#!}" ] || return 1; continue ;;
         esac
-        _rel=\$_left; _cond=0
-        case "\$_left" in \?*) _rel=\${_left#\?}; _cond=1 ;; esac
+        _rel=\$_left; _cond=0; _final=0
+        case "\$_left" in
+            \?*) _rel=\${_left#\?}; _cond=1 ;;
+            \**) _rel=\${_left#\*}; _final=1 ;;
+        esac
+        # "*" = the final selected stage that ships this destination owns the
+        # installed-state check.  Standalone builds have no WiFi stage, so the
+        # Battery map must still verify its BatteryTile itself.
+        [ "\$_final" = 0 ] || ! stage_owns_destination "\$_s" "\$_dst" || continue
         [ "\$_cond" = 0 ] || [ -d "\$(dirname "\$_dst")" ] || continue
         [ -f "\$_d/\$_rel" ] || continue
         [ -f "\$_dst" ] || return 1
@@ -417,10 +501,30 @@ run_stage(){
 beep_n 1
 
 # Read-only preflight, before any stage creates backups or changes services.
-MD5SUM_BIN=md5sum
-command -v "\$MD5SUM_BIN" >/dev/null 2>&1 || MD5SUM_BIN=md5sum.coreutils
 if ! (cd "\$USB_DIR" && "\$MD5SUM_BIN" -c combo/preflight.md5) >> "\$LOG" 2>&1; then
     echo 'preflight=status=FAIL error=helper_manifest' >> "\$STAGES_LOG"
+    result FAIL; beep_n 2; exit 1
+fi
+_layout_error=""
+case "\$BUNDLE_LAYOUT" in
+    standalone)
+        if [ ! -f "\$COMBO/standalone" ] || [ -L "\$COMBO/standalone" ] || \
+           [ ! -r "\$COMBO/standalone" ]; then
+            _layout_error=standalone_marker_missing
+        elif [ "\$("\$MD5SUM_BIN" "\$COMBO/standalone" 2>/dev/null | cut -d' ' -f1)" != \
+               "\$STANDALONE_MARKER_MD5" ]; then
+            _layout_error=standalone_marker_integrity
+        elif ! grep -qx 'standalone=1' "\$COMBO/standalone" 2>/dev/null; then
+            _layout_error=standalone_marker_content
+        fi
+        [ ! -d "\$COMBO/wifi" ] || _layout_error=standalone_has_wifi_stage
+        [ ! -d "\$COMBO/migrate" ] || _layout_error=standalone_has_migrate_stage
+        ;;
+    combo) : ;;
+    *) _layout_error=unknown_bundle_layout ;;
+esac
+if [ -n "\$_layout_error" ]; then
+    echo "preflight=status=FAIL error=\$_layout_error" >> "\$STAGES_LOG"
     result FAIL; beep_n 2; exit 1
 fi
 . "\$COMBO/install_io.sh"
@@ -430,33 +534,46 @@ if ! io_init; then
 fi
 echo 'preflight=status=OK' >> "\$STAGES_LOG"
 
-# Legacy Wifi1b releases do not speak the shared ownership protocol. A
-# WiFi-removal bundle kills both radio owners itself; any other bundle still
-# refuses to run upstream installers over an active legacy session.
-peer_root="\${COMBO_RUNTIME_ROOT:-/rw_data}/wifi1b"
-peer_active=0
-if [ -f "\$peer_root/wifi1b_daemon" ] &&
-   { [ -f /run/wifi1b/active ] || grep -Eq '"wlan_on"[[:space:]]*:[[:space:]]*true|"mode"[[:space:]]*:[[:space:]]*"(client|carplay)"' "\$peer_root/status.json" 2>/dev/null; }; then
-    peer_active=1
-fi
-if [ "\$MODE" != restore ] && [ "\$peer_active" = 1 ]; then
-    # Both migration and standalone update bundles own the radio lifecycle:
-    # stop the daemon and kill any surviving radio owner instead of asking
-    # the user to turn Wifi1b off manually.
-    log "preflight: forcing Wifi1b/WiFi off"
+# Stop owned radios ourselves; never ask the owner to turn WiFi off manually.
+# Only units carrying our SPDX header and exact owned executable paths are
+# touched, so a foreign or owner-modified service is left alone.
+unit_owned(){
+    [ -f "\$1" ] && [ ! -L "\$1" ] && [ -r "\$1" ] &&
+        grep -q 'SPDX-FileCopyrightText: 2026 The SCOURGE Project contributors' "\$1" 2>/dev/null
+}
+if [ "\$MODE" != restore ]; then
+    _stop_wifi=0
+    [ "\$BUNDLE_LAYOUT" = standalone ] || _stop_wifi=1
     if command -v systemctl >/dev/null 2>&1; then
-        systemctl stop wifi1b-daemon.service wifi-daemon.service >> "\$LOG" 2>&1 || true
+        unit_owned "\$WIFI1B_SERVICE" && \
+            systemctl stop wifi1b-daemon.service >> "\$LOG" 2>&1 || true
+        [ "\$_stop_wifi" = 0 ] || {
+            unit_owned "\$WIFI_SERVICE" && \
+                systemctl stop wifi-daemon.service >> "\$LOG" 2>&1 || true
+        }
     fi
-    for p in /proc/[0-9]*; do
-        exe=\$(readlink "\$p/exe" 2>/dev/null || true)
-        case "\$exe" in
-            */wifi1b_daemon|*/wifi_daemon|*/wifi1b_daemon\ \(deleted\)|*/wifi_daemon\ \(deleted\))
-                kill -TERM "\${p#/proc/}" 2>/dev/null || true ;;
-        esac
-    done
-    rm -f /run/wifi1b/active /run/wifi/active 2>/dev/null || true
-    sleep 2
-    echo 'preflight=status=OK radio_forced_off=1' >> "\$STAGES_LOG"
+    runtime_cleanup_kill_owned "\$RUNTIME_ROOT" wifi1b wifi1b_daemon || true
+    [ "\$_stop_wifi" = 0 ] || \
+        runtime_cleanup_kill_owned "\$RUNTIME_ROOT" wifi wifi_daemon || true
+    rm -f "\$RUN_DIR/wifi1b/active" 2>/dev/null || true
+    [ "\$_stop_wifi" = 0 ] || rm -f "\$RUN_DIR/wifi/active" 2>/dev/null || true
+    if ! runtime_cleanup_process_alive "\$RUNTIME_ROOT" wifi1b wifi1b_daemon &&
+       { [ "\$_stop_wifi" = 0 ] || ! runtime_cleanup_process_alive "\$RUNTIME_ROOT" wifi wifi_daemon; }; then
+        RUNTIME_CLEANUP_RADIOS_STOPPED=1
+        echo 'preflight=status=OK radio_stopped=1' >> "\$STAGES_LOG"
+    else
+        log "preflight: an owned radio is still running; stale temp cleanup deferred"
+    fi
+    cleanup_stale_temps "\$RUNTIME_ROOT" || true
+    if [ "\$MODE" = all ]; then
+        # Full removed-WiFi cleanup is evidence-gated inside the helper: a
+        # corrupt/missing bundle, unreadable marker, page/service or live
+        # process preserves credentials and backups and is reported instead.
+        cleanup_removed_wifi "\$RUNTIME_ROOT" "\$QML_BASE" "\$STICK_DIR" \
+            "\${SCOURGE_ARCHIVE:-}" "\${SCOURGE_TARBALL_SHA256:-}" \
+            "\$WIFI_SERVICE" || true
+    fi
+    [ -z "\$RUNTIME_CLEANUP_NOTES" ] || log "cleanup: \$RUNTIME_CLEANUP_NOTES"
 fi
 
 case "\$MODE" in
@@ -502,31 +619,59 @@ exit 0
 EOF
 
 cp -f "$HERE/../payload/run_stuff.sample.sh" "$STAGE/run_stuff.sample.sh" 2>/dev/null || true
-cat > "$STAGE/README.txt" <<EOF
+{
+cat <<EOF
 SCOURGE combo stick
 ===================
 Packages: $ORDER
+Bundle layout: $BUNDLE_LAYOUT
 
 SCOURGE — The SCOURGE Project contributors (AGPL-3.0-or-later, with the
 attribution terms in the project LICENSE). Firmware: Ioniq 5 Gen5W_L 260128.
 
 1. Copy the CONTENTS of this directory to the root of a FAT/exFAT stick.
 2. Plug it into the head unit; the failsafe runs run_stuff.sh as root
-   within ~8 s.
+   within ~8 s. The preflight stops this bundle's own radio daemons itself;
+   do not turn WiFi off manually.
 3. Read run_stuff_result.txt on the stick; every stage reports status=OK.
 4. To restore: edit MODE=restore in run_stuff.sh, replug, wait ~20 s.
 5. To re-run a single package: edit MODE=<package>, replug.
 
+EOF
+if [ "$STANDALONE" = 1 ]; then
+cat <<'EOF'
+Standalone layout: this bundle installs Battery, Tweaks/Reboot and Wifi1b.
+It does NOT install or reinstall the WiFi app and has NO migration stage.
+Wifi1b installs beside an existing WiFi app, or on the no-WiFi
+Battery/Tweaks base (the canonical standalone layout).
+EOF
+cat <<'EOF'
+Optional inputs: iphone_wifi.txt (or wifi.txt) and authorized_keys at the
+stick ROOT. They are imported without activating WLAN, a mode or SSH.
+Wifi1b SSH: user wifi1b, UID 0, key-only, port 2224, bind-all. This is a
+deliberate product default account and is NOT car-validated. Owner keys
+already present in /rw_data/wifi1b are preserved unless replaced here.
+EOF
+else
+cat <<'EOF'
 WiFi note: put your wifi.txt and authorized_keys at the stick ROOT before
 the first install; the WiFi installer imports them. Remove them afterwards.
 Default SSH: car@<head-unit-ip> -p 2222, password 'electric' — CHANGE IT.
+EOF
+fi
+cat <<'EOF'
 
 WIP gate stages (if selected — button-gate / applauncher / dmclient-gate):
 these are the signatureless-update research deployers (docs/08 of the
 repo). They patch the updater's signature gates in place, need
 AppUpgrade.patched.te2 next to them, require a REBOOT afterwards, and are
 VM-validated but not yet car-validated. REVERT markers restore stock bytes.
+
+This whole branch is work in progress: offline-tested, not car-validated.
+Keep the stick private: it can contain owner credentials and private
+WiFi/QML snapshots.
 EOF
+} > "$STAGE/README.txt"
 
 echo "== deploying to $TARGET"
 cp -R "$STAGE"/. "$TARGET"/

@@ -25,8 +25,9 @@ while read -r local_ref local_sha remote_ref remote_sha; do
         RANGE=$(git rev-list "$remote_sha..$local_sha")
     fi
 
-    # Rule 11: a second opinion is recorded as a `Second-Opinion:` trailer.
-    # This is a warning, not a gate — the hook cannot verify a real review.
+    # Rule 11: one independent review is recorded as a `Second-Opinion:`
+    # trailer (kept for compatibility with earlier commits).  This is a
+    # warning, not a gate — the hook cannot verify a real review.
     MISSING=""
     for sha in $RANGE; do
         git log -1 --format=%B "$sha" | grep -q '^Second-Opinion:' ||
@@ -34,7 +35,7 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     done
     if [ -n "$MISSING" ]; then
         echo "pre-push: warning — commits without a Second-Opinion: trailer:$MISSING" >&2
-        echo "pre-push: rule 11 requires self-review plus a distinct second agent (AGENTS.md)." >&2
+        echo "pre-push: rule 11 requires self-review plus ONE independent opencode-go/deepseek-v4.1-flash#max review (AGENTS.md); no second reviewer agent is required." >&2
     fi
 
     if [ "${SCOURGE_SKIP_TEST_GATE:-0}" = "1" ]; then

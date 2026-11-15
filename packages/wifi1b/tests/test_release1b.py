@@ -4,6 +4,7 @@
 """Verify the Wifi1b staged tree, manifest, metadata and ZIP agree."""
 import hashlib
 import json
+import os
 from pathlib import Path
 import sys
 import zipfile
@@ -38,4 +39,21 @@ for line in (ROOT / "artifacts/accepted-qml-legacy.md5").read_text().splitlines(
     line = line.strip()
     if len(line) == 32 and all(c in "0123456789abcdef" for c in line):
         assert line in ledger, f"legacy V11 QML digest missing from ledger: {line}"
-print(f"PASS: Wifi1b source/build identity, staged bytes, manifest, metadata and ZIP agree ({identity[:12]})")
+cleanup = tree / "payload/lib/runtime_cleanup.sh"
+assert cleanup.read_bytes() == (ROOT.parent / "common/runtime_cleanup.sh").read_bytes()
+# Deterministic content stamp: no timestamp/PID, and it changes with payload.
+lines = b""
+paths = sorted((p for p in (tree / "payload").rglob("*") if p.is_file()
+                and p.name not in {"build.json", "build-id.txt"}),
+               key=lambda p: os.fsencode(str(p.relative_to(tree))))
+for path in paths:
+    rel = str(path.relative_to(tree))
+    lines += hashlib.sha256(path.read_bytes()).hexdigest().encode() + b"  " + \
+        rel.encode() + b"\n"
+payload_digest = hashlib.sha256(lines).hexdigest()
+for name in ("run_stuff.sh", "run_stuff_restore.sh"):
+    text = (tree / name).read_text()
+    assert f"# WIFI1B_PAYLOAD_DIGEST={payload_digest}" in text, name
+    assert "WIFI1B_STANDALONE_STAMP=20" not in text, name
+    assert "WIFI1B_RESTORE_STAMP=20" not in text, name
+print(f"PASS: Wifi1b source/build identity, staged bytes, manifest, metadata, cleanup helper, deterministic payload stamp and ZIP agree ({identity[:12]})")

@@ -2,8 +2,9 @@
 # SPDX-FileCopyrightText: 2026 The SCOURGE Project contributors
 # SPDX-License-Identifier: AGPL-3.0-only
 # TARGET: Ioniq 5 Gen5W_L EU 260128
-# Build-time substitutions bind this loader to one complete tarball.
-# COMBO_FLAT_WRAPPER_REV=12
+# Build-time substitutions bind this loader to one complete tarball and the
+# canonical inline cleanup helper definition.
+# COMBO_FLAT_WRAPPER_REV=13
 EXPECTED_SHA256="@TARBALL_SHA256@"
 set -u
 PATH="${COMBO_PATH:-/bin:/sbin:/usr/bin:/usr/sbin}"
@@ -12,38 +13,7 @@ RESULT="$USB_DIR/run_stuff_result.txt"
 LOG="$USB_DIR/appcombo_install.log"
 RW_DIR="${COMBO_RW_DIR:-/rw_data/combo}"
 RUNTIME_ROOT="${COMBO_RUNTIME_ROOT:-/rw_data}"
-# FIRST: reclaim runtime log space.  A full /rw_data makes every later
-# write (including this installer's own state) fail, so truncate the
-# append-only daemon logs and drop stale atomic-write temp files before
-# anything else.  Truncation frees space without deleting restore data.
-for _app in wifi1b battery tweaks; do
-    for _f in daemon.log daemon.log.1 wpa_supplicant.log wpa_supplicant.log.1 \
-              ssh.log ssh.log.1 dhcpd.log dhcpd.log.1 tweaks_failures.log; do
-        [ ! -f "$RUNTIME_ROOT/$_app/$_f" ] || : > "$RUNTIME_ROOT/$_app/$_f" 2>/dev/null || true
-    done
-    for _f in "$RUNTIME_ROOT/$_app"/*.tmp.*; do
-        [ -e "$_f" ] || continue
-        rm -f "$_f" 2>/dev/null || true
-    done
-done
-# The standalone layout has no WiFi app.  Its /rw_data/wifi leftovers
-# (daemon, dropbear, config, keys, backups) are dead weight; delete them
-# only when the WiFi QML is absent, so a still-installed app is untouched.
 QML_BASE="${COMBO_QML_DIR:-/app/share/AppHomeScreen/qml_eco3.0}"
-WIFI_PAGE="$QML_BASE/HomeScreen/WifiPage.qml"
-WIFI_MARKER="$QML_BASE/HomeScreen/QHMI_HomeScreenMain_Advanced.qml"
-if [ ! -e "$WIFI_PAGE" ] && \
-   [ ! -e /etc/systemd/system/wifi-daemon.service ] && \
-   ! grep -q 'WIFI_PAYLOAD_260128' "$WIFI_MARKER" 2>/dev/null; then
-    if [ -d "$RUNTIME_ROOT/wifi" ]; then
-        du -sh "$RUNTIME_ROOT/wifi" >> "$LOG" 2>/dev/null || true
-        rm -rf "$RUNTIME_ROOT/wifi" 2>/dev/null || true
-    fi
-fi
-mkdir -p "$RW_DIR" 2>/dev/null || exit 1
-MODE=all
-if [ -f "$USB_DIR/MODE" ]; then MODE=$(head -n 1 "$USB_DIR/MODE" | tr -d '\r'); fi
-[ ! -f "$USB_DIR/RESTORE" ] || MODE=restore
 WORK=""
 finish() {
     [ -z "$WORK" ] || rm -rf "$WORK"
@@ -78,8 +48,66 @@ fail() {
     sync
     exit 1
 }
-: > "$LOG"
-rm -f "$RESULT" "$USB_DIR/wrapper_result.txt"
+
+# Canonical first-party cleanup helper, embedded verbatim at build time.
+# The wrapper identity changes with the helper digest; no external helper file
+# is required at runtime.  The plain two-file USB pair stays deployable.
+RUNTIME_CLEANUP_DIGEST="@RUNTIME_CLEANUP_SHA256@"
+SHA256SUM_BIN=sha256sum
+command -v "$SHA256SUM_BIN" >/dev/null 2>&1 || SHA256SUM_BIN=sha256sum.coreutils
+# @RUNTIME_CLEANUP_SHELL@
+_cleanup_id_bad=0
+case "$RUNTIME_CLEANUP_DIGEST" in
+    ''|*[!0-9a-f]*) _cleanup_id_bad=1 ;;
+esac
+[ "${#RUNTIME_CLEANUP_DIGEST}" -eq 64 ] || _cleanup_id_bad=1
+if [ "$_cleanup_id_bad" = 1 ] ||
+   ! command -v cleanup_bounded_logs >/dev/null 2>&1 ||
+   ! command -v cleanup_removed_wifi >/dev/null 2>&1; then
+    printf 'COMBO_FLAT_WRAPPER\nstatus=FAIL\nerror=unexpanded_cleanup_helper\n' \
+        > "$USB_DIR/wrapper_result.txt" 2>/dev/null || true
+    cp -f "$USB_DIR/wrapper_result.txt" "$RESULT" 2>/dev/null || true
+    exit 1
+fi
+RUNTIME_CLEANUP_SHA256="$SHA256SUM_BIN"
+
+# FIRST: reclaim bounded runtime log space before any extraction or runtime
+# write.  A full /rw_data makes every later write (including this installer's
+# own state) fail.  Unknown files, symlinks and foreign paths are left alone.
+RUNTIME_CLEANUP_LOG=""
+cleanup_bounded_logs "$RUNTIME_ROOT" || true
+
+# The tarball is hashed read-only before any recursive deletion.  A corrupt
+# or missing bundle must never delete credentials or backups.
+if [ ! -f "$USB_DIR/appcombo.tar.gz" ] || [ -L "$USB_DIR/appcombo.tar.gz" ]; then
+    fail "missing or unsafe appcombo.tar.gz"
+fi
+actual=$("$SHA256SUM_BIN" "$USB_DIR/appcombo.tar.gz" | cut -d' ' -f1)
+[ "$actual" = "$EXPECTED_SHA256" ] || fail "tarball SHA256 mismatch; copy the matching pair"
+# Hash binding alone is not enough: verify the archive is readable and really
+# contains the inner master before anything is deleted.
+if ! tar -tzf "$USB_DIR/appcombo.tar.gz" >/dev/null 2>&1; then
+    fail "tarball unreadable or corrupt; nothing was deleted"
+fi
+if ! tar -tzf "$USB_DIR/appcombo.tar.gz" 2>/dev/null | grep -Eq '(^|/)run_stuff\.sh$'; then
+    fail "tarball has no inner master; nothing was deleted"
+fi
+
+MODE=all
+if [ -f "$USB_DIR/MODE" ]; then MODE=$(head -n 1 "$USB_DIR/MODE" | tr -d '\r'); fi
+[ ! -f "$USB_DIR/RESTORE" ] || MODE=restore
+if [ "$MODE" = all ]; then
+    # Full removed-WiFi cleanup is evidence-gated inside the helper: no
+    # manual WiFi Off step, no deletion on a missing marker/page alone.
+    cleanup_removed_wifi "$RUNTIME_ROOT" "$QML_BASE" "$USB_DIR" \
+        "$USB_DIR/appcombo.tar.gz" "$actual" \
+        "${CLEANUP_WIFI_SERVICE:-/etc/systemd/system/wifi-daemon.service}" || true
+fi
+mkdir -p "$RW_DIR" 2>/dev/null || exit 1
+: > "$LOG" 2>/dev/null
+RUNTIME_CLEANUP_LOG="$LOG"
+[ -z "$RUNTIME_CLEANUP_NOTES" ] || printf 'cleanup: %s\n' "$RUNTIME_CLEANUP_NOTES" >> "$LOG" 2>/dev/null
+
 # A stage that dies before writing its result must not leave the previous
 # run's per-stage result looking current on the stick.
 rm -f "$USB_DIR"/*_result.txt 2>/dev/null || true
@@ -88,16 +116,17 @@ for app in battery wifi tweaks wifi1b migrate; do
         "$USB_DIR/${app}_status.json" "$USB_DIR/runtime_snapshot_${app}_status.json"
 done
 rm -f "$USB_DIR/combo.log"
-[ -f "$USB_DIR/appcombo.tar.gz" ] || fail "missing appcombo.tar.gz"
-actual=$(sha256sum "$USB_DIR/appcombo.tar.gz" | cut -d' ' -f1)
-[ "$actual" = "$EXPECTED_SHA256" ] || fail "tarball SHA256 mismatch; copy the matching pair"
 WORK=$(mktemp -d /tmp/appcombo_run.XXXXXX) || fail "cannot create extraction directory"
 tar -xzf "$USB_DIR/appcombo.tar.gz" -C "$WORK" >> "$LOG" 2>&1 || fail "cannot extract tarball"
 [ -f "$WORK/run_stuff.sh" ] || fail "missing inner master"
 for input in wifi.txt iphone_wifi.txt authorized_keys MDNSD_ROOT_ARM; do
     [ ! -f "$USB_DIR/$input" ] || cp -f "$USB_DIR/$input" "$WORK/$input"
 done
-SCOURGE_MODE="$MODE" USB_DIR="$WORK" SCOURGE_STICK_DIR="$USB_DIR" COMBO_RW_DIR="$RW_DIR" /bin/sh "$WORK/run_stuff.sh" >> "$LOG" 2>&1
+SCOURGE_MODE="$MODE" USB_DIR="$WORK" SCOURGE_STICK_DIR="$USB_DIR" \
+    COMBO_RW_DIR="$RW_DIR" COMBO_RUNTIME_ROOT="$RUNTIME_ROOT" \
+    COMBO_QML_DIR="$QML_BASE" SCOURGE_ARCHIVE="$USB_DIR/appcombo.tar.gz" \
+    SCOURGE_TARBALL_SHA256="$actual" \
+    /bin/sh "$WORK/run_stuff.sh" >> "$LOG" 2>&1
 rc=$?
 for src in "$WORK"/*_result.txt; do
     [ ! -f "$src" ] || cp -f "$src" "$USB_DIR/$(basename "$src")"
@@ -131,6 +160,6 @@ if [ -f "$WORK/README.txt" ]; then cp -f "$WORK/README.txt" "$USB_DIR/README_COM
 status=$(sed -n 's/^status=\([^ ]*\).*/\1/p' "$RESULT" 2>/dev/null | tail -n 1)
 verdict=FAIL
 if [ "$rc" = 0 ] && [ "$status" = OK ]; then verdict=OK; fi
-printf 'COMBO_FLAT_WRAPPER\nstatus=%s\ninner_rc=%s\ntarball_sha256=%s\n' "$verdict" "$rc" "$actual" > "$USB_DIR/wrapper_result.txt"
+printf 'COMBO_FLAT_WRAPPER\nstatus=%s\ninner_rc=%s\ntarball_sha256=%s\ncleanup_helper_sha256=%s\n' "$verdict" "$rc" "$actual" "$RUNTIME_CLEANUP_DIGEST" > "$USB_DIR/wrapper_result.txt"
 sync
 [ "$verdict" = OK ]

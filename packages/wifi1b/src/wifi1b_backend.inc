@@ -22,6 +22,10 @@
 #define WIFI1B_DHCP_LOG        APP_DIR "/dhcpd.log"
 #define WIFI1B_INTENT          "/run/wifi1b/active"
 #define WIFI1B_AP_FW_CHAIN     "WIFI1B_APP_AP"
+#define WIFI1B_AP_FW6_CHAIN    "WIFI1B_APP_AP6"
+#define WIFI1B_CLIENT_ROUTE_LEDGER APP_DIR "/client.route"
+#define WIFI1B_CLIENT_ROUTE_PROTO  66U
+#define WIFI1B_CLIENT_DEFAULT_METRIC 1000U
 
 /* Definitions that appear later in the original daemon. */
 static bool client_associated(void);
@@ -32,6 +36,8 @@ static void fw_close(int port);
 static bool fw_port_add(const char *proto, int port);
 static void fw_chain_close(const char *tool, const char *chain);
 static void fw_tool(char *out, size_t n);
+static void fw6_tool(char *out, size_t n);
+static bool fw_rule_add(const char *tool, const char *chain, const char *rule);
 static bool carplay_fw_open(void);
 static void carplay_fw_close(void);
 static int choose_ssh_port(int desired);
@@ -40,6 +46,7 @@ static void ssh_stop(void);
 static bool ensure_car_user(void);
 static bool ensure_line(const char *path, const char *prefix, const char *line);
 static bool fw_chain_ensure(const char *tool, const char *chain);
+static bool ap_stop(void);
 
 /* ------------------------------------------------------------------ */
 /* small process / command helpers                                     */
@@ -105,7 +112,9 @@ static bool w2_ip_command(const char *fmt, ...)
 
 static void w2_iface_flush(void)
 {
-    if (!w2_ip_command("addr flush dev wlan0")) {
+    /* Family-specific on purpose: a bare `ip addr flush` removes the IPv6
+     * link-local address CarPlay needs. Only IPv4 changes here. */
+    if (sh("ip -4 addr flush dev wlan0 2>/dev/null") != 0) {
         sh("ifconfig wlan0 0.0.0.0 2>/dev/null");
     }
 }
@@ -154,6 +163,49 @@ static bool w2_read_wlan_ip(char *out, size_t n)
                 out[i++] = *p++;
             out[i] = 0;
             if (i && strcmp(out, "0.0.0.0")) return true;
+        }
+    }
+    return false;
+}
+
+/* ------------------------------------------------------------------ */
+/* IPv6 link-local readback                                           */
+/* ------------------------------------------------------------------ */
+
+static bool w2_read_if_inet6(char *buf, size_t n)
+{
+#ifdef WIFI_TEST
+    if (test_if_inet6_path) return read_file(test_if_inet6_path, buf, n) > 0;
+#endif
+    return read_file("/proc/net/if_inet6", buf, n) > 0;
+}
+
+static bool w2_ipv6_conf_read(const char *iface, const char *leaf,
+                              char *out, size_t n)
+{
+    char path[256];
+    const char *base = "/proc/sys/net/ipv6/conf";
+#ifdef WIFI_TEST
+    if (test_ipv6_conf_dir) base = test_ipv6_conf_dir;
+#endif
+    snprintf(path, sizeof(path), "%s/%s/%s", base, iface, leaf);
+    return read_file(path, out, n) > 0;
+}
+
+/* Read-only diagnosis. Never writes a sysctl: turning IPv6 on must be an
+ * explicit owner/system decision, not a side effect of starting CarPlay. */
+static bool w2_ipv6_disabled(const char *iface, char *reason, size_t n)
+{
+    const char *levels[] = {iface, "all", "default"};
+    for (size_t i = 0; i < sizeof(levels)/sizeof(levels[0]); i++) {
+        char value[32];
+        if (!w2_ipv6_conf_read(levels[i], "disable_ipv6", value, sizeof(value))) continue;
+        if (!strcmp(trim(value), "1")) {
+            snprintf(reason, n,
+                     "IPv6 is disabled (net.ipv6.conf.%s.disable_ipv6=1); "
+                     "enable IPv6 on wlan0, no global setting was changed",
+                     levels[i]);
+            return true;
         }
     }
     return false;
@@ -613,6 +665,60 @@ static void w2_lease_write(void)
     rename(tmp, WIFI1B_DHCP_LEASE_FILE);
 }
 
+/* Load unexpired leases after a daemon restart. Without this a restarted
+ * server forgot every lease and could hand the same address to a second
+ * client. Malformed, expired, out-of-pool and duplicate entries are ignored;
+ * the file is bounded by the in-memory lease table. */
+static void w2_lease_load(void)
+{
+    char buf[8192];
+    if (read_file(WIFI1B_DHCP_LEASE_FILE, buf, sizeof(buf)) <= 0) return;
+    int64_t now = now_ms();
+    time_t wall = time(NULL);
+    uint32_t base = w2_ip4(WIFI1B_AP_IP) & 0xffffff00U;
+    uint32_t first = base + WIFI1B_DHCP_POOL_FIRST;
+    uint32_t last = base + WIFI1B_DHCP_POOL_LAST;
+    char *save = NULL;
+
+    for (char *line = strtok_r(buf, "\n", &save); line;
+         line = strtok_r(NULL, "\n", &save)) {
+        char *p = trim(line);
+        char mac_text[32], ip_text[32];
+        long long expiry = 0;
+        uint8_t mac[6];
+        struct in_addr address;
+        uint32_t ip;
+
+        if (!*p || *p == '#') continue;
+        if (sscanf(p, "%31s %31s %lld", mac_text, ip_text, &expiry) != 3) continue;
+        if (expiry <= (long long)wall) continue;
+        if (!parse_mac6(mac_text, mac)) continue;
+        if (inet_pton(AF_INET, ip_text, &address) != 1) continue;
+        ip = ntohl(address.s_addr);
+        if (ip < first || ip > last) continue;
+        /* A corrupt far-future timestamp must not pin an address forever. */
+        if (expiry > (long long)wall + 86400) expiry = (long long)wall + 86400;
+        bool duplicate = false;
+        size_t free_slot = sizeof(g_w2_leases)/sizeof(g_w2_leases[0]);
+        for (size_t i = 0; i < sizeof(g_w2_leases)/sizeof(g_w2_leases[0]); i++) {
+            if (!g_w2_leases[i].used) {
+                if (free_slot == sizeof(g_w2_leases)/sizeof(g_w2_leases[0]))
+                    free_slot = i;
+                continue;
+            }
+            if (!memcmp(g_w2_leases[i].mac, mac, 6) || g_w2_leases[i].ip == ip)
+                duplicate = true;
+        }
+        if (duplicate || free_slot >= sizeof(g_w2_leases)/sizeof(g_w2_leases[0]))
+            continue;
+        g_w2_leases[free_slot].used = true;
+        memcpy(g_w2_leases[free_slot].mac, mac, 6);
+        g_w2_leases[free_slot].ip = ip;
+        g_w2_leases[free_slot].expires_ms = now + (int64_t)(expiry - (long long)wall) * 1000;
+    }
+    log_msg("dhcpd: loaded persisted leases from %s", WIFI1B_DHCP_LEASE_FILE);
+}
+
 static bool w2_lease_get(const uint8_t mac[6], int64_t now)
 {
     for (size_t i = 0; i < sizeof(g_w2_leases)/sizeof(g_w2_leases[0]); i++) {
@@ -626,8 +732,9 @@ static uint32_t w2_lease_for_mac(const uint8_t mac[6], int64_t now)
 {
     for (size_t i = 0; i < sizeof(g_w2_leases)/sizeof(g_w2_leases[0]); i++) {
         if (g_w2_leases[i].used && !memcmp(g_w2_leases[i].mac, mac, 6)) {
-            if (g_w2_leases[i].expires_ms <= now)
-                g_w2_leases[i].expires_ms = now + 3600000;
+            /* A renewal must refresh the lifetime even when the old lease
+             * has not yet expired. */
+            g_w2_leases[i].expires_ms = now + 3600000;
             return g_w2_leases[i].ip;
         }
     }
@@ -648,7 +755,10 @@ static uint32_t w2_lease_alloc(const uint8_t mac[6], uint32_t requested, int64_t
     uint32_t first = base + WIFI1B_DHCP_POOL_FIRST;
     uint32_t last = base + WIFI1B_DHCP_POOL_LAST;
     uint32_t existing = w2_lease_for_mac(mac, now);
-    if (existing) return existing;
+    if (existing) {
+        w2_lease_write();
+        return existing;
+    }
     if (requested >= first && requested <= last && !w2_ip_in_use(requested, now))
         goto assign;
     for (uint32_t ip = first; ip <= last; ip++)
@@ -679,50 +789,64 @@ static void w2_lease_release(const uint8_t mac[6])
     }
 }
 
-static uint8_t *w2_dhcp_opt(uint8_t *opts, size_t len, uint8_t code)
+static uint8_t *w2_dhcp_opt_n(uint8_t *opts, size_t len, uint8_t code,
+                              uint8_t *out_len)
 {
     size_t i = 0;
+    if (out_len) *out_len = 0;
     while (i + 1 < len) {
         uint8_t c = opts[i++];
         if (c == 0) continue;
         if (c == 255) return NULL;
         uint8_t l = opts[i++];
         if (i + l > len) return NULL;
-        if (c == code) return opts + i;
+        if (c == code) {
+            if (out_len) *out_len = l;
+            return opts + i;
+        }
         i += l;
     }
     return NULL;
+}
+
+static uint8_t *w2_dhcp_opt(uint8_t *opts, size_t len, uint8_t code)
+{
+    return w2_dhcp_opt_n(opts, len, code, NULL);
+}
+
+static bool w2_dhcp_opt_u32(const struct w2_dhcp_packet *p, size_t n,
+                            uint8_t code, uint32_t *out)
+{
+    size_t off = offsetof(struct w2_dhcp_packet, options) + 4;
+    uint8_t len = 0;
+    if (p == NULL || out == NULL || n <= off) return false;
+    uint8_t *v = w2_dhcp_opt_n((uint8_t *)p->options + 4, n - off, code, &len);
+    if (!v || len != 4) return false;
+    uint32_t x;
+    memcpy(&x, v, 4);
+    *out = ntohl(x);
+    return true;
 }
 
 static uint8_t w2_dhcp_msgtype(const struct w2_dhcp_packet *p, size_t n)
 {
     size_t off = offsetof(struct w2_dhcp_packet, options) + 4;
     if (n <= off) return 0;
-    uint8_t *v = w2_dhcp_opt((uint8_t *)p->options + 4, n - off, 53);
-    return v ? *v : 0;
+    uint8_t len = 0;
+    uint8_t *v = w2_dhcp_opt_n((uint8_t *)p->options + 4, n - off, 53, &len);
+    return v && len == 1 ? *v : 0;
 }
 
 static uint32_t w2_dhcp_requested(const struct w2_dhcp_packet *p, size_t n)
 {
-    size_t off = offsetof(struct w2_dhcp_packet, options) + 4;
-    if (n <= off) return 0;
-    uint8_t *v = w2_dhcp_opt((uint8_t *)p->options + 4, n - off, 50);
-    if (!v) return 0;
-    uint32_t x;
-    memcpy(&x, v, 4);
-    return ntohl(x);
+    uint32_t value = 0;
+    if (w2_dhcp_opt_u32(p, n, 50, &value)) return value;
+    return 0;
 }
 
 static bool w2_dhcp_server_id(const struct w2_dhcp_packet *p, size_t n, uint32_t *out)
 {
-    size_t off = offsetof(struct w2_dhcp_packet, options) + 4;
-    if (n <= off) return false;
-    uint8_t *v = w2_dhcp_opt((uint8_t *)p->options + 4, n - off, 54);
-    if (!v) return false;
-    uint32_t x;
-    memcpy(&x, v, 4);
-    *out = ntohl(x);
-    return true;
+    return w2_dhcp_opt_u32(p, n, 54, out);
 }
 
 static size_t w2_dhcp_put(uint8_t *dst, size_t cap, uint8_t code, uint8_t len, const void *data)
@@ -783,6 +907,7 @@ static void w2_dhcp_send(int fd, const struct w2_dhcp_packet *req, size_t reqlen
 static bool w2_dhcpd_run(void)
 {
     prctl(PR_SET_NAME, "wifi1b_dhcpd", 0, 0, 0);
+    w2_lease_load();
     int fd = socket(AF_INET, SOCK_DGRAM, 0);
     if (fd < 0) return false;
     int one = 1;
@@ -846,6 +971,7 @@ static bool w2_dhcpd_run(void)
             w2_ip4_str(ip, ips, sizeof(ips));
             log_msg("dhcpd: REQUEST %s -> ACK %s", mac, ips);
             w2_dhcp_send(fd, p, (size_t)n, 5, ip, true);
+            w2_lease_write();
         } else if (type == 7) { /* RELEASE */
             log_msg("dhcpd: RELEASE %s", mac);
             w2_lease_release(p->chaddr);
@@ -861,6 +987,9 @@ static bool w2_dhcpd_run(void)
 
 static bool start_dhcpd(void)
 {
+#ifdef WIFI_TEST
+    if (test_dhcpd_start >= 0) return test_dhcpd_start != 0;
+#endif
     if (dhcpd_running()) return true;
     cap_log_file(WIFI1B_DHCP_LOG, 1024 * 1024);
     pid_t pid = fork();
@@ -908,11 +1037,33 @@ static void stop_dhcpd(void)
     unlink(WIFI1B_DHCP_PID);
 }
 
+static void ap_fw6_close(void)
+{
+    char tool[256];
+    fw6_tool(tool, sizeof(tool));
+    fw_chain_close(tool, WIFI1B_AP_FW6_CHAIN);
+}
+
 static void ap_fw_close(void)
 {
     char tool[256];
     fw_tool(tool, sizeof(tool));
     fw_chain_close(tool, WIFI1B_AP_FW_CHAIN);
+    ap_fw6_close();
+}
+
+static bool ap_fw6_open(void)
+{
+    char tool[256];
+    fw6_tool(tool, sizeof(tool));
+    if (!fw_chain_ensure(tool, WIFI1B_AP_FW6_CHAIN)) return false;
+    /* NDP, MLD, echo and link-local multicast are required before the
+     * CarPlay port chain exists. All accepts are inside our owned wlan0
+     * chain; no other interface or global chain is touched. */
+    if (!fw_rule_add(tool, WIFI1B_AP_FW6_CHAIN, "-p ipv6-icmp -j ACCEPT")) return false;
+    if (!fw_rule_add(tool, WIFI1B_AP_FW6_CHAIN, "-d ff00::/8 -j ACCEPT")) return false;
+    if (!fw_rule_add(tool, WIFI1B_AP_FW6_CHAIN, "-p udp --dport 547 -j ACCEPT")) return false;
+    return true;
 }
 
 static bool ap_fw_open(void)
@@ -923,69 +1074,161 @@ static bool ap_fw_open(void)
     if (sh("%s -C " WIFI1B_AP_FW_CHAIN " -j ACCEPT 2>/dev/null", tool) != 0 &&
         sh("%s -I " WIFI1B_AP_FW_CHAIN " -j ACCEPT 2>/dev/null", tool) != 0)
         return false;
-    return true;
+    return ap_fw6_open();
 }
 
+/* Read-only AP observation. Every value below is read back from the live
+ * interface/supplicant/kernel. Configuration is used only as the expected
+ * SSID/channel comparison; it never fills an observed field. */
 static void ap_probe(ap_probe_t *p)
 {
     memset(p, 0, sizeof(*p));
     p->sampled_ms = now_ms();
     p->role = -1;
-    char buf[4096], iw_ssid[80] = "", wpa_ssid[80] = "";
-    int wpa_role = -1;
+    p->ifindex = -1;
+
+    char buf[4096], iw_ssid[80] = "", wpa_ssid[80] = "", wpa_key_mgmt[32] = "";
+    int iw_role = -1, wpa_role = -1;
     bool completed = false;
-    if (!iface_present()) p->role = 0;
-    else if (sh_out(buf, sizeof(buf), "iw dev wlan0 info 2>/dev/null") == 0) {
-        char *save = NULL;
-        for (char *line = strtok_r(buf, "\n", &save); line;
-             line = strtok_r(NULL, "\n", &save)) {
-            char *s = line;
-            while (isspace((unsigned char)*s)) s++;
-            if (!strncmp(s, "type ", 5)) {
-                const char *type = trim(s + 5);
-                p->role = !strcmp(type, "AP") ? 1 : !strcmp(type, "managed") ? 0 : -1;
+    int iw_freq = 0, wpa_freq = 0;
+    bool present = iface_present();
+
+    if (!present) {
+        p->role = 0;
+    } else {
+        cp_net_iw_info iw;
+        if (sh_out(buf, sizeof(buf), "iw dev wlan0 info 2>/dev/null") == 0 &&
+            cp_net_parse_iw_info(buf, &iw)) {
+            if (iw.is_ap) iw_role = 1;
+            else if (iw.is_managed) iw_role = 0;
+            if (iw.ifindex > 0) p->ifindex = (int)iw.ifindex;
+            if (iw.frequency > 0) iw_freq = iw.frequency;
+            if (iw.channel > 0) p->channel = iw.channel;
+            if (iw.have_ssid) str_copy(iw_ssid, sizeof(iw_ssid), iw.ssid);
+        }
+        cp_net_wpa_status wpa;
+        if (sh_out(buf, sizeof(buf),
+                   "wpa_cli -p " WPA_CTRL_DIR " -i wlan0 status 2>/dev/null") == 0 &&
+            cp_net_parse_wpa_status(buf, &wpa)) {
+            if (wpa.ap_mode) wpa_role = 1;
+            else if (wpa.station_mode) wpa_role = 0;
+            completed = wpa.completed;
+            if (wpa.have_ssid) str_copy(wpa_ssid, sizeof(wpa_ssid), wpa.ssid);
+            if (wpa.frequency > 0) wpa_freq = wpa.frequency;
+            str_copy(wpa_key_mgmt, sizeof(wpa_key_mgmt), wpa.key_mgmt);
+        }
+        if ((iw_role < 0 || (iw_role == 1 && !iw_ssid[0] && wpa_role != 1)) &&
+            sh_out(buf, sizeof(buf), "iwconfig wlan0 2>/dev/null") == 0) {
+            int role = strstr(buf, "Mode:Master") ? 1 : strstr(buf, "Mode:Managed") ? 0 : -1;
+            if (iw_role < 0) iw_role = role;
+            else if (role >= 0 && role != iw_role) p->conflict = true;
+            char *ssid = strstr(buf, "ESSID:\"");
+            if (role == 1 && ssid) {
+                ssid += 7;
+                char *end = strchr(ssid, '"');
+                if (end) {
+                    *end = 0;
+                    if (!decode_control_ssid(iw_ssid, sizeof(iw_ssid), ssid)) iw_ssid[0] = 0;
+                }
             }
-            if (!strncmp(s, "ssid ", 5) && !decode_control_ssid(iw_ssid, sizeof(iw_ssid), s + 5))
-                iw_ssid[0] = 0;
-        }
-    }
-    if (sh_out(buf, sizeof(buf), "wpa_cli -p " WPA_CTRL_DIR " -i wlan0 status 2>/dev/null") == 0) {
-        char *save = NULL;
-        for (char *line = strtok_r(buf, "\n", &save); line;
-             line = strtok_r(NULL, "\n", &save)) {
-            if (!strcmp(line, "mode=AP")) wpa_role = 1;
-            else if (!strcmp(line, "mode=station")) wpa_role = 0;
-            else if (!strcmp(line, "wpa_state=COMPLETED")) completed = true;
-            else if (!strncmp(line, "ssid=", 5) && !decode_control_ssid(wpa_ssid, sizeof(wpa_ssid), line + 5))
-                wpa_ssid[0] = 0;
-        }
-    }
-    if (p->role < 0 && sh_out(buf, sizeof(buf), "iwconfig wlan0 2>/dev/null") == 0) {
-        p->role = strstr(buf, "Mode:Master") ? 1 : strstr(buf, "Mode:Managed") ? 0 : -1;
-        char *ssid = strstr(buf, "ESSID:\"");
-        if (p->role == 1 && ssid) {
-            ssid += 7;
-            char *end = strchr(ssid, '"');
-            if (end) {
-                *end = 0;
-                if (!decode_control_ssid(iw_ssid, sizeof(iw_ssid), ssid)) iw_ssid[0] = 0;
+            if (iw_freq == 0 && wpa_freq == 0) {
+                char *freq = strstr(buf, "Frequency:");
+                if (freq) {
+                    double ghz = strtod(freq + 10, NULL);
+                    if (ghz > 0.0 && ghz < 100.0) iw_freq = (int)(ghz * 1000.0 + 0.5);
+                }
             }
         }
     }
+
     p->station = wpa_role == 0 && completed;
-    if (p->role < 0 && wpa_role == 1) p->role = 1;
-    p->conflict = (p->role == 1 && p->station) || (p->role == 0 && wpa_role == 1);
+    if (present) {
+        p->role = iw_role;
+        if (p->role < 0 && wpa_role == 1) p->role = 1;
+    } else {
+        p->role = 0;
+    }
+    if (iw_role >= 0 && wpa_role >= 0 && iw_role != wpa_role) p->conflict = true;
+    if ((p->role == 1 && p->station) || (p->role == 0 && wpa_role == 1)) p->conflict = true;
+    if (iw_freq > 0 && wpa_freq > 0 && iw_freq != wpa_freq) p->conflict = true;
+    p->frequency = iw_freq > 0 ? iw_freq : wpa_freq;
+    if (p->frequency > 0) {
+        int channel = cp_net_freq_to_channel(p->frequency);
+        if (channel > 0) p->channel = channel;
+    }
     str_copy(p->configured_ssid, sizeof(p->configured_ssid), g_cfg.cp_ssid);
-    if (p->role == 1)
-        str_copy(p->ssid, sizeof(p->ssid), iw_ssid[0] ? iw_ssid : wpa_ssid);
-    if (wlan_ip(p->ip, sizeof(p->ip))) p->ip[0] = p->ip[0];
+    if (p->role == 1) {
+        str_copy(p->ssid, sizeof(p->ssid), iw_ssid[0] ? iw_ssid : wpa_role == 1 ? wpa_ssid : "");
+        if (iw_ssid[0] && wpa_role == 1 && wpa_ssid[0] && strcmp(iw_ssid, wpa_ssid)) p->conflict = true;
+    }
+    str_copy(p->security, sizeof(p->security), wpa_key_mgmt);
+
+    /* Exact AP IPv4. A generic wlan0 address is not enough. */
+    char ipbuf[4096];
+    p->ip[0] = 0;
+    if (present) {
+        bool ip_cmd_ok = sh_out(ipbuf, sizeof(ipbuf),
+                                "ip -o -4 addr show dev wlan0 2>/dev/null") == 0;
+        if (ip_cmd_ok && cp_net_parse_ip4_addr(ipbuf, "wlan0", p->ip, sizeof(p->ip))) {
+            p->ipv4_ready = !strcmp(p->ip, WIFI1B_AP_IP);
+        }
+        if (ip_cmd_ok && !p->ipv4_ready) {
+            char needle[64];
+            snprintf(needle, sizeof(needle), "inet " WIFI1B_AP_IP "/");
+            if (strstr(ipbuf, needle)) {
+                str_copy(p->ip, sizeof(p->ip), WIFI1B_AP_IP);
+                p->ipv4_ready = true;
+            }
+        }
+        if (!ip_cmd_ok && wlan_ip(p->ip, sizeof(p->ip))) {
+            p->ipv4_ready = !strcmp(p->ip, WIFI1B_AP_IP);
+        }
+
+        /* Exact usable IPv6 link-local, excluding tentative/DAD-failed entries. */
+        char inet6[8192];
+        cp_net_linklocal ll;
+        if (w2_read_if_inet6(inet6, sizeof(inet6))) {
+            cp_net_parse_if_inet6(inet6, "wlan0",
+                                  p->ifindex > 0 ? (unsigned int)p->ifindex : 0, &ll);
+            if (ll.ifindex > 0 && p->ifindex < 0) p->ifindex = (int)ll.ifindex;
+            if (ll.usable) {
+                p->ipv6_ready = true;
+                str_copy(p->linklocal, sizeof(p->linklocal), ll.scoped);
+            } else if (ll.dad_failed) {
+                p->ipv6_unavailable = true;
+                str_copy(p->ipv6_error, sizeof(p->ipv6_error),
+                         "IPv6 link-local DAD failed on wlan0; check ICMPv6/NDP firewall on wlan0");
+            } else if (ll.tentative) {
+                str_copy(p->ipv6_error, sizeof(p->ipv6_error),
+                         "IPv6 link-local on wlan0 is tentative (DAD in progress)");
+            } else if (w2_ipv6_disabled("wlan0", p->ipv6_error, sizeof(p->ipv6_error))) {
+                p->ipv6_unavailable = true;
+            } else {
+                str_copy(p->ipv6_error, sizeof(p->ipv6_error),
+                         "no usable IPv6 link-local on wlan0 yet; readiness requires one");
+            }
+        } else {
+            p->ipv6_unavailable = true;
+            str_copy(p->ipv6_error, sizeof(p->ipv6_error),
+                     "kernel IPv6 address table is unavailable (/proc/net/if_inet6 missing)");
+        }
+    }
+
+    int configured_channel = g_cfg.cp_channel > 0
+        ? g_cfg.cp_channel
+        : cp_net_freq_to_channel(channel_to_freq());
+    p->channel_matches_config =
+        p->channel > 0 && configured_channel > 0 && p->channel == configured_channel;
+
     p->tether = p->role;
     p->state = AP_UNKNOWN;
     if (!p->conflict) {
-        if (p->role == 0) p->state = AP_ABSENT;
-        else if (p->role == 1) {
+        if (p->role == 0) {
+            p->state = AP_ABSENT;
+        } else if (p->role == 1) {
             p->state = AP_INTERFACE_UP;
-            if (!strcmp(p->ssid, g_cfg.cp_ssid) && p->ip[0])
+            if (!strcmp(p->ssid, g_cfg.cp_ssid) && p->ipv4_ready &&
+                p->ipv6_ready && p->frequency > 0)
                 p->state = AP_READY;
         }
     }
@@ -993,11 +1236,18 @@ static void ap_probe(ap_probe_t *p)
 
 static void ap_evidence(const char *stage, const ap_probe_t *p)
 {
-    char actual[512], configured[512];
+    char actual[512], configured[512], security[64], linklocal[128], ipv6_error[256];
     json_escape(actual, sizeof(actual), p->ssid);
     json_escape(configured, sizeof(configured), p->configured_ssid);
-    log_msg("AP stage=%s state=%d role=%d actual_ssid=%s configured_ssid=%s ip=%s station=%d conflict=%d",
-            stage, p->state, p->role, actual, configured, p->ip, p->station, p->conflict);
+    json_escape(security, sizeof(security), p->security);
+    json_escape(linklocal, sizeof(linklocal), p->linklocal);
+    json_escape(ipv6_error, sizeof(ipv6_error), p->ipv6_error);
+    log_msg("AP stage=%s state=%d role=%d actual_ssid=%s configured_ssid=%s ip=%s "
+            "ipv4_ready=%d ipv6=%s ifindex=%d freq=%d channel=%d security=%s "
+            "station=%d conflict=%d ipv6_error=%s",
+            stage, p->state, p->role, actual, configured, p->ip,
+            p->ipv4_ready ? 1 : 0, linklocal, p->ifindex, p->frequency,
+            p->channel, security, p->station, p->conflict, ipv6_error);
 }
 
 static ap_wait_t ap_wait_ready(bool seen, ap_probe_t *last)
@@ -1007,13 +1257,21 @@ static ap_wait_t ap_wait_ready(bool seen, ap_probe_t *last)
     int64_t deadline = now_ms() + 30000;
     for (int i = 0; i < 62 && !g_stop && now_ms() < deadline; i++) {
         ap_probe(last);
+        /* IPv6 is disabled or DAD already failed: waiting cannot help, and a
+         * silent band fallback would hide an actionable owner setting. */
+        if (last->ipv6_unavailable && last->role == 1 && !last->conflict &&
+            last->ipv4_ready && last->ssid[0] &&
+            !strcmp(last->ssid, g_cfg.cp_ssid))
+            return AP_WAIT_IPV6_BLOCKED;
         if (last->state == AP_READY) {
             if (++ready >= 3) return AP_WAIT_READY;
         } else ready = 0;
         if (!wpa_process_alive() && i > 4) return AP_WAIT_LOST;
         usleep(500000);
     }
-    return g_stop ? AP_WAIT_UNKNOWN : AP_WAIT_PENDING;
+    if (g_stop) return AP_WAIT_UNKNOWN;
+    if (last->ipv6_unavailable) return AP_WAIT_IPV6_BLOCKED;
+    return AP_WAIT_PENDING;
 }
 
 static bool ap_disable(bool explicit_stop)
@@ -1024,6 +1282,19 @@ static bool ap_disable(bool explicit_stop)
     stop_wpa_supplicant();
     w2_iface_down_clean();
     g_carplay_ie = false;
+    return true;
+}
+
+static bool ap_open_services(void)
+{
+    if (!start_dhcpd()) {
+        set_msg("CarPlay AP: DHCP server failed to start; AP not reported ready");
+        return false;
+    }
+    if (!ap_fw_open()) {
+        set_msg("CarPlay AP: wlan0 IPv4/IPv6 firewall setup failed; AP not reported ready");
+        return false;
+    }
     return true;
 }
 
@@ -1039,9 +1310,13 @@ static bool ap_start(void)
     ap_probe_t p;
     ap_probe(&p);
     if (p.state == AP_READY && !strcmp(p.ssid, g_cfg.cp_ssid) && wpa_process_alive()) {
-        if (!start_dhcpd()) log_msg("CarPlay AP: DHCP server did not start");
-        if (!ap_fw_open()) log_msg("CarPlay AP: wlan0 firewall accept failed (nonfatal)");
+        if (!ap_open_services()) {
+            ap_stop();
+            return false;
+        }
         g_carplay_ie = true;
+        set_msg("CarPlay AP running (SSID=%s, %d MHz, DHCP %s/24)",
+                p.ssid, p.frequency, WIFI1B_AP_IP);
         return true;
     }
 
@@ -1057,6 +1332,7 @@ static bool ap_start(void)
         log_msg("CarPlay AP: regulatory domain GB");
     prepare_carplay_identity();
 
+    char failure[256] = "";
     for (int attempt = 0; attempt < 2 && !g_stop; attempt++) {
         if (attempt) {
             g_cfg.cp_band = 1;
@@ -1078,19 +1354,38 @@ static bool ap_start(void)
         }
         ap_wait_t w = ap_wait_ready(false, &p);
         if (w == AP_WAIT_READY) {
-            if (!start_dhcpd()) log_msg("CarPlay AP: DHCP server did not start");
-            if (!ap_fw_open()) log_msg("CarPlay AP: wlan0 firewall accept failed (nonfatal)");
+            if (!ap_open_services()) {
+                ap_stop();
+                return false;
+            }
             g_carplay_ie = true;
             set_msg("CarPlay AP running (SSID=%s, %d MHz, DHCP %s/24)",
-                    p.ssid, channel_to_freq(), WIFI1B_AP_IP);
+                    p.ssid, p.frequency, WIFI1B_AP_IP);
             return true;
         }
         ap_evidence("start-attempt", &p);
+        if (w == AP_WAIT_IPV6_BLOCKED) {
+            snprintf(failure, sizeof(failure),
+                     "CarPlay AP cannot be ready (SSID=%s): %s",
+                     g_cfg.cp_ssid,
+                     p.ipv6_error[0] ? p.ipv6_error : "IPv6 link-local unavailable");
+            stop_dhcpd();
+            stop_wpa_supplicant();
+            w2_iface_flush();
+            break; /* a band fallback cannot create IPv6 */
+        }
+        if (!failure[0] && p.ipv6_error[0])
+            snprintf(failure, sizeof(failure),
+                     "CarPlay AP did not become network-ready (SSID=%s): %s",
+                     g_cfg.cp_ssid, p.ipv6_error);
         stop_dhcpd();
         stop_wpa_supplicant();
         w2_iface_flush();
     }
-    set_msg("CarPlay AP failed to start (SSID=%s)", g_cfg.cp_ssid);
+    if (failure[0])
+        set_msg("%s", failure);
+    else
+        set_msg("CarPlay AP failed to start (SSID=%s)", g_cfg.cp_ssid);
     return false;
 }
 
@@ -1121,46 +1416,565 @@ static bool ap_stop(void)
 
 static bool w2_read_iface_mac(const char *iface, uint8_t out[6])
 {
+#ifdef WIFI_TEST
+    if (test_mac_override) return parse_mac6(test_mac_override, out);
+#endif
     char path[128], buf[64];
     snprintf(path, sizeof(path), "/sys/class/net/%s/address", iface);
     if (read_file(path, buf, sizeof(buf)) <= 0) return false;
     return parse_mac6(trim(buf), out);
 }
 
-static uint32_t w2_dhcp_opt_u32(const struct w2_dhcp_packet *p, size_t n, uint8_t code)
+static int w2_mask_to_prefix(uint32_t mask)
 {
-    size_t off = offsetof(struct w2_dhcp_packet, options) + 4;
-    if (n <= off) return 0;
-    uint8_t *v = w2_dhcp_opt((uint8_t *)p->options + 4, n - off, code);
-    if (!v) return 0;
-    if (code == 1) {  /* subnet mask */
-        uint32_t x;
-        memcpy(&x, v, 4);
-        return ntohl(x);
+    if (mask == 0) return 0;
+    uint32_t inverse = ~mask;
+    if (inverse & (inverse + 1U)) return -1; /* non-contiguous mask */
+    int prefix = 0;
+    while (mask & 0x80000000U) {
+        prefix++;
+        mask <<= 1;
+    }
+    return prefix;
+}
+
+/* Build the common DHCP client option block, including the Ethernet client
+ * identifier. DISCOVER and REQUEST must carry the same option 61; a renewal
+ * built through this helper keeps it consistent too. */
+static size_t w2_dhcp_client_opts(uint8_t *opts, size_t cap, uint8_t type,
+                                  const uint8_t mac[6], uint32_t requested,
+                                  uint32_t server, bool have_server)
+{
+    static const uint8_t prl[] = {1, 3, 6, 15, 28};
+    size_t off = 0;
+    uint8_t cid[7];
+
+    if (opts == NULL || cap < 16) return 0;
+    off += w2_dhcp_put(opts + off, cap - off, 53, 1, &type);
+    if (requested) {
+        uint32_t value = htonl(requested);
+        off += w2_dhcp_put(opts + off, cap - off, 50, 4, &value);
+    }
+    if (have_server) {
+        uint32_t value = htonl(server);
+        off += w2_dhcp_put(opts + off, cap - off, 54, 4, &value);
+    }
+    cid[0] = 1; /* Ethernet */
+    memcpy(cid + 1, mac, 6);
+    off += w2_dhcp_put(opts + off, cap - off, 61, 7, cid);
+    off += w2_dhcp_put(opts + off, cap - off, 55, sizeof(prl), prl);
+    return off;
+}
+
+static bool w2_addr_present(const char *iface, const char *ip, int prefix)
+{
+    char buf[4096], needle[128];
+    if (sh_out(buf, sizeof(buf), "ip -o -4 addr show dev %s 2>/dev/null", iface) != 0)
+        return false;
+    snprintf(needle, sizeof(needle), "inet %s/%d", ip, prefix);
+    char *hit = strstr(buf, needle);
+    if (!hit) return false;
+    char next = hit[strlen(needle)];
+    return next == ' ' || next == '\0' || next == '\\' || next == '\n';
+}
+
+/* Only the connected route is verified. The modem/default route is never
+ * replaced or removed by client mode. */
+static bool w2_connected_route_present(const char *iface, const char *ip,
+                                       uint32_t mask, int prefix)
+{
+    char buf[4096], net[32], needle[96];
+    uint32_t network = w2_ip4(ip) & mask;
+
+    w2_ip4_str(network, net, sizeof(net));
+    snprintf(needle, sizeof(needle), "%s/%d", net, prefix);
+    if (sh_out(buf, sizeof(buf), "ip -4 route show dev %s 2>/dev/null", iface) != 0)
+        return false;
+    char *hit = strstr(buf, needle);
+    if (!hit) return false;
+    char next = hit[strlen(needle)];
+    return next == ' ' || next == '\0' || next == '\\' || next == '\n';
+}
+
+/* ------------------------------------------------------------------ */
+/* client default-route policy                                         */
+/*                                                                     */
+/* Client mode gets one owned default route, strictly lower priority    */
+/* than every pre-existing default. It is added/deleted by exact spec   */
+/* from a ledger; foreign defaults and policy rules are never flushed.  */
+/* ------------------------------------------------------------------ */
+
+typedef struct {
+    char gateway[32];
+    char iface[16];
+    unsigned int metric;
+    unsigned int proto;
+} w2_owned_route_t;
+
+typedef struct {
+    bool valid;
+    bool updated;
+    bool route_ok;
+    uint32_t ip;
+    uint32_t server;
+    uint32_t mask;
+    uint32_t gateway;
+    int prefix;
+    int lease_s;
+    int t1_s;
+    int t2_s;
+    unsigned int route_metric;
+    unsigned int route_proto;
+    char iface[16];
+} w2_dhcp_lease_t;
+
+static w2_dhcp_lease_t g_dhcp_lease;
+
+static bool w2_route_token_u32(const char *text, unsigned int *out)
+{
+    char *end = NULL;
+    unsigned long value;
+    if (text == NULL || *text == '\0' || out == NULL) return false;
+    for (const char *p = text; *p; p++) if (*p < '0' || *p > '9') return false;
+    errno = 0;
+    value = strtoul(text, &end, 10);
+    if (errno != 0 || end == text || *end != '\0' || value > 0xffffffffUL)
+        return false;
+    *out = (unsigned int)value;
+    return true;
+}
+
+/* Parse a route spec line without trusting it: the ledger is local, but a
+ * corrupt/partial file must never make us delete an unrelated route. */
+static bool w2_owned_route_parse(const char *text, w2_owned_route_t *route)
+{
+    char line[512], copy[512], *tokens[8] = {0};
+    int count = 0;
+    char *save = NULL;
+
+    if (text == NULL || route == NULL) return false;
+    memset(route, 0, sizeof(*route));
+    snprintf(line, sizeof(line), "%s", text);
+    size_t len = strlen(line);
+    while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r' ||
+                       line[len - 1] == ' ' || line[len - 1] == '\t'))
+        line[--len] = '\0';
+    snprintf(copy, sizeof(copy), "%s", line);
+    for (char *tok = strtok_r(copy, " \t", &save); tok && count < 8;
+         tok = strtok_r(NULL, " \t", &save))
+        tokens[count++] = tok;
+    if (count != 5 || strcmp(tokens[0], "v1") != 0) return false;
+    if (inet_pton(AF_INET, tokens[1], &(struct in_addr){0}) != 1) return false;
+    size_t iface_len = strlen(tokens[2]);
+    if (iface_len == 0 || iface_len >= sizeof(route->iface)) return false;
+    for (size_t i = 0; i < iface_len; i++) {
+        unsigned char c = (unsigned char)tokens[2][i];
+        if (!(isalnum(c) || c == '_' || c == '-' || c == '.')) return false;
+    }
+    if (!w2_route_token_u32(tokens[3], &route->metric) ||
+        !w2_route_token_u32(tokens[4], &route->proto))
+        return false;
+    snprintf(route->gateway, sizeof(route->gateway), "%s", tokens[1]);
+    snprintf(route->iface, sizeof(route->iface), "%s", tokens[2]);
+    return true;
+}
+
+static bool w2_route_line_matches(const char *line, const char *gateway,
+                                  const char *iface, unsigned int metric,
+                                  unsigned int proto)
+{
+    char copy[512], *tokens[64] = {0};
+    int count = 0;
+    char *save = NULL;
+    char metric_text[16], proto_text[16];
+
+    if (line == NULL || gateway == NULL || iface == NULL) return false;
+    snprintf(copy, sizeof(copy), "%s", line);
+    for (char *tok = strtok_r(copy, " \t", &save); tok && count < 64;
+         tok = strtok_r(NULL, " \t", &save))
+        tokens[count++] = tok;
+    if (count == 0 || strcmp(tokens[0], "default") != 0) return false;
+    snprintf(metric_text, sizeof(metric_text), "%u", metric);
+    snprintf(proto_text, sizeof(proto_text), "%u", proto);
+    bool via = false, dev = false, met = false, pro = false;
+    for (int i = 0; i + 1 < count; i++) {
+        if (!strcmp(tokens[i], "via") && !strcmp(tokens[i + 1], gateway)) via = true;
+        else if (!strcmp(tokens[i], "dev") && !strcmp(tokens[i + 1], iface)) dev = true;
+        else if (!strcmp(tokens[i], "metric") && !strcmp(tokens[i + 1], metric_text)) met = true;
+        else if (!strcmp(tokens[i], "proto") && !strcmp(tokens[i + 1], proto_text)) pro = true;
+    }
+    return via && dev && met && pro;
+}
+
+static bool w2_default_routes(char *out, size_t n)
+{
+    if (sh_out(out, n, "ip -4 route show default 2>/dev/null") != 0) {
+        out[0] = '\0';
+        return false;
+    }
+    return true;
+}
+
+static bool w2_route_exact_present(const char *gateway, const char *iface,
+                                   unsigned int metric, unsigned int proto,
+                                   bool *present)
+{
+    char buf[4096];
+    if (present == NULL || !w2_default_routes(buf, sizeof(buf))) return false;
+    *present = false;
+    char *save = NULL;
+    for (char *line = strtok_r(buf, "\n", &save); line;
+         line = strtok_r(NULL, "\n", &save)) {
+        char *p = trim(line);
+        if (w2_route_line_matches(p, gateway, iface, metric, proto)) {
+            *present = true;
+            break;
+        }
+    }
+    return true;
+}
+
+/* Strictly higher metric than every existing default. No existing default
+ * uses WIFI1B_CLIENT_DEFAULT_METRIC rather than metric 0. Malformed or
+ * overflowing metrics fail closed instead of risking preference inversion. */
+static bool w2_route_select_metric(unsigned int *metric)
+{
+    char buf[4096], *save = NULL;
+    bool saw_default = false;
+    unsigned int max_metric = 0;
+
+    if (metric == NULL || !w2_default_routes(buf, sizeof(buf))) return false;
+    for (char *line = strtok_r(buf, "\n", &save); line;
+         line = strtok_r(NULL, "\n", &save)) {
+        char *p = trim(line);
+        char copy[512], *tokens[64] = {0};
+        int count = 0;
+        char *tsave = NULL;
+        if (strncmp(p, "default", 7) != 0) continue;
+        saw_default = true;
+        snprintf(copy, sizeof(copy), "%s", p);
+        for (char *tok = strtok_r(copy, " \t", &tsave); tok && count < 64;
+             tok = strtok_r(NULL, " \t", &tsave))
+            tokens[count++] = tok;
+        unsigned int value = 0;
+        bool have_metric = false;
+        for (int i = 0; i + 1 < count; i++) {
+            if (!strcmp(tokens[i], "metric")) {
+                if (!w2_route_token_u32(tokens[i + 1], &value)) {
+                    log_msg("dhcp client: refusing malformed default metric: %s", p);
+                    return false;
+                }
+                have_metric = true;
+                break;
+            }
+        }
+        if (!have_metric) value = 0; /* kernel omits metric 0 */
+        if (value > max_metric) max_metric = value;
+    }
+    if (!saw_default) {
+        *metric = WIFI1B_CLIENT_DEFAULT_METRIC;
+        return true;
+    }
+    if (max_metric == 0xffffffffU) {
+        log_msg("dhcp client: no route metric above existing default %u", max_metric);
+        return false;
+    }
+    *metric = max_metric + 1;
+    return true;
+}
+
+static bool w2_owned_route_cleanup(void)
+{
+    char ledger[1024], buf[4096];
+    int n = read_file(WIFI1B_CLIENT_ROUTE_LEDGER, ledger, sizeof(ledger));
+    if (n <= 0) return true;
+    w2_owned_route_t route;
+    if (!w2_owned_route_parse(ledger, &route)) {
+        log_msg("dhcp client: refusing to act on malformed route ledger");
+        return false;
+    }
+    for (int attempt = 0; attempt < 4; attempt++) {
+        bool present = false;
+        if (!w2_route_exact_present(route.gateway, route.iface, route.metric,
+                                    route.proto, &present))
+            return false;
+        if (!present) break;
+        if (!w2_ip_command("route del default via %s dev %s metric %u proto %u",
+                           route.gateway, route.iface, route.metric, route.proto))
+            return false;
+    }
+    /* Re-read: never unlink the ledger while our exact route is still there. */
+    bool present = false;
+    if (!w2_route_exact_present(route.gateway, route.iface, route.metric,
+                                route.proto, &present))
+        return false;
+    if (present) return false;
+    unlink(WIFI1B_CLIENT_ROUTE_LEDGER);
+    (void)buf;
+    return true;
+}
+
+static bool w2_owned_route_install(const char *gateway, const char *iface,
+                                   unsigned int metric, unsigned int proto)
+{
+    char ledger[512];
+    if (gateway == NULL || iface == NULL) return false;
+    if (!w2_ip_command("route add default via %s dev %s metric %u proto %u",
+                       gateway, iface, metric, proto))
+        return false;
+    bool present = false;
+    if (!w2_route_exact_present(gateway, iface, metric, proto, &present) || !present) {
+        w2_ip_command("route del default via %s dev %s metric %u proto %u",
+                      gateway, iface, metric, proto);
+        return false;
+    }
+    snprintf(ledger, sizeof(ledger), "v1 %s %s %u %u\n",
+             gateway, iface, metric, proto);
+    if (write_file_atomic(WIFI1B_CLIENT_ROUTE_LEDGER, ledger, 0600) != 0) {
+        w2_ip_command("route del default via %s dev %s metric %u proto %u",
+                      gateway, iface, metric, proto);
+        return false;
+    }
+    return true;
+}
+
+/* Install the WiFi fallback default after removing only our previous exact
+ * route. The gateway comes from the lease, never from configuration. */
+static bool w2_client_route_install(uint32_t gateway, const char *iface)
+{
+    unsigned int metric = 0;
+    char gw[32];
+
+    if (gateway == 0) {
+        snprintf(g_dhcp_error, sizeof(g_dhcp_error),
+                 "DHCP lease has no router/gateway option");
+        return false;
+    }
+    w2_ip4_str(gateway, gw, sizeof(gw));
+    if (!w2_owned_route_cleanup()) {
+        snprintf(g_dhcp_error, sizeof(g_dhcp_error),
+                 "cannot remove previous owned default route");
+        return false;
+    }
+    if (!w2_route_select_metric(&metric)) {
+        snprintf(g_dhcp_error, sizeof(g_dhcp_error),
+                 "cannot select a safe WiFi default-route metric");
+        return false;
+    }
+    if (!w2_owned_route_install(gw, iface, metric, WIFI1B_CLIENT_ROUTE_PROTO)) {
+        snprintf(g_dhcp_error, sizeof(g_dhcp_error),
+                 "cannot install/read back the owned WiFi default route");
+        return false;
+    }
+    g_dhcp_lease.route_ok = true;
+    g_dhcp_lease.route_metric = metric;
+    g_dhcp_lease.route_proto = WIFI1B_CLIENT_ROUTE_PROTO;
+    return true;
+}
+
+/* ------------------------------------------------------------------ */
+/* raw DHCP receive fallback (AF_PACKET)                               */
+/*                                                                     */
+/* The stock stack may drop an OFFER before INPUT when rp_filter is on. */
+/* This fallback never changes a sysctl: it observes the same IPv4 UDP   */
+/* datagram at the packet socket, with strict bounds and identity checks.*/
+/* ------------------------------------------------------------------ */
+
+static uint32_t w2_sum_bytes(const uint8_t *data, size_t len, uint32_t sum)
+{
+    size_t i;
+    for (i = 0; i + 1 < len; i += 2)
+        sum += ((uint32_t)data[i] << 8) | data[i + 1];
+    if (i < len) sum += (uint32_t)data[i] << 8;
+    return sum;
+}
+
+static uint16_t w2_fold_checksum(uint32_t sum)
+{
+    while (sum >> 16) sum = (sum & 0xffffU) + (sum >> 16);
+    return (uint16_t)~sum;
+}
+
+static bool w2_udp_checksum_valid(const struct iphdr *ip,
+                                  const struct udphdr *udp, size_t udp_len)
+{
+    uint32_t sum = 0;
+    sum = w2_sum_bytes((const uint8_t *)&ip->saddr, 4, sum);
+    sum = w2_sum_bytes((const uint8_t *)&ip->daddr, 4, sum);
+    sum += ip->protocol;          /* zero byte + protocol */
+    sum += (uint32_t)udp_len;     /* network-order 16-bit length */
+    sum = w2_sum_bytes((const uint8_t *)udp, udp_len, sum);
+    return w2_fold_checksum(sum) == 0;
+}
+
+/* Parse an IPv4/UDP DHCP reply received through AF_PACKET SOCK_DGRAM.
+ * Everything is length-checked; fragments are rejected rather than
+ * reassembled, and the DHCP magic/xid/chaddr/client-id identity must match. */
+static bool w2_dhcp_raw_parse(const uint8_t *packet, size_t len,
+                              uint32_t xid, const uint8_t mac[6],
+                              uint8_t *payload, size_t payload_cap,
+                              size_t *payload_len)
+{
+    static const uint8_t magic[4] = {99, 130, 83, 99};
+    struct iphdr ip_copy;
+    const struct iphdr *ip;
+    const struct udphdr *udp;
+    size_t ihl, dhcp_len, opt_len;
+    unsigned int total, udp_len;
+    uint16_t frag;
+    uint8_t cid_len = 0;
+    uint8_t *cid;
+    struct w2_dhcp_packet *dhcp;
+
+    if (packet == NULL || payload == NULL || payload_len == NULL || mac == NULL)
+        return false;
+    if (len < sizeof(struct iphdr) + sizeof(struct udphdr)) return false;
+    memcpy(&ip_copy, packet, sizeof(ip_copy));
+    ip = &ip_copy;
+    ihl = (size_t)ip->ihl * 4;
+    if (ip->version != 4 || ihl < sizeof(struct iphdr) || len < ihl + 8)
+        return false;
+    total = (unsigned int)ntohs(ip->tot_len);
+    if (total < ihl + 8 || total > len) return false;
+    if (w2_fold_checksum(w2_sum_bytes(packet, ihl, 0)) != 0) return false;
+    frag = ntohs(ip->frag_off);
+    if ((frag & (IP_MF | IP_OFFMASK)) != 0) return false;
+    if (ip->protocol != IPPROTO_UDP) return false;
+
+    udp = (const struct udphdr *)(packet + ihl);
+    udp_len = (unsigned int)ntohs(udp->len);
+    if (udp_len < 8 || ihl + udp_len > total) return false;
+    if (ntohs(udp->source) != w2_dhcp_port() ||
+        ntohs(udp->dest) != w2_dhcp_client_port())
+        return false;
+    if (udp->check != 0 && !w2_udp_checksum_valid(ip, udp, udp_len))
+        return false;
+
+    dhcp_len = udp_len - 8;
+    if (dhcp_len > payload_cap ||
+        dhcp_len < offsetof(struct w2_dhcp_packet, options) + 4)
+        return false;
+    memcpy(payload, packet + ihl + 8, dhcp_len);
+    dhcp = (struct w2_dhcp_packet *)payload;
+    if (dhcp->op != 2 || dhcp->htype != 1 || dhcp->hlen != 6 ||
+        dhcp->xid != xid || memcmp(dhcp->chaddr, mac, 6) != 0)
+        return false;
+    if (memcmp(dhcp->options, magic, sizeof(magic)) != 0) return false;
+    opt_len = dhcp_len - offsetof(struct w2_dhcp_packet, options) - 4;
+    cid = w2_dhcp_opt_n(dhcp->options + 4, opt_len, 61, &cid_len);
+    if (cid != NULL &&
+        (cid_len != 7 || cid[0] != 1 || memcmp(cid + 1, mac, 6) != 0))
+        return false;
+    *payload_len = dhcp_len;
+    return true;
+}
+
+static int w2_dhcp_raw_open(const char *iface, int *ifindex)
+{
+    struct sockaddr_ll sa;
+    unsigned int index;
+    int fd;
+
+    if (ifindex) *ifindex = 0;
+    if (iface == NULL || *iface == '\0') return -1;
+    index = if_nametoindex(iface);
+    if (index == 0) return -1;
+    fd = socket(AF_PACKET, SOCK_DGRAM | SOCK_CLOEXEC | SOCK_NONBLOCK,
+                htons(ETH_P_IP));
+    if (fd < 0) return -1;
+    memset(&sa, 0, sizeof(sa));
+    sa.sll_family = AF_PACKET;
+    sa.sll_protocol = htons(ETH_P_IP);
+    sa.sll_ifindex = (int)index;
+    if (bind(fd, (struct sockaddr *)&sa, sizeof(sa)) != 0) {
+        close(fd);
+        return -1;
+    }
+    if (ifindex) *ifindex = (int)index;
+    return fd;
+}
+
+static bool w2_dhcp_raw_receive(int fd, int ifindex, uint32_t xid,
+                                const uint8_t mac[6], uint8_t *payload,
+                                size_t payload_cap, size_t *payload_len)
+{
+    for (int i = 0; i < 8; i++) {
+        uint8_t packet[1600];
+        struct sockaddr_ll from;
+        socklen_t from_len = sizeof(from);
+        ssize_t n = recvfrom(fd, packet, sizeof(packet), 0,
+                             (struct sockaddr *)&from, &from_len);
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            return false;
+        }
+        if (from.sll_ifindex != ifindex) continue;
+        if (w2_dhcp_raw_parse(packet, (size_t)n, xid, mac, payload,
+                              payload_cap, payload_len))
+            return true;
+    }
+    return false;
+}
+
+/* Poll the normal UDP socket and the raw fallback together. The test hook
+ * can force raw-only RX so the namespace test proves that path. */
+static int w2_dhcp_wait_reply(int fd, int raw_fd, int raw_ifindex,
+                              uint32_t xid, const uint8_t mac[6],
+                              uint8_t *reply, size_t reply_cap,
+                              size_t *reply_len, int64_t deadline)
+{
+    bool use_udp = getenv("WIFI1B_DHCP_TEST_FORCE_RAW") == NULL;
+
+    while (!g_stop && now_ms() < deadline) {
+        struct pollfd pfd[2];
+        int nfds = 0, udp_slot = -1, raw_slot = -1;
+        if (use_udp) {
+            udp_slot = nfds;
+            pfd[nfds].fd = fd;
+            pfd[nfds].events = POLLIN;
+            pfd[nfds].revents = 0;
+            nfds++;
+        }
+        if (raw_fd >= 0) {
+            raw_slot = nfds;
+            pfd[nfds].fd = raw_fd;
+            pfd[nfds].events = POLLIN;
+            pfd[nfds].revents = 0;
+            nfds++;
+        }
+        if (nfds == 0) return 0;
+        int pr = poll(pfd, (nfds_t)nfds, 250);
+        if (pr <= 0) continue;
+        if (udp_slot >= 0 && (pfd[udp_slot].revents & POLLIN)) {
+            ssize_t n = recv(fd, reply, reply_cap, 0);
+            if (n > 0 &&
+                (size_t)n >= offsetof(struct w2_dhcp_packet, options) + 4) {
+                *reply_len = (size_t)n;
+                return 1;
+            }
+        }
+        if (raw_slot >= 0 && (pfd[raw_slot].revents & POLLIN)) {
+            if (w2_dhcp_raw_receive(raw_fd, raw_ifindex, xid, mac, reply,
+                                    reply_cap, reply_len))
+                return 2;
+        }
     }
     return 0;
 }
 
-static void w2_sysctl_write(const char *path, const char *value)
+/* Read-only diagnosis. The vendor may have rp_filter enabled; changing
+ * global/all/default or per-interface sysctls is not safe from this daemon.
+ * Record the limitation instead, so a real OFFER loss is actionable. */
+static void w2_dhcp_rp_filter_note(const char *iface)
 {
-    int fd = open(path, O_WRONLY);
-    if (fd < 0) return;
-    (void)write(fd, value, strlen(value));
-    close(fd);
-}
-
-static void w2_rp_filter_restore(const char *all_path, const char *if_path,
-                                 const char *old_all, const char *old_if)
-{
-    char v[16];
-    if (old_all && old_all[0]) {
-        snprintf(v, sizeof(v), "%s", old_all);
-        w2_sysctl_write(all_path, trim(v));
-    }
-    if (old_if && old_if[0]) {
-        snprintf(v, sizeof(v), "%s", old_if);
-        w2_sysctl_write(if_path, trim(v));
-    }
+    char all[16] = "", per[16] = "", path[128];
+    read_file("/proc/sys/net/ipv4/conf/all/rp_filter", all, sizeof(all));
+    snprintf(path, sizeof(path), "/proc/sys/net/ipv4/conf/%s/rp_filter", iface);
+    read_file(path, per, sizeof(per));
+    char *all_value = trim(all), *per_value = trim(per);
+    if (!strcmp(all_value, "1") || !strcmp(per_value, "1"))
+        log_msg("dhcp client: rp_filter enabled (all=%s %s=%s); sysctls left unchanged",
+                all_value, iface, per_value);
 }
 
 static void w2_read_bssid(char *out, size_t n)
@@ -1181,9 +1995,153 @@ static void w2_read_bssid(char *out, size_t n)
     out[i] = 0;
 }
 
-/* One-shot DHCP client on the given interface.  Returns the leased IPv4
- * address and applies it plus the default route via ip(8). */
-static bool w2_dhcp_client(const char *iface_in, char *out_ip, size_t ip_n)
+/* One-shot DHCP client on the given interface. Returns the leased IPv4
+ * address and applies it only after verifying the address and connected
+ * route readback. The default/modem route is deliberately untouched. */
+static size_t w2_dhcp_build_client(struct w2_dhcp_packet *req, uint32_t xid,
+                                   const uint8_t mac[6], uint8_t type,
+                                   uint32_t ciaddr, uint32_t requested,
+                                   uint32_t server, bool have_server)
+{
+    memset(req, 0, sizeof(*req));
+    req->op = 1;
+    req->htype = 1;
+    req->hlen = 6;
+    req->xid = xid;
+    req->ciaddr = htonl(ciaddr);
+    memcpy(req->chaddr, mac, 6);
+    req->flags = htons(0x8000);
+    req->options[0] = 99; req->options[1] = 130;
+    req->options[2] = 83; req->options[3] = 99;
+    size_t off = 4;
+    off += w2_dhcp_client_opts(req->options + off,
+                               sizeof(req->options) - off, type, mac,
+                               requested, server, have_server);
+    req->options[off++] = 255;
+    return offsetof(struct w2_dhcp_packet, options) + off;
+}
+
+static bool w2_dhcp_reply_identity(const struct w2_dhcp_packet *rep, size_t n,
+                                   uint32_t xid, const uint8_t mac[6])
+{
+    return n >= offsetof(struct w2_dhcp_packet, options) + 4 &&
+           rep->op == 2 && rep->htype == 1 && rep->hlen == 6 &&
+           rep->xid == xid && !memcmp(rep->chaddr, mac, 6) &&
+           rep->options[0] == 99 && rep->options[1] == 130 &&
+           rep->options[2] == 83 && rep->options[3] == 99;
+}
+
+static void w2_dhcp_remove_own_address(const char *iface)
+{
+    char ip[32];
+    if (g_dhcp_lease.ip == 0 || g_dhcp_lease.prefix <= 0 ||
+        g_dhcp_lease.prefix > 32 || g_dhcp_lease.iface[0] == '\0' ||
+        strcmp(iface, g_dhcp_lease.iface) != 0)
+        return;
+    w2_ip4_str(g_dhcp_lease.ip, ip, sizeof(ip));
+    /* Exact owned address only; never a family flush. */
+    w2_ip_command("addr del %s/%d dev %s", ip, g_dhcp_lease.prefix, iface);
+}
+
+static void w2_dhcp_invalidate(const char *iface, bool remove_address)
+{
+    g_dhcp_lease.valid = false;
+    g_dhcp_lease.updated = true;
+    g_dhcp_lease.route_ok = false;
+    if (!w2_owned_route_cleanup())
+        log_msg("dhcp client: owned default route cleanup failed");
+    if (remove_address) w2_dhcp_remove_own_address(iface);
+}
+
+/* Apply an ACK and verify every claim before the lease is considered ready.
+ * The gateway/metric come from the ACK and current route table, never from
+ * configuration. */
+static bool w2_dhcp_apply_ack(const struct w2_dhcp_packet *rep, size_t n,
+                              const char *iface, uint32_t fallback_ip,
+                              uint32_t fallback_server, char *out_ip,
+                              size_t ip_n)
+{
+    uint32_t ip = ntohl(rep->yiaddr);
+    uint32_t mask = 0, router = 0, server_id = 0;
+    uint32_t lease_s = 3600, t1_s = 0, t2_s = 0;
+    char ipbuf[32];
+
+    if (ip == 0) ip = fallback_ip;
+    if (ip == 0) {
+        snprintf(g_dhcp_error, sizeof(g_dhcp_error), "ACK carried no usable address");
+        return false;
+    }
+    if (!w2_dhcp_opt_u32(rep, n, 1, &mask) || mask == 0) mask = 0xffffff00U;
+    int prefix = w2_mask_to_prefix(mask);
+    if (prefix < 0 || prefix > 32) {
+        snprintf(g_dhcp_error, sizeof(g_dhcp_error), "invalid subnet mask from DHCP server");
+        return false;
+    }
+    if (!w2_dhcp_opt_u32(rep, n, 3, &router) || router == 0)
+        router = fallback_server;
+    if (!w2_dhcp_opt_u32(rep, n, 54, &server_id) || server_id == 0)
+        server_id = fallback_server;
+    if (!w2_dhcp_opt_u32(rep, n, 51, &lease_s) || lease_s == 0)
+        lease_s = 3600;
+    if (lease_s < 60) lease_s = 60;
+    if (lease_s > 7U * 86400U) lease_s = 7U * 86400U;
+    if (!w2_dhcp_opt_u32(rep, n, 58, &t1_s)) t1_s = 0;
+    if (!w2_dhcp_opt_u32(rep, n, 59, &t2_s)) t2_s = 0;
+    if (t1_s == 0 || t1_s >= lease_s) t1_s = lease_s / 2;
+    if (t2_s == 0 || t2_s <= t1_s || t2_s >= lease_s) t2_s = lease_s * 7U / 8U;
+    if (t1_s == 0) t1_s = 1;
+    if (t2_s <= t1_s) t2_s = lease_s > t1_s + 1 ? lease_s - 1 : t1_s + 1;
+
+    w2_ip4_str(ip, ipbuf, sizeof(ipbuf));
+    if (!getenv("WIFI1B_DHCP_TEST_NOAPPLY")) {
+        if (!w2_ip_command("addr replace %s/%d dev %s", ipbuf, prefix, iface) &&
+            !w2_ip_command("addr add %s/%d dev %s", ipbuf, prefix, iface)) {
+            snprintf(g_dhcp_error, sizeof(g_dhcp_error),
+                     "cannot apply %s/%d on %s", ipbuf, prefix, iface);
+            return false;
+        }
+        if (!w2_ip_command("link set %s up", iface)) {
+            snprintf(g_dhcp_error, sizeof(g_dhcp_error),
+                     "cannot bring %s up", iface);
+            return false;
+        }
+        if (!w2_addr_present(iface, ipbuf, prefix)) {
+            snprintf(g_dhcp_error, sizeof(g_dhcp_error),
+                     "address %s/%d is not visible on %s", ipbuf, prefix, iface);
+            return false;
+        }
+        if (!w2_connected_route_present(iface, ipbuf, mask, prefix)) {
+            snprintf(g_dhcp_error, sizeof(g_dhcp_error),
+                     "connected route for %s/%d is not visible on %s",
+                     ipbuf, prefix, iface);
+            return false;
+        }
+        if (router == 0) {
+            snprintf(g_dhcp_error, sizeof(g_dhcp_error),
+                     "DHCP lease has no router/gateway option");
+            return false;
+        }
+        if (!w2_client_route_install(router, iface)) return false;
+    }
+
+    g_dhcp_lease.valid = true;
+    g_dhcp_lease.updated = true;
+    g_dhcp_lease.route_ok = !getenv("WIFI1B_DHCP_TEST_NOAPPLY");
+    g_dhcp_lease.ip = ip;
+    g_dhcp_lease.server = server_id;
+    g_dhcp_lease.mask = mask;
+    g_dhcp_lease.gateway = router;
+    g_dhcp_lease.prefix = prefix;
+    g_dhcp_lease.lease_s = (int)lease_s;
+    g_dhcp_lease.t1_s = (int)t1_s;
+    g_dhcp_lease.t2_s = (int)t2_s;
+    str_copy(g_dhcp_lease.iface, sizeof(g_dhcp_lease.iface), iface);
+    if (out_ip && ip_n) str_copy(out_ip, ip_n, ipbuf);
+    return true;
+}
+
+static bool w2_dhcp_client_run(w2_dhcp_step_t step, const char *iface_in,
+                               char *out_ip, size_t ip_n)
 {
     const char *iface = iface_in;
     {
@@ -1191,6 +2149,25 @@ static bool w2_dhcp_client(const char *iface_in, char *out_ip, size_t ip_n)
         if (t && *t) iface = t;
     }
     if (out_ip && ip_n) out_ip[0] = 0;
+    if (step == W2_DHCP_ACQUIRE) {
+        /* Re-acquisition replaces only our old exact address/route. */
+        if (!w2_owned_route_cleanup()) {
+            snprintf(g_dhcp_error, sizeof(g_dhcp_error),
+                     "cannot remove previous owned default route");
+            g_dhcp_lease.valid = false;
+            g_dhcp_lease.route_ok = false;
+            g_dhcp_lease.updated = true;
+            return false;
+        }
+        w2_dhcp_remove_own_address(iface);
+        g_dhcp_lease.valid = false;
+        g_dhcp_lease.route_ok = false;
+    } else if (!g_dhcp_lease.valid || g_dhcp_lease.ip == 0) {
+        snprintf(g_dhcp_error, sizeof(g_dhcp_error), "no active lease to renew");
+        return false;
+    }
+    g_dhcp_lease.updated = false;
+
     uint8_t mac[6];
     if (!w2_read_iface_mac(iface, mac)) {
         set_msg("client: cannot read %s MAC", iface);
@@ -1215,36 +2192,31 @@ static bool w2_dhcp_client(const char *iface_in, char *out_ip, size_t ip_n)
         return false;
     }
     fcntl(fd, F_SETFL, O_NONBLOCK);
-
-    /* The vendor sets net.ipv4.conf.all.rp_filter=1.  With no route yet,
-     * the kernel drops the DHCP OFFER before the INPUT chain, so the
-     * firewall rule alone cannot make client mode work.  Relax rp_filter
-     * only for the exchange and restore it afterwards. */
-    char rp_all[16] = "", rp_if[16] = "", rp_path[128] = "";
-    bool rp_saved = false;
-    if (!getenv("WIFI1B_DHCP_TEST_IFACE") && !getenv("WIFI1B_DHCP_TEST_LOOPBACK")) {
-        read_file("/proc/sys/net/ipv4/conf/all/rp_filter", rp_all, sizeof(rp_all));
-        snprintf(rp_path, sizeof(rp_path),
-                 "/proc/sys/net/ipv4/conf/%s/rp_filter", iface);
-        read_file(rp_path, rp_if, sizeof(rp_if));
-        if (rp_all[0])
-            w2_sysctl_write("/proc/sys/net/ipv4/conf/all/rp_filter", "0");
-        if (rp_if[0])
-            w2_sysctl_write(rp_path, "0");
-        rp_saved = true;
+    w2_dhcp_rp_filter_note(iface);
+    int raw_ifindex = 0;
+    int raw_fd = w2_dhcp_raw_open(iface, &raw_ifindex);
+    bool force_raw = getenv("WIFI1B_DHCP_TEST_FORCE_RAW") != NULL;
+    if (raw_fd < 0)
+        log_msg("dhcp client: AF_PACKET fallback unavailable: %s", strerror(errno));
+    else
+        log_msg("dhcp client: AF_PACKET fallback active on %s", iface);
+    if (force_raw && raw_fd < 0) {
+        snprintf(g_dhcp_error, sizeof(g_dhcp_error),
+                 "raw DHCP fallback requested but unavailable");
+        close(fd);
+        return false;
     }
-    bool ok = false;
 
+    bool ok = false;
     struct w2_dhcp_packet req;
-    memset(&req, 0, sizeof(req));
-    req.op = 1;
-    req.htype = 1;
-    req.hlen = 6;
+    uint8_t reply[1500];
+    size_t reply_len = 0;
     unsigned int seed = (unsigned int)(now_ms() ^ getpid());
-    req.xid = (seed * 1103515245u + 12345u) & 0x7fffffffu;
-    memcpy(req.chaddr, mac, 6);
-    req.flags = htons(0x8000);
-    req.options[0] = 99; req.options[1] = 130; req.options[2] = 83; req.options[3] = 99;
+    uint32_t xid = (seed * 1103515245u + 12345u) & 0x7fffffffu;
+    g_dhcp_tx = g_dhcp_rx_offer = g_dhcp_rx_ack = 0;
+    g_dhcp_attempts = 0;
+    g_dhcp_bssid[0] = 0;
+    g_dhcp_error[0] = 0;
 
     struct sockaddr_in to;
     memset(&to, 0, sizeof(to));
@@ -1255,82 +2227,64 @@ static bool w2_dhcp_client(const char *iface_in, char *out_ip, size_t ip_n)
     else
         to.sin_addr.s_addr = htonl(INADDR_BROADCAST);
 
-    size_t off = 4;
-    uint8_t mtype = 1; /* DISCOVER */
-    off += w2_dhcp_put(req.options + off, sizeof(req.options) - off, 53, 1, &mtype);
-    uint8_t prl[] = {1, 3, 6, 15, 28}; /* mask, router, dns, domain, broadcast */
-    off += w2_dhcp_put(req.options + off, sizeof(req.options) - off, 55, sizeof(prl), prl);
-    uint8_t cid[7];
-    cid[0] = 1; /* Ethernet */
-    memcpy(cid + 1, mac, 6);
-    off += w2_dhcp_put(req.options + off, sizeof(req.options) - off, 61, 7, cid);
-    req.options[off++] = 255;
-    size_t reqlen = offsetof(struct w2_dhcp_packet, options) + off;
-
     uint32_t offered = 0, server = 0;
-    g_dhcp_tx = g_dhcp_rx_offer = g_dhcp_rx_ack = 0;
-    g_dhcp_attempts = 0;
-    g_dhcp_bssid[0] = 0;
-    g_dhcp_error[0] = 0;
-
-    /* DISCOVER: retry across roams.  A mesh can move the station to a
-     * different BSSID mid-exchange, so one send + a long wait is fragile. */
-    for (int attempt = 0; attempt < 4 && !offered && !g_stop; attempt++) {
-        g_dhcp_attempts = attempt + 1;
-        w2_read_bssid(g_dhcp_bssid, sizeof(g_dhcp_bssid));
-        if (sendto(fd, &req, reqlen, 0, (struct sockaddr *)&to, sizeof(to)) < 0) {
-            snprintf(g_dhcp_error, sizeof(g_dhcp_error), "sendto: %s", strerror(errno));
-            break;
+    size_t reqlen = 0;
+    if (step == W2_DHCP_ACQUIRE) {
+        reqlen = w2_dhcp_build_client(&req, xid, mac, 1, 0, 0, 0, false);
+        for (int attempt = 0; attempt < 4 && !offered && !g_stop; attempt++) {
+            g_dhcp_attempts = attempt + 1;
+            w2_read_bssid(g_dhcp_bssid, sizeof(g_dhcp_bssid));
+            if (sendto(fd, &req, reqlen, 0, (struct sockaddr *)&to, sizeof(to)) < 0) {
+                snprintf(g_dhcp_error, sizeof(g_dhcp_error), "sendto: %s", strerror(errno));
+                break;
+            }
+            g_dhcp_tx++;
+            int got = w2_dhcp_wait_reply(fd, raw_fd, raw_ifindex, xid, mac,
+                                         reply, sizeof(reply), &reply_len,
+                                         now_ms() + 3000);
+            if (got > 0) {
+                struct w2_dhcp_packet *rep = (struct w2_dhcp_packet *)reply;
+                if (w2_dhcp_reply_identity(rep, reply_len, xid, mac) &&
+                    w2_dhcp_msgtype(rep, reply_len) == 2) {
+                    offered = ntohl(rep->yiaddr);
+                    uint32_t sid = 0;
+                    w2_dhcp_server_id(rep, reply_len, &sid);
+                    server = sid;
+                    g_dhcp_rx_offer++;
+                    char ipbuf[32], srvbuf[32];
+                    w2_ip4_str(offered, ipbuf, sizeof(ipbuf));
+                    w2_ip4_str(server, srvbuf, sizeof(srvbuf));
+                    log_msg("dhcp client: OFFER %s from %s (attempt %d, bssid %s, raw=%d)",
+                            ipbuf, srvbuf, g_dhcp_attempts, g_dhcp_bssid, got == 2);
+                }
+            }
+            if (!offered && !client_associated()) {
+                snprintf(g_dhcp_error, sizeof(g_dhcp_error),
+                         "link lost after DISCOVER attempt %d (bssid %s)",
+                         g_dhcp_attempts, g_dhcp_bssid);
+                break;
+            }
         }
-        g_dhcp_tx++;
-        int64_t deadline = now_ms() + 3000;
-        while (now_ms() < deadline && !g_stop) {
-            struct pollfd pfd = {.fd = fd, .events = POLLIN};
-            if (poll(&pfd, 1, 250) <= 0) continue;
-            uint8_t buf[1500];
-            ssize_t n = recv(fd, buf, sizeof(buf), 0);
-            if (n < (ssize_t)(offsetof(struct w2_dhcp_packet, options) + 4)) continue;
-            struct w2_dhcp_packet *rep = (struct w2_dhcp_packet *)buf;
-            if (rep->xid != req.xid || rep->op != 2) continue;
-            if (w2_dhcp_msgtype(rep, (size_t)n) != 2) continue;
-            offered = ntohl(rep->yiaddr);
-            uint32_t sid = 0;
-            w2_dhcp_server_id(rep, (size_t)n, &sid);
-            server = sid;
-            g_dhcp_rx_offer++;
-            char ipbuf[32], srvbuf[32];
-            w2_ip4_str(offered, ipbuf, sizeof(ipbuf));
-            w2_ip4_str(server, srvbuf, sizeof(srvbuf));
-            log_msg("dhcp client: OFFER %s from %s (attempt %d, bssid %s)",
-                    ipbuf, srvbuf, g_dhcp_attempts, g_dhcp_bssid);
-            break;
+        if (!offered) {
+            if (!g_dhcp_error[0])
+                snprintf(g_dhcp_error, sizeof(g_dhcp_error),
+                         "no OFFER after %d attempts (bssid %s)",
+                         g_dhcp_attempts, g_dhcp_bssid);
+            w2_dhcp_invalidate(iface, true);
+            goto done;
         }
-        if (!offered && !client_associated()) {
-            snprintf(g_dhcp_error, sizeof(g_dhcp_error),
-                     "link lost after DISCOVER attempt %d (bssid %s)",
-                     g_dhcp_attempts, g_dhcp_bssid);
-            break;
-        }
+        reqlen = w2_dhcp_build_client(&req, xid, mac, 3, 0, offered,
+                                      server, server != 0);
+    } else {
+        uint32_t dest = getenv("WIFI1B_DHCP_TEST_LOOPBACK")
+            ? INADDR_LOOPBACK : INADDR_BROADCAST;
+        if (step == W2_DHCP_RENEW && g_dhcp_lease.server)
+            dest = g_dhcp_lease.server;
+        to.sin_addr.s_addr = htonl(dest);
+        /* RENEW/REBIND: ciaddr set, same client ID, no requested-IP option. */
+        reqlen = w2_dhcp_build_client(&req, xid, mac, 3, g_dhcp_lease.ip,
+                                      0, 0, false);
     }
-    if (!offered) {
-        if (!g_dhcp_error[0])
-            snprintf(g_dhcp_error, sizeof(g_dhcp_error),
-                     "no OFFER after %d attempts (bssid %s)",
-                     g_dhcp_attempts, g_dhcp_bssid);
-        goto done;
-    }
-
-    /* REQUEST/ACK: rebuild the packet with the offered address. */
-    off = 4;
-    mtype = 3;
-    off += w2_dhcp_put(req.options + off, sizeof(req.options) - off, 53, 1, &mtype);
-    uint32_t want = htonl(offered);
-    off += w2_dhcp_put(req.options + off, sizeof(req.options) - off, 50, 4, &want);
-    uint32_t sid = htonl(server);
-    off += w2_dhcp_put(req.options + off, sizeof(req.options) - off, 54, 4, &sid);
-    off += w2_dhcp_put(req.options + off, sizeof(req.options) - off, 55, sizeof(prl), prl);
-    req.options[off++] = 255;
-    reqlen = offsetof(struct w2_dhcp_packet, options) + off;
 
     for (int attempt = 0; attempt < 3 && !ok && !g_stop; attempt++) {
         if (sendto(fd, &req, reqlen, 0, (struct sockaddr *)&to, sizeof(to)) < 0) {
@@ -1338,43 +2292,33 @@ static bool w2_dhcp_client(const char *iface_in, char *out_ip, size_t ip_n)
             break;
         }
         g_dhcp_tx++;
-        int64_t deadline = now_ms() + 3000;
-        while (now_ms() < deadline && !g_stop) {
-            struct pollfd pfd = {.fd = fd, .events = POLLIN};
-            if (poll(&pfd, 1, 250) <= 0) continue;
-            uint8_t buf[1500];
-            ssize_t n = recv(fd, buf, sizeof(buf), 0);
-            if (n < (ssize_t)(offsetof(struct w2_dhcp_packet, options) + 4)) continue;
-            struct w2_dhcp_packet *rep = (struct w2_dhcp_packet *)buf;
-            if (rep->xid != req.xid || rep->op != 2) continue;
-            uint8_t t = w2_dhcp_msgtype(rep, (size_t)n);
-            if (t == 5) { /* ACK */
-                uint32_t mask = w2_dhcp_opt_u32(rep, (size_t)n, 1);
-                char ipbuf[32];
-                w2_ip4_str(offered, ipbuf, sizeof(ipbuf));
-                g_dhcp_rx_ack++;
-                log_msg("dhcp client: ACK %s mask=%s (bssid %s)", ipbuf,
-                        mask ? "ok" : "absent", g_dhcp_bssid);
-                if (!getenv("WIFI1B_DHCP_TEST_NOAPPLY")) {
-                    char mb[32];
-                    w2_ip4_str(mask ? mask : 0xffffff00U, mb, sizeof(mb));
-                    w2_ip_command("addr add %s/%s dev %s 2>/dev/null || true", ipbuf, mb, iface);
-                    w2_ip_command("link set %s up", iface);
-                    if (server) {
-                        char srv[32];
-                        w2_ip4_str(server, srv, sizeof(srv));
-                        w2_ip_command("route replace default via %s dev %s 2>/dev/null || true",
-                                      srv, iface);
+        int got = w2_dhcp_wait_reply(fd, raw_fd, raw_ifindex, xid, mac,
+                                     reply, sizeof(reply), &reply_len,
+                                     now_ms() + 3000);
+        if (got > 0) {
+            struct w2_dhcp_packet *rep = (struct w2_dhcp_packet *)reply;
+            if (w2_dhcp_reply_identity(rep, reply_len, xid, mac)) {
+                uint8_t t = w2_dhcp_msgtype(rep, reply_len);
+                if (t == 5) {
+                    g_dhcp_rx_ack++;
+                    uint32_t fallback_ip = step == W2_DHCP_ACQUIRE
+                        ? offered : g_dhcp_lease.ip;
+                    uint32_t fallback_server = step == W2_DHCP_ACQUIRE
+                        ? server : g_dhcp_lease.server;
+                    if (w2_dhcp_apply_ack(rep, reply_len, iface, fallback_ip,
+                                          fallback_server, out_ip, ip_n)) {
+                        ok = true;
+                        break;
                     }
+                    w2_dhcp_invalidate(iface, true);
+                    break;
                 }
-                if (out_ip) str_copy(out_ip, ip_n, ipbuf);
-                ok = true;
-                break;
-            }
-            if (t == 6) { /* NAK */
-                snprintf(g_dhcp_error, sizeof(g_dhcp_error),
-                         "NAK from server (bssid %s)", g_dhcp_bssid);
-                break;
+                if (t == 6) {
+                    snprintf(g_dhcp_error, sizeof(g_dhcp_error),
+                             "NAK from server (bssid %s)", g_dhcp_bssid);
+                    w2_dhcp_invalidate(iface, true);
+                    break;
+                }
             }
         }
         if (!ok && !client_associated()) {
@@ -1387,17 +2331,34 @@ static bool w2_dhcp_client(const char *iface_in, char *out_ip, size_t ip_n)
     if (!ok && !g_dhcp_error[0])
         snprintf(g_dhcp_error, sizeof(g_dhcp_error),
                  "no ACK after 3 attempts (bssid %s)", g_dhcp_bssid);
+    if (!ok && step == W2_DHCP_ACQUIRE)
+        w2_dhcp_invalidate(iface, true);
 
 done:
-    if (rp_saved)
-        w2_rp_filter_restore("/proc/sys/net/ipv4/conf/all/rp_filter",
-                             rp_path, rp_all, rp_if);
+    if (raw_fd >= 0) close(raw_fd);
     close(fd);
     return ok;
 }
 
+static bool w2_dhcp_client(const char *iface_in, char *out_ip, size_t ip_n)
+{
+    return w2_dhcp_client_run(W2_DHCP_ACQUIRE, iface_in, out_ip, ip_n);
+}
+
+static bool w2_dhcp_client_renew(w2_dhcp_step_t step)
+{
+    const char *iface = g_dhcp_lease.iface[0] ? g_dhcp_lease.iface : "wlan0";
+    return w2_dhcp_client_run(step, iface, NULL, 0);
+}
+
 static bool client_disconnect(void)
 {
+    if (!w2_owned_route_cleanup())
+        log_msg("client: owned default route cleanup failed during disconnect");
+    w2_dhcp_remove_own_address("wlan0");
+    g_dhcp_lease.valid = false;
+    g_dhcp_lease.route_ok = false;
+    g_dhcp_lease.updated = true;
     if (wpa_process_alive()) {
         sh("wpa_cli -p " WPA_CTRL_DIR " -i wlan0 disconnect 2>/dev/null");
         sh("wpa_cli -p " WPA_CTRL_DIR " -i wlan0 remove_network all 2>/dev/null");
@@ -1440,6 +2401,18 @@ static bool client_connect(void)
         set_msg("client: WPA key must be 8-63 characters or 64 hexadecimal digits");
         return false;
     }
+    /* A new association must not inherit a stale default route/address. */
+    if (!w2_owned_route_cleanup()) {
+        set_msg("client: previous owned default route could not be removed");
+        g_dhcp_lease.valid = false;
+        g_dhcp_lease.route_ok = false;
+        g_dhcp_lease.updated = true;
+        return false;
+    }
+    w2_dhcp_remove_own_address("wlan0");
+    g_dhcp_lease.valid = false;
+    g_dhcp_lease.route_ok = false;
+    g_dhcp_lease.updated = true;
     if (!ensure_wifi_ready()) return false;
     ap_stop();
     stop_wpa_supplicant();
@@ -1655,6 +2628,30 @@ static void stop_all(void)
     w2_iface_down_clean();
 }
 
+/* Stock USB handoff is a mutation of the OEM WiFi manager. Only do it while
+ * we hold the shared radio reservation, or when the record proves the radio
+ * is idle. A peer-owned wlan0 is never evicted by a main-thread preference
+ * change. */
+static bool carplay_stock_handoff(bool owned)
+{
+    char owner[32] = "";
+
+    if (!owned && radio_record_name(owner, sizeof(owner)) &&
+        strcmp(owner, "wifi1b_daemon")) {
+        log_msg("CarPlay stock handoff deferred: wlan0 reserved by %s", owner);
+        return false;
+    }
+    int unmask_rc = sh("systemctl unmask supplicantmanager.path supplicantmanager.service 2>/dev/null");
+    int start_rc = sh("systemctl start supplicantmanager.path 2>/dev/null");
+    bool ok = start_rc == 0;
+    if (unmask_rc != 0)
+        log_msg("CarPlay stock handoff: supplicantmanager unmask returned %d", unmask_rc);
+    log_msg("CarPlay stock handoff: OEM supplicant manager %s%s",
+            ok ? "restored" : "could not be confirmed",
+            owned ? "" : " (radio idle)");
+    return ok;
+}
+
 static bool apply_mode_work(bool pair)
 {
     /* Stock USB handoff is authoritative: never start the wireless AP. */
@@ -1665,6 +2662,20 @@ static bool apply_mode_work(bool pair)
     bool active = g_cfg.wlan_on && g_cfg.mode != MODE_OFF;
     int ownership = radio_begin("wifi1b_daemon", active);
     if (ownership <= 0) {
+        /* No reservation means no wlan0 mutation. Stock handoff is only safe
+         * when the owner record is empty (or ours, but radio_begin would
+         * then have returned 1). */
+        if (ownership == 0 && !active && g_cfg.carplay_control &&
+            !wpa_process_alive() && !ssh_running() && !dhcpd_running())
+            carplay_stock_handoff(false);
+        if (ownership == 0 && !active) {
+            /* No reservation means no interface mutation, but removing our
+             * exact ledger route is safe and prevents a stale fallback. */
+            (void)w2_owned_route_cleanup();
+            g_dhcp_lease.valid = false;
+            g_dhcp_lease.route_ok = false;
+            g_dhcp_lease.updated = true;
+        }
         set_msg("%s", ownership == 0 ? "WLAN off; radio left untouched" :
                 "Radio busy/reserved; turn the owning WiFi app Off first");
         return ownership == 0;
@@ -1688,9 +2699,16 @@ static bool apply_mode_work(bool pair)
             down = end != flags && !(*trim(end)) && !(value & 1); /* IFF_UP */
         }
         bool off = down && !wpa_process_alive() && !ssh_running() && !dhcpd_running();
+        bool handoff_ok = true;
+        if (off && g_cfg.carplay_control)
+            handoff_ok = carplay_stock_handoff(true);
         intent_write(false);
-        set_msg("%s", off ? "WLAN off" : "WLAN-off cleanup could not be confirmed; recovery will retry");
-        return off && radio_release();
+        set_msg("%s", off ? (g_cfg.carplay_control && !handoff_ok ?
+                             "WLAN off; Stock USB handoff could not be confirmed" :
+                             g_cfg.carplay_control ?
+                             "WLAN off; Stock USB handoff applied" : "WLAN off") :
+                "WLAN-off cleanup could not be confirmed; recovery will retry");
+        return off && handoff_ok && radio_release();
     }
     /* The shared ownership contract above has spoken: a successful begin
      * means the peer is gone or verifiably Off. The legacy status-file peek
@@ -1744,7 +2762,18 @@ static bool apply_mode_work(bool pair)
         restart_vbtd_if_needed(vbt_off);
         return false;
     }
-    bool fw_ok = carplay_fw_open();
+    if (!carplay_fw_open()) {
+        ap_probe_t failed;
+        ap_probe(&failed);
+        ap_evidence("firewall-failed", &failed);
+        ssh_stop();
+        bool vbt_off = false;
+        vbt_set_wireless_carplay(false, &vbt_off);
+        restart_vbtd_if_needed(vbt_off);
+        set_msg("CarPlay AP firewall setup failed; AP not reported ready");
+        ap_stop();
+        return false;
+    }
     bool ie_ok = carplay_ie_on();
     ensure_carplay_services();
     bool vbt_changed = false;
@@ -1764,12 +2793,11 @@ static bool apply_mode_work(bool pair)
         return false;
     }
     set_msg("Wifi1b CarPlay AP running (SSID=%s, %d MHz, DHCP %s/24)%s",
-            p.ssid, channel_to_freq(), WIFI1B_AP_IP,
-            ie_ok ? "" : " - CarPlay IE not set");
+            p.ssid, p.frequency, WIFI1B_AP_IP,
+            ie_ok ? "" : " - CarPlay IE not configured");
     bool services_ok = sh("systemctl is-active --quiet carplay_iAP2.service 2>/dev/null") == 0 &&
                        sh("systemctl is-active --quiet carplay_mdnsd.service 2>/dev/null") == 0;
     if (!services_ok) log_msg("CarPlay AP up, transport services not ready");
-    if (!fw_ok) log_msg("CarPlay AP up, CarPlay firewall rules failed");
     if (!vbt_ok) log_msg("CarPlay AP up, VBT wireless flag not confirmed");
     return true;
 }

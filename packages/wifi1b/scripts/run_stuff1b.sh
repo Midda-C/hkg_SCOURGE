@@ -3,15 +3,16 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # TARGET: Gen5W_L EU 260128
 # WIFI1B_PAYLOAD_REV=1
-# Wifi1b — static wpa_supplicant + own DHCP + SSH, installed beside WiFi.
+# Wifi1b — static wpa_supplicant + own DHCP + SSH, standalone or beside WiFi.
 #
-# Requires the WiFi app's QML to be present (the combo installs it first).
-# It never stops, reconfigures, or removes the WiFi app.  It adds only:
+# Works on the canonical Battery/Tweaks (no-WiFi) layout and beside a WiFi
+# install.  It never reinstalls WiFi, never runs a migration stage, and never
+# stops or removes a WiFi app it does not own.  It adds only:
 #   Wifi1bPage / Wifi1bTile / Wifi1bSwitch / Wifi1bButton
 #   /app/share/AppHomeScreen/wifi1b/*
 #   /rw_data/wifi1b/*
 #   /etc/systemd/system/wifi1b-daemon.service
-#   user wifi1b (key-only SSH)
+#   user wifi1b (UID 0, key-only SSH)
 #
 # It backs up the shared home-screen QML under /rw_data/wifi1b/backup and
 # rolls back on failure.  No firmware/updater/bootloader changes.
@@ -25,6 +26,7 @@ QML_ROOT="${WIFI1B_QML_ROOT:-/app/share/AppHomeScreen}"
 QML_DIR="$QML_ROOT/qml_eco3.0"
 ASSET_DIR="$QML_ROOT/wifi1b"
 RW_DIR="${WIFI1B_RW_DIR:-/rw_data/wifi1b}"
+RUNTIME_ROOT="${WIFI1B_RUNTIME_ROOT:-$(dirname "$RW_DIR")}"
 LOG="$RW_DIR/install.log"
 OUT="$USB_DIR/run_stuff_result.txt"
 SERVICE="${WIFI1B_SERVICE:-/etc/systemd/system/wifi1b-daemon.service}"
@@ -40,6 +42,10 @@ ALL="HomeScreen/Screen_HomeScreen_AllMenus.qml"
 SETUP="HomeScreen/Screen_HomeScreen_Submenu_Setup.qml"
 CUSTOM="component/QCustomizedMenuListAllowEmpty.qml"
 
+if [ -L "$RW_DIR" ]; then
+    printf 'WIFI1B_PAYLOAD\nstatus=FAIL\nerror=runtime directory is a symlink\n' > "$OUT" 2>/dev/null || true
+    exit 1
+fi
 mkdir -p "$RW_DIR" 2>/dev/null
 mkdir -p "$RW_DIR/backup" 2>/dev/null
 mkdir -p "$RW_DIR/bin" 2>/dev/null
@@ -86,8 +92,26 @@ cleanup_ro() {
             fi
         done < "$BACKUP_HU/transaction/files"
         systemctl daemon-reload >> "$LOG" 2>&1 || true
-        [ "${daemon_was_enabled:-0}" = 1 ] || systemctl disable wifi1b-daemon.service >> "$LOG" 2>&1 || true
-        [ "${daemon_was_active:-0}" != 1 ] || systemctl start wifi1b-daemon.service >> "$LOG" 2>&1 || true
+        _svc_existed=0; _svc_enabled=unknown; _svc_active=0
+        if [ -f "$BACKUP_HU/transaction/service.state" ]; then
+            _svc_existed=$(sed -n 's/^existed=//p' "$BACKUP_HU/transaction/service.state" 2>/dev/null)
+            _svc_enabled=$(sed -n 's/^enabled=//p' "$BACKUP_HU/transaction/service.state" 2>/dev/null)
+            _svc_active=$(sed -n 's/^active=//p' "$BACKUP_HU/transaction/service.state" 2>/dev/null)
+        fi
+        if [ "$_svc_existed" = 1 ]; then
+            case "$_svc_enabled" in
+                enabled) systemctl enable wifi1b-daemon.service >> "$LOG" 2>&1 || true ;;
+                disabled|masked) systemctl disable wifi1b-daemon.service >> "$LOG" 2>&1 || true ;;
+            esac
+            if [ "$_svc_active" = 1 ]; then
+                systemctl start wifi1b-daemon.service >> "$LOG" 2>&1 || true
+            else
+                systemctl stop wifi1b-daemon.service >> "$LOG" 2>&1 || true
+            fi
+        else
+            systemctl disable wifi1b-daemon.service >> "$LOG" 2>&1 || true
+            systemctl stop wifi1b-daemon.service >> "$LOG" 2>&1 || true
+        fi
     fi
     [ -z "${PATCH_WORK:-}" ] || rm -rf "$PATCH_WORK"
     if [ "${IO_ACTIVE:-0}" = 1 ]; then io_restore_root || true; fi
@@ -127,6 +151,9 @@ if ! ( cd "$USB_DIR" && "$MD5SUM_BIN" -c manifest.md5 ) > "$RW_DIR/manifest-chec
 fi
 log "manifest OK"
 . "$PAYLOAD/lib/install_io.sh"
+[ -f "$PAYLOAD/lib/runtime_cleanup.sh" ] || fail "runtime_cleanup.sh missing from payload"
+. "$PAYLOAD/lib/runtime_cleanup.sh"
+RUNTIME_CLEANUP_LOG="$LOG"
 io_init || fail "cannot determine initial root mount state"
 io_capture_qml "$QML_DIR" "$USB_DIR/qml_before" || true
 
@@ -241,37 +268,43 @@ done
 
 daemon_was_active=0
 systemctl is-active --quiet wifi1b-daemon.service 2>/dev/null && daemon_was_active=1
-daemon_was_enabled=0
-systemctl is-enabled --quiet wifi1b-daemon.service 2>/dev/null && daemon_was_enabled=1
+daemon_enabled_state=$(systemctl is-enabled wifi1b-daemon.service 2>/dev/null || true)
+[ -n "$daemon_enabled_state" ] || daemon_enabled_state=unknown
+service_existed=0
+if [ -e "$SERVICE" ] || [ -L "$SERVICE" ]; then service_existed=1; fi
+# Persist the original service transaction: restore must put back a
+# pre-existing file and its enablement/active state, not blindly rm it.
+printf 'existed=%s\nenabled=%s\nactive=%s\n' \
+    "$service_existed" "$daemon_enabled_state" "$daemon_was_active" \
+    > "$BACKUP_HU/transaction/service.state" || fail "cannot record service transaction"
+chmod 600 "$BACKUP_HU/transaction/service.state" 2>/dev/null || true
 if [ "$daemon_was_active" = 1 ]; then
     systemctl stop wifi1b-daemon.service >> "$LOG" 2>&1 || fail "cannot stop Wifi1b daemon safely"
 fi
 transaction_started=1
 
 # ---- reclaim log space --------------------------------------------------
-# Runtime logs are append-only and can fill /rw_data.  Truncate them while
-# the daemon is stopped, remove stale atomic-write temp files, and record
-# what is actually using the partition.
-for _log in daemon.log wpa_supplicant.log ssh.log dhcpd.log; do
-    [ ! -f "$RW_DIR/$_log" ] || : > "$RW_DIR/$_log" 2>/dev/null || true
-done
-for _tmp in "$RW_DIR"/*.tmp.*; do
-    [ -e "$_tmp" ] || continue
-    rm -f "$_tmp" 2>/dev/null || true
-done
-df -h /rw_data >> "$LOG" 2>&1 || true
-du -xk /rw_data 2>/dev/null | sort -n | tail -20 >> "$LOG" 2>&1 || true
-
-# The standalone layout has no WiFi app.  Remove its runtime leftovers
-# (daemon, dropbear, config, keys, backups) only when the WiFi QML is
-# absent, so a still-installed app is untouched.
-WIFI_RW_DIR="${WIFI1B_WIFI_RW_DIR:-$(dirname "$RW_DIR")/wifi}"
-if [ ! -e "$QML_DIR/HomeScreen/WifiPage.qml" ] && \
-   [ ! -e /etc/systemd/system/wifi-daemon.service ] && \
-   ! grep -q 'WIFI_PAYLOAD_260128' "$QML_DIR/HomeScreen/QHMI_HomeScreenMain_Advanced.qml" 2>/dev/null; then
-    [ ! -d "$WIFI_RW_DIR" ] || rm -rf "$WIFI_RW_DIR" 2>/dev/null || true
+# Bounded logs first (including removed /rw_data/wifi logs); symlinked or
+# foreign paths are refused.  Stale atomic-write temps are removed only when
+# the owned radios are verified stopped and the PID is numeric and dead.
+cleanup_bounded_logs "$RUNTIME_ROOT" || true
+if ! runtime_cleanup_process_alive "$RUNTIME_ROOT" wifi1b wifi1b_daemon &&
+   ! runtime_cleanup_process_alive "$RUNTIME_ROOT" wifi wifi_daemon; then
+    RUNTIME_CLEANUP_RADIOS_STOPPED=1
 fi
-df -h /rw_data >> "$LOG" 2>&1 || true
+cleanup_stale_temps "$RUNTIME_ROOT" || true
+[ -z "$RUNTIME_CLEANUP_NOTES" ] || log "cleanup: $RUNTIME_CLEANUP_NOTES"
+df -h "$RUNTIME_ROOT" >> "$LOG" 2>&1 || true
+du -xk "$RUNTIME_ROOT" 2>/dev/null | sort -n | tail -20 >> "$LOG" 2>&1 || true
+
+# Removed-WiFi leftovers are deleted only with positive evidence (readable
+# marker absence, no page/service, no live owned process, verified private
+# archive or prior receipt).  This payload ships no WiFi archive, so unknown
+# leftovers are preserved and reported rather than deleted.
+cleanup_removed_wifi "$RUNTIME_ROOT" "$QML_DIR" "${SCOURGE_STICK_DIR:-$USB_DIR}" \
+    "" "" "${CLEANUP_WIFI_SERVICE:-/etc/systemd/system/wifi-daemon.service}" || true
+[ -z "$RUNTIME_CLEANUP_NOTES" ] || log "cleanup: $RUNTIME_CLEANUP_NOTES"
+df -h "$RUNTIME_ROOT" >> "$LOG" 2>&1 || true
 
 # ---- SSH user -----------------------------------------------------------
 add_wifi1b_passwd() {

@@ -15,6 +15,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 
 ROOT = Path(__file__).resolve().parents[1]
 WIFI = ROOT.parent / "wifi"
@@ -260,6 +261,7 @@ class Fixture:
                         USB_DIR=str(self.usb),
                         WIFI1B_RW_DIR=str(self.rw2),
                         WIFI1B_QML_ROOT=str(self.qml.parent),
+                        CLEANUP_PROC_ROOT=str(self.root / "proc"),
                         WIFI1B_SERVICE=str(self.root / "etc/systemd/system/wifi1b-daemon.service"))
         state = {"active": {}, "enabled": {"wifi-daemon.service": "enabled"},
                  "home_pid": 1000, "serial": 1000}
@@ -286,9 +288,51 @@ class Fixture:
         return report
 
     def kill_manual_daemon(self):
-        """Stop a stub daemon started by the manual-fallback path."""
-        subprocess.run(["pkill", "-f", "wifi1b_daemon --port 8093"],
-                        capture_output=True, text=True)
+        """Stop fixture-owned stub daemons by exact executable path.
+
+        Deliberately no host-wide pkill: only PIDs whose /proc/<pid>/exe
+        resolves to this fixture's private daemon copy are signalled, and
+        only their own process group is terminated.
+        """
+        wanted = str((self.rw2 / "wifi1b_daemon").resolve())
+        own_group = os.getpgrp()
+        for proc in Path("/proc").iterdir():
+            if not proc.name.isdigit():
+                continue
+            try:
+                exe = os.readlink(proc / "exe")
+            except OSError:
+                continue
+            if exe not in (wanted, wanted + " (deleted)"):
+                continue
+            pid = int(proc.name)
+            if pid == os.getpid():
+                continue
+            try:
+                pgid = os.getpgid(pid)
+            except OSError:
+                pgid = pid
+            try:
+                if pgid != own_group and pgid == pid:
+                    os.killpg(pgid, 15)
+                else:
+                    os.kill(pid, 15)
+            except OSError:
+                pass
+            deadline = time.time() + 5
+            while time.time() < deadline:
+                if not proc.exists():
+                    break
+                try:
+                    os.kill(pid, 0)
+                except OSError:
+                    break
+                time.sleep(0.05)
+            else:
+                try:
+                    os.kill(pid, 9)
+                except OSError:
+                    pass
 
     def manifest(self):
         lines = []
@@ -429,8 +473,13 @@ def exercise_standalone() -> None:
     """Wifi1b must install and restore with no WiFi app present at all."""
     with tempfile.TemporaryDirectory(prefix="wifi1b-standalone-", dir="/tmp/opencode") as directory:
         fixture = Fixture(Path(directory), standalone=True)
+        # Owner key material must survive install and restore even though the
+        # payload ships no key at the stick root.
+        (fixture.rw2 / "ssh").mkdir(parents=True, exist_ok=True)
+        (fixture.rw2 / "ssh/authorized_keys").write_text("owner-key\n")
         report = fixture.run(fixture.install)
         assert "status=OK" in report or "status=REBOOT_REQUIRED" in report, report
+        assert (fixture.rw2 / "ssh/authorized_keys").read_text() == "owner-key\n"
         assert "layout=standalone" in report, report
         adv = (fixture.qml / "HomeScreen/QHMI_HomeScreenMain_Advanced.qml").read_text()
         assert "WIFI1B_PAYLOAD_260128" in adv and "TWEAKS_PAYLOAD_260128" in adv
@@ -454,10 +503,59 @@ def exercise_standalone() -> None:
         for name in ("HomeScreen/Wifi1bPage.qml", "component/Wifi1bTile.qml"):
             assert not (fixture.qml / name).exists(), name
         assert not (fixture.root / "etc/systemd/system/wifi1b-daemon.service").exists()
+        assert (fixture.rw2 / "ssh/authorized_keys").read_text() == "owner-key\n"
 
 
 exercise_standalone()
 print("PASS: Wifi1b installs and restores standalone (no WiFi app), anchored on Tweaks/Battery/Reboot")
+
+
+def exercise_service_restore() -> None:
+    """A pre-existing service file and enablement are restored from the
+    install transaction; a foreign-modified service is never removed."""
+    original = b"# owner service\n[Service]\nExecStart=/bin/true\n"
+    for enabled in ("enabled", "disabled"):
+        with tempfile.TemporaryDirectory(prefix="wifi1b-svc-", dir="/tmp/opencode") as directory:
+            fixture = Fixture(Path(directory), tweaks=True)
+            service = fixture.root / "etc/systemd/system/wifi1b-daemon.service"
+            service.write_bytes(original)
+            statefile = fixture.root / "state.json"
+            state = json.loads(statefile.read_text())
+            state["enabled"]["wifi1b-daemon.service"] = enabled
+            state["active"]["wifi1b-daemon.service"] = False
+            statefile.write_text(json.dumps(state))
+            report = fixture.run(fixture.install)
+            assert "status=OK" in report or "status=REBOOT_REQUIRED" in report, report
+            assert service.read_bytes() != original, "install should have staged its own unit"
+            report = fixture.run(fixture.restore)
+            assert "status=OK" in report or "status=REBOOT_REQUIRED" in report, report
+            assert service.read_bytes() == original, "pre-existing service bytes not restored"
+            state = json.loads(statefile.read_text())
+            assert state["enabled"]["wifi1b-daemon.service"] == enabled, state
+    with tempfile.TemporaryDirectory(prefix="wifi1b-svc-foreign-", dir="/tmp/opencode") as directory:
+        fixture = Fixture(Path(directory), tweaks=True)
+        report = fixture.run(fixture.install)
+        assert "status=OK" in report or "status=REBOOT_REQUIRED" in report, report
+        service = fixture.root / "etc/systemd/system/wifi1b-daemon.service"
+        foreign = b"# owner changed this after install\n[Service]\nExecStart=/bin/true\n"
+        service.write_bytes(foreign)
+        statefile = fixture.root / "state.json"
+        state = json.loads(statefile.read_text())
+        state["enabled"]["wifi1b-daemon.service"] = "enabled"
+        statefile.write_text(json.dumps(state))
+        report = fixture.run(fixture.restore)
+        assert "status=OK" in report or "status=REBOOT_REQUIRED" in report, report
+        assert service.read_bytes() == foreign, "foreign-modified service was overwritten/removed"
+        state = json.loads(statefile.read_text())
+        assert state["enabled"]["wifi1b-daemon.service"] == "enabled", (
+            state,
+            (fixture.rw2 / "backup/latest/transaction/service.state").read_text(),
+            (fixture.rw2 / "restore.log").read_text())
+
+
+exercise_service_restore()
+print("PASS: pre-existing service bytes and enabled/disabled state restored; foreign-modified service preserved")
+
 for prior in ('identical', 'unknown'):
     with tempfile.TemporaryDirectory(prefix='wifi1b-mdns-', dir='/tmp/opencode') as directory:
         fixture = Fixture(Path(directory), tweaks=True)

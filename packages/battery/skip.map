@@ -5,11 +5,16 @@
 #   ?prefix  = only check when the destination directory exists (installer
 #              would skip the file there too)
 #   !prefix  = the absolute path must exist
+#   *prefix  = only check when no other selected stage ships this destination
+#              (the final stage owns the installed-state check)
 # Shared home-screen QML is covered by the recorded final-QML digest, not here.
-# BatteryTile.qml is excluded: the WiFi stage installs the last copy.
+# BatteryTile.qml: the WiFi stage installs its own variant after Battery, so
+# in a WiFi-bearing combo the WiFi map owns the final check.  A standalone
+# (no-WiFi) build has no WiFi stage, so Battery must verify its own copy here.
 payload/bin/battery_daemon|/rw_data/battery/battery_daemon
 payload/systemd/battery-daemon.service|/etc/systemd/system/battery-daemon.service
 payload/qml/AppHomeScreen/qml_eco3.0/HomeScreen/BatteryPage.qml|/app/share/AppHomeScreen/qml_eco3.0/HomeScreen/BatteryPage.qml
 payload/qml/AppHomeScreen/qml_eco3.0/component/BatterySwitch.qml|/app/share/AppHomeScreen/qml_eco3.0/component/BatterySwitch.qml
+*payload/qml/AppHomeScreen/qml_eco3.0/component/BatteryTile.qml|/app/share/AppHomeScreen/qml_eco3.0/component/BatteryTile.qml
 payload/assets/battery/battery_icon_n.png|/app/share/AppHomeScreen/battery/battery_icon_n.png
 payload/assets/battery/battery_icon_d.png|/app/share/AppHomeScreen/battery/battery_icon_d.png

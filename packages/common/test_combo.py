@@ -34,6 +34,7 @@ with tempfile.TemporaryDirectory(prefix="combo-regression-", dir="/tmp/opencode"
     (packages / "common").mkdir()
     shutil.copyfile(PACKAGES / "common/check_layout.py", packages / "common/check_layout.py")
     shutil.copyfile(PACKAGES / "common/install_io.sh", packages / "common/install_io.sh")
+    shutil.copyfile(PACKAGES / "common/runtime_cleanup.sh", packages / "common/runtime_cleanup.sh")
     bin_dir = root / "bin"
     bin_dir.mkdir()
     for name in ("sleep", "chsmack", "chown", "sync"):
@@ -124,11 +125,20 @@ exit 0
             for p in sorted((out / "payload").rglob("*")) if p.is_file()))
     tree = root / "tree"
     tree.mkdir()
+    (root / "proc").mkdir()
+    (root / "run/wifi1b").mkdir(parents=True)
+    (root / "run/wifi").mkdir(parents=True)
+    (root / "etc/systemd/system").mkdir(parents=True)
     env = dict(os.environ, SCOURGE_SKIP_BUILD="1", COMBO_RW_DIR=str(root / "runtime/combo"),
                COMBO_RUNTIME_ROOT=str(root / "runtime"), COMBO_PATH=str(bin_dir) + ":/usr/bin:/bin",
                BEEPS=str(root / "beeps"), ORDER=str(root / "order"),
                ACTIVE_UNITS=str(active_units), TEST_QML_DIR=str(qml_dir),
                COMBO_QML_DIR=str(qml_dir), COMBO_LEDGER_DIR=str(ledger),
+               COMBO_RUN_DIR=str(root / "run"),
+               WIFI1B_SERVICE=str(root / "etc/systemd/system/wifi1b-daemon.service"),
+               WIFI_SERVICE=str(root / "etc/systemd/system/wifi-daemon.service"),
+               CLEANUP_WIFI_SERVICE=str(root / "etc/systemd/system/wifi-daemon.service"),
+               CLEANUP_PROC_ROOT=str(root / "proc"),
                md5sum=shutil.which("md5sum") or "md5sum")
     subprocess.run(["sh", str(packages / "compose.sh"), str(tree), "wifi1b,tweaks,wifi,battery"], env=env, check=True, capture_output=True)
     (tree / "wifi.txt").write_text("ssid=Fixture\npsk=fixture-key\n")
@@ -139,8 +149,17 @@ exit 0
         for path in tree.iterdir():
             tar.add(path, arcname="./" + path.name)
     digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+    cleanup_source = packages / "common/runtime_cleanup.sh"
+    cleanup_sha = hashlib.sha256(cleanup_source.read_bytes()).hexdigest()
+    helper_text = cleanup_source.read_text()
     wrapper = stick / "run_stuff.sh"
-    wrapper.write_text((PACKAGES / "flat_wrapper.sh").read_text().replace("@TARBALL_SHA256@", digest))
+    wrapper.write_text((PACKAGES / "flat_wrapper.sh").read_text()
+                       .replace("@TARBALL_SHA256@", digest)
+                       .replace("@RUNTIME_CLEANUP_SHA256@", cleanup_sha)
+                       .replace("# @RUNTIME_CLEANUP_SHELL@", helper_text))
+    assert "@RUNTIME_CLEANUP_SHELL@" not in wrapper.read_text()
+    assert f'RUNTIME_CLEANUP_DIGEST="{cleanup_sha}"' in wrapper.read_text()
+    assert not (stick / "runtime_cleanup.sh").exists()
     env["USB_DIR"] = str(stick)
     (root / 'runtime/battery').mkdir()
     (root / 'runtime/battery/result.txt').write_text('status=FAIL\nerror=historical\n')
@@ -208,7 +227,11 @@ exit 0
         for path in tree.iterdir():
             tar.add(path, arcname="./" + path.name)
     digest = hashlib.sha256(archive.read_bytes()).hexdigest()
-    wrapper.write_text((PACKAGES / "flat_wrapper.sh").read_text().replace("@TARBALL_SHA256@", digest))
+    wrapper.write_text((PACKAGES / "flat_wrapper.sh").read_text()
+                       .replace("@TARBALL_SHA256@", digest)
+                       .replace("@RUNTIME_CLEANUP_SHA256@", cleanup_sha)
+                       .replace("# @RUNTIME_CLEANUP_SHELL@", helper_text))
+    assert "@RUNTIME_CLEANUP_SHELL@" not in wrapper.read_text()
     assert run().returncode == 0
     tail = order()[-3:]
     assert tail[0].startswith("wifi:install"), tail
