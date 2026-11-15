@@ -88,8 +88,9 @@ VM-validated (vendor kernel):
   policy or HTTP FUMO update
 - dmengine FUMO HTTP exchange (`dmengine-fumo-http`): OEM command 0/field1=1
   starts `dmc_startFumoSession`; the engine POSTs WBXML SyncML to a loopback
-  mock endpoint. The mock returns an empty 200, so this is an exchange
-  attempt, not update completion
+  mock endpoint, which returns a minimal WBXML response with Status 200 and
+  Final. The engine completes the session handshake (state 1, lastError 0)
+  without performing an update
 - device-model regression (`device-model`): asserts Q35 host bridge, SDHCI
   root, ICH9 LPC/SATA and no virtio; substrate only, not captured BXT hardware
 - AppDMClient fota callback (`dmclient-fota-events`): `/fotaInterface`

@@ -868,12 +868,18 @@ records the request:
 MOCK_DM_REQUEST method=POST path=/dm/message
   content_type=application/vnd.syncml.dm+wbxml content_length=907
   body_prefix=02a4016a1d2d2f2f53594e434d4c...
+MOCK_DM_RESPONSE status=200 syncml=1 session=4D bytes=234
 ```
 
-The mock returns an empty 200, so dmengine aborts the session with 0x6303.
-This proves the real client-side exchange (session trigger, loopback HTTP,
-WBXML SyncML POST and no production address), not a completed update. A real
-run passes all six checks.
+The mock replies with a minimal **WBXML** SyncML DM response: `Status` 200 for
+the Alert/Replace commands and a `Final` element. The engine parses three
+statuses (debug: `cmdType=STATUS ... resultCode=0200`), finishes setup with
+`result=0x600a`, and reports `SCOMO_Plugin_onSessionStateChange
+inType=[1], inState=[1], inLastError=[0]` with no `DM session aborted`.
+
+This is a completed DM session handshake, not an update: the mock performs no
+management operations and the scenario makes no update-success claim. A real
+run passes all eight checks.
 
 ## dmengine startup (Mode C)
 

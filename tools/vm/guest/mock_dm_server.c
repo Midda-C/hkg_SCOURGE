@@ -7,9 +7,12 @@
  *
  * Listens on 127.0.0.1, accepts one request at a time, and logs a structured
  * summary of the request (method, path, content type, length and a short body
- * prefix) without printing the full WBXML body. The response is an empty 200,
- * which is enough to prove the client attempted a real DM exchange; it is not
- * a valid SyncML response and no update-success claim is made.
+ * prefix). For WBXML DM requests it extracts the SessionID, MsgID, target URL
+ * and IMEI, then returns a minimal WBXML SyncML DM response with Status entries
+ * for the captured Alert/Replace commands and a Final element.
+ *
+ * The response is a lab fixture: it acknowledges the client's initial commands
+ * but performs no management operations and makes no update-success claim.
  */
 #define _GNU_SOURCE
 #include <arpa/inet.h>
@@ -26,6 +29,41 @@
 
 #define MAX_REQUEST (1024 * 1024)
 #define BODY_PREFIX 24
+#define MAX_STRINGS 32
+#define MAX_STRING 256
+#define MAX_RESPONSE (16 * 1024)
+
+#define TOKEN_SYNCML 0x6d
+#define TOKEN_SYNCHDR 0x6c
+#define TOKEN_VERDTD 0x71
+#define TOKEN_VERPROTO 0x72
+#define TOKEN_SESSIONID 0x65
+#define TOKEN_MSGID 0x5b
+#define TOKEN_TARGET 0x6e
+#define TOKEN_LOCURI 0x57
+#define TOKEN_SOURCE 0x67
+#define TOKEN_SYNCBODY 0x6b
+#define TOKEN_STATUS 0x69
+#define TOKEN_CMDID 0x4b
+#define TOKEN_MSGREF 0x5c
+#define TOKEN_CMDREF 0x4c
+#define TOKEN_CMD 0x4a
+#define TOKEN_DATA 0x4f
+#define TOKEN_FINAL 0x12
+#define WBXML_END 0x01
+#define WBXML_STRING 0x03
+#define WBXML_OPAQUE 0xc3
+
+struct wbxml_string {
+    size_t offset;
+    size_t length;
+    char value[MAX_STRING];
+};
+
+struct buffer {
+    unsigned char data[MAX_RESPONSE];
+    size_t length;
+};
 
 static volatile sig_atomic_t running = 1;
 
@@ -77,6 +115,195 @@ static void header_value(const char *buffer, const char *name,
     out[used] = '\0';
 }
 
+static int collect_wbxml_strings(const unsigned char *body, size_t length,
+                                 struct wbxml_string *strings, int max)
+{
+    int count = 0;
+    size_t index = 0;
+    while (index + 2 < length && count < max) {
+        if (body[index] == 0xC3) {
+            size_t string_length = body[index + 1];
+            if (string_length > 0 && string_length < MAX_STRING
+                && index + 2 + string_length <= length) {
+                strings[count].offset = index;
+                strings[count].length = string_length;
+                memcpy(strings[count].value, body + index + 2, string_length);
+                strings[count].value[string_length] = '\0';
+                count++;
+                index += 2 + string_length;
+                continue;
+            }
+        }
+        index++;
+    }
+    return count;
+}
+
+static const char *find_string(const struct wbxml_string *strings, int count,
+                               const char *prefix)
+{
+    for (int index = 0; index < count; index++) {
+        if (strncmp(strings[index].value, prefix, strlen(prefix)) == 0)
+            return strings[index].value;
+    }
+    return NULL;
+}
+
+static int find_msgid(const unsigned char *body, size_t length, size_t after,
+                      char *out, size_t out_size)
+{
+    for (size_t index = after; index + 2 < length; index++) {
+        if (body[index] != 0x5B)
+            continue;
+        size_t cursor = index + 1;
+        if (cursor < length && body[cursor] == 0x01)
+            cursor++;
+        if (cursor + 1 < length && body[cursor] == 0x03) {
+            size_t string_length = body[cursor + 1];
+            if (string_length > 0 && string_length + 1 < out_size
+                && cursor + 2 + string_length <= length) {
+                memcpy(out, body + cursor + 2, string_length);
+                out[string_length] = '\0';
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+static void put_byte(struct buffer *buffer, unsigned char value)
+{
+    if (buffer->length < sizeof(buffer->data))
+        buffer->data[buffer->length++] = value;
+}
+
+static void put_string(struct buffer *buffer, const char *value)
+{
+    put_byte(buffer, WBXML_STRING);
+    for (const char *cursor = value; *cursor; cursor++)
+        put_byte(buffer, (unsigned char)*cursor);
+    put_byte(buffer, 0x00);
+}
+
+static void put_opaque(struct buffer *buffer, const char *value)
+{
+    size_t length = strlen(value);
+    if (length > 0x7f)
+        return;
+    put_byte(buffer, WBXML_OPAQUE);
+    put_byte(buffer, (unsigned char)length);
+    for (size_t index = 0; index < length; index++)
+        put_byte(buffer, (unsigned char)value[index]);
+}
+
+static void put_status(struct buffer *buffer, const char *cmdid,
+                       const char *cmdref, const char *command)
+{
+    put_byte(buffer, TOKEN_STATUS);
+    put_byte(buffer, TOKEN_CMDID);
+    put_string(buffer, cmdid);
+    put_byte(buffer, WBXML_END);
+    put_byte(buffer, TOKEN_MSGREF);
+    put_string(buffer, "1");
+    put_byte(buffer, WBXML_END);
+    put_byte(buffer, TOKEN_CMDREF);
+    put_string(buffer, cmdref);
+    put_byte(buffer, WBXML_END);
+    put_byte(buffer, TOKEN_CMD);
+    put_string(buffer, command);
+    put_byte(buffer, WBXML_END);
+    put_byte(buffer, TOKEN_DATA);
+    put_string(buffer, "200");
+    put_byte(buffer, WBXML_END);
+    put_byte(buffer, WBXML_END);
+}
+
+static int build_response(const unsigned char *body, size_t length,
+                          unsigned char *output, size_t capacity,
+                          char *session, size_t session_size)
+{
+    static const char string_table[] = "-//SYNCML//DTD SyncML 1.2//EN";
+    struct wbxml_string strings[MAX_STRINGS];
+    struct buffer buffer;
+    int count = collect_wbxml_strings(body, length, strings, MAX_STRINGS);
+    const char *url = find_string(strings, count, "http");
+    const char *imei = find_string(strings, count, "IMEI:");
+    char msgid[32] = "1";
+    size_t session_offset;
+    if (count == 0)
+        return 0;
+    const char *sid = strings[0].value;
+    session_offset = strings[0].offset;
+    if (sid[0] == '\0')
+        return 0;
+    if (url == NULL)
+        url = "http://127.0.0.1:8002/dm/message";
+    if (imei == NULL)
+        imei = "IMEI:LAB000000000000";
+    find_msgid(body, length, session_offset, msgid, sizeof(msgid));
+    if (strlen(sid) >= session_size)
+        return 0;
+    memcpy(session, sid, strlen(sid) + 1);
+    if (capacity < 5 + sizeof(string_table) + 512)
+        return 0;
+    buffer.length = 0;
+    put_byte(&buffer, 0x02);            /* WBXML 1.2 */
+    put_byte(&buffer, 0xa4);            /* SyncML 1.2 public ID */
+    put_byte(&buffer, 0x01);
+    put_byte(&buffer, 0x6a);            /* UTF-8 */
+    put_byte(&buffer, (unsigned char)(sizeof(string_table) - 1));
+    for (size_t index = 0; index + 1 < sizeof(string_table); index++)
+        put_byte(&buffer, (unsigned char)string_table[index]);
+
+    put_byte(&buffer, TOKEN_SYNCML);
+    put_byte(&buffer, TOKEN_SYNCHDR);
+    put_byte(&buffer, TOKEN_VERDTD);
+    put_string(&buffer, "1.2");
+    put_byte(&buffer, WBXML_END);
+    put_byte(&buffer, TOKEN_VERPROTO);
+    put_string(&buffer, "DM/1.2");
+    put_byte(&buffer, WBXML_END);
+    put_byte(&buffer, TOKEN_SESSIONID);
+    put_opaque(&buffer, sid);
+    put_byte(&buffer, WBXML_END);
+    put_byte(&buffer, TOKEN_MSGID);
+    put_string(&buffer, "2");
+    put_byte(&buffer, WBXML_END);
+    put_byte(&buffer, TOKEN_TARGET);
+    put_byte(&buffer, TOKEN_LOCURI);
+    put_opaque(&buffer, imei);
+    put_byte(&buffer, WBXML_END);
+    put_byte(&buffer, WBXML_END);
+    put_byte(&buffer, TOKEN_SOURCE);
+    put_byte(&buffer, TOKEN_LOCURI);
+    put_opaque(&buffer, url);
+    put_byte(&buffer, WBXML_END);
+    put_byte(&buffer, WBXML_END);
+    put_byte(&buffer, WBXML_END);       /* SyncHdr */
+    put_byte(&buffer, TOKEN_SYNCBODY);
+    put_status(&buffer, "1", "1", "Alert");
+    put_status(&buffer, "2", "2", "Replace");
+    put_status(&buffer, "3", "3", "Alert");
+    put_byte(&buffer, TOKEN_FINAL);
+    put_byte(&buffer, WBXML_END);       /* SyncBody */
+    put_byte(&buffer, WBXML_END);       /* SyncML */
+    if (buffer.length > capacity)
+        return 0;
+    memcpy(output, buffer.data, buffer.length);
+    return (int)buffer.length;
+}
+
+static void send_all(int fd, const unsigned char *data, size_t length)
+{
+    size_t sent = 0;
+    while (sent < length) {
+        ssize_t written = write(fd, data + sent, length - sent);
+        if (written <= 0)
+            break;
+        sent += (size_t)written;
+    }
+}
+
 int main(int argc, char **argv)
 {
     int port = argc > 1 ? atoi(argv[1]) : 8002;
@@ -117,11 +344,6 @@ int main(int argc, char **argv)
         unsigned char *request = malloc(MAX_REQUEST);
         size_t body_offset = 0;
         size_t content_length = 0;
-        static const char response[] =
-            "HTTP/1.1 200 OK\r\n"
-            "Content-Type: application/vnd.syncml.dm+xml\r\n"
-            "Content-Length: 0\r\n"
-            "Connection: close\r\n\r\n";
         if (client < 0)
             continue;
         if (request == NULL) {
@@ -134,6 +356,9 @@ int main(int argc, char **argv)
         char path[256];
         char content_type[128];
         char prefix[BODY_PREFIX * 3 + 1];
+        char session[64] = "";
+        unsigned char response[MAX_RESPONSE];
+        int response_body = 0;
         size_t prefix_len = 0;
         header_value((char *)request, "Content-Type:", content_type,
                      sizeof(content_type));
@@ -165,16 +390,44 @@ int main(int argc, char **argv)
                                            "%02x", request[body_offset + index]);
         }
         prefix[prefix_len] = '\0';
+        if ((size_t)used > body_offset) {
+            response_body = build_response(
+                request + body_offset, (size_t)used - body_offset,
+                response, sizeof(response), session, sizeof(session));
+        }
         fprintf(log,
                 "MOCK_DM_REQUEST method=%s path=%s content_type=%s "
                 "content_length=%zu body_prefix=%s\n",
                 method, path, content_type, content_length, prefix);
+        if (response_body > 0) {
+            char header[256];
+            int header_length = snprintf(
+                header, sizeof(header),
+                "HTTP/1.1 200 OK\r\n"
+                "Content-Type: application/vnd.syncml.dm+wbxml\r\n"
+                "Content-Length: %d\r\n"
+                "Connection: close\r\n\r\n", response_body);
+            send_all(client, (const unsigned char *)header,
+                     (size_t)header_length);
+            send_all(client, response, (size_t)response_body);
+            fprintf(log,
+                    "MOCK_DM_RESPONSE status=200 syncml=1 session=%s "
+                    "bytes=%d\n", session, response_body);
+        } else {
+            static const char empty_response[] =
+                "HTTP/1.1 200 OK\r\n"
+                "Content-Type: application/vnd.syncml.dm+wbxml\r\n"
+                "Content-Length: 0\r\n"
+                "Connection: close\r\n\r\n";
+            send_all(client, (const unsigned char *)empty_response,
+                     sizeof(empty_response) - 1);
+            fprintf(log, "MOCK_DM_RESPONSE status=200 syncml=0\n");
+        }
         fflush(log);
-        write(client, response, sizeof(response) - 1);
         close(client);
         free(request);
         requests++;
-        fprintf(log, "MOCK_DM_RESPONSE status=200 requests=%d\n", requests);
+        fprintf(log, "MOCK_DM_RESPONSE_DONE requests=%d\n", requests);
         fflush(log);
     }
     fclose(log);

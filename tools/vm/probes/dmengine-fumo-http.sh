@@ -11,6 +11,9 @@
 # empty 200, so this proves the client attempt, not a completed update.
 set -u
 export PATH=/bin:/sbin:/usr/bin:/usr/sbin
+OEM_PID=
+DM_PID=
+SERVER_PID=
 LOG=/log_data/AppUpgrade/fota/vdm.log
 
 fail() {
@@ -61,11 +64,13 @@ sed -i \
     -e 's#^is_MOFClient_used=.*#is_MOFClient_used=false#' \
     -e 's#^dmtreefile=.*#dmtreefile=tree.xml#' \
     -e 's#^MOFServer_host_name=.*#MOFServer_host_name=127.0.0.1#' \
+    -e '$awbxml=false' \
     /tmp/lab-dm-config.txt || fail 'fumo-config-edit'
 sed -e '/<name>Addr<\/name>/,/<value>/ s#<value>.*</value>#<value>http://127.0.0.1:8002/dm/message</value>#' \
     -e '/<name>AAuthSecret<\/name>/,/<value>/ s#<value>.*</value>#<value>lab-secret</value>#' \
     -e '/<name>AAuthName<\/name>/,/<value>/ s#<value>.*</value>#<value>lab</value>#' \
     -e '/<name>PkgURL<\/name>/,/<value>/ s#<value>.*</value>#<value>http://127.0.0.1:8002/package.bin</value>#' \
+    -e '/<name>MinServerAuth<\/name>/,/<value>/ s#<value>.*</value>#<value>none</value>#' \
     /app/share/dmengine/tree.xml > /tmp/lab-tree.xml || fail 'fumo-tree-edit'
 cp /tmp/lab-tree.xml /update/fota/dme/tree.xml || fail 'fumo-tree-copy'
 cp /app/share/dmengine/version.txt /update/fota/dme/version.txt 2>/dev/null
@@ -84,9 +89,11 @@ fi
 : > /tmp/mock-dm.log
 /tmp/mock-dm 8002 /tmp/mock-dm.log >/tmp/mock-dm.out 2>&1 &
 SERVER_PID=$!
-for _ in $(seq 1 20); do
+server_wait=0
+while [ "$server_wait" -lt 20 ]; do
     grep -q 'MOCK_DM_READY' /tmp/mock-dm.out 2>/dev/null && break
-    sleep 0.5
+    sleep 1
+    server_wait=$((server_wait + 1))
 done
 grep -q 'MOCK_DM_READY' /tmp/mock-dm.out || fail 'fumo-server-ready'
 
@@ -96,30 +103,39 @@ DBUS_ADDR=$(cat /tmp/dm-session-addr 2>/dev/null)
 [ -n "$DBUS_ADDR" ] || fail 'fumo-session-address'
 export DBUS_SESSION_BUS_ADDRESS="$DBUS_ADDR"
 
-mkdir -p /log_data/AppUpgrade/fota || fail 'fumo-log-dir'
-[ -f "$LOG" ] || : > "$LOG" || fail 'fumo-log-file'
-LOG_MARK=$(wc -c < "$LOG" 2>/dev/null || echo 0)
+# dmengine's DLT logger waits for a daemon; phase4 starts one for the same
+# reason.
+/usr/bin/dlt-daemon -d >/tmp/dlt.err 2>&1 || true
+sleep 1
+
 cd /app/share/dmengine || fail 'fumo-cwd'
 /app/bin/dmengine config=/tmp/lab-dm-config.txt >/tmp/dmengine-fumo.out 2>&1 &
 DM_PID=$!
-for _ in $(seq 1 60); do
-    grep -q 'DevID len' /tmp/dmengine-fumo.out 2>/dev/null && break
-    kill -0 "$DM_PID" 2>/dev/null || break
-    sleep 0.5
+echo "DMENGINE_PID $DM_PID"
+engine_wait=0
+while [ "$engine_wait" -lt 90 ]; do
+    dbus-send --session --print-reply --dest=org.freedesktop.DBus / \
+        org.freedesktop.DBus.ListNames >/tmp/fumo-names.out 2>/dev/null || true
+    grep -q 'com.lge.hkmc.avn.upgrade.fota.mofInterface' /tmp/fumo-names.out 2>/dev/null && break
+    sleep 1
+    engine_wait=$((engine_wait + 1))
 done
-grep -q 'DevID len' /tmp/dmengine-fumo.out || {
+if ! grep -q 'com.lge.hkmc.avn.upgrade.fota.mofInterface' /tmp/fumo-names.out 2>/dev/null; then
     tail -40 /tmp/dmengine-fumo.out
     fail 'fumo-ready'
-}
+fi
+sleep 5
 echo 'HARNESS_CHECK fumo-ready PASS'
+LOG_MARK=$(wc -c < "$LOG" 2>/dev/null || echo 0)
 
 /tmp/mock-oem 0 /tmp/mock-oem.log 10 1 0 >/tmp/mock-oem.out 2>&1 &
 OEM_PID=$!
 
-for _ in $(seq 1 40); do
+request_wait=0
+while [ "$request_wait" -lt 60 ]; do
     grep -q 'MOCK_DM_REQUEST' /tmp/mock-dm.log 2>/dev/null && break
-    kill -0 "$DM_PID" 2>/dev/null || break
-    sleep 0.5
+    sleep 1
+    request_wait=$((request_wait + 1))
 done
 if ! grep -q 'MOCK_DM_REQUEST method=POST path=/dm/message' /tmp/mock-dm.log 2>/dev/null; then
     tail -40 /tmp/mock-dm.log 2>/dev/null
@@ -127,6 +143,12 @@ if ! grep -q 'MOCK_DM_REQUEST method=POST path=/dm/message' /tmp/mock-dm.log 2>/
     fail 'fumo-http-post'
 fi
 echo 'HARNESS_CHECK fumo-http-post PASS'
+
+if ! grep -q 'MOCK_DM_RESPONSE status=200 syncml=1 session=' /tmp/mock-dm.log; then
+    tail -20 /tmp/mock-dm.log
+    fail 'fumo-response'
+fi
+echo 'HARNESS_CHECK fumo-response PASS'
 
 if ! grep -q 'content_type=application/vnd.syncml.dm+wbxml' /tmp/mock-dm.log; then
     tail -20 /tmp/mock-dm.log
@@ -143,6 +165,7 @@ if ! grep -q 'body_prefix=02' /tmp/mock-dm.log; then
 fi
 echo 'HARNESS_CHECK fumo-syncml PASS'
 
+sleep 3
 tail -c +$((LOG_MARK + 1)) "$LOG" > /tmp/vdm-delta.log 2>/dev/null
 if ! grep -q '\[dmc_startFumoSession\] sesstionType = \[0\]' /tmp/vdm-delta.log \
     || ! grep -q 'Triggering DM session' /tmp/vdm-delta.log \
@@ -152,6 +175,16 @@ if ! grep -q '\[dmc_startFumoSession\] sesstionType = \[0\]' /tmp/vdm-delta.log 
 fi
 echo 'HARNESS_CHECK fumo-trigger PASS'
 
+if ! grep -q 'SCOMO_Plugin_onSessionStateChange inType=\[1\], inState=\[1\], inLastError=\[0\]' /tmp/vdm-delta.log; then
+    grep -aE 'Session State Notify|onSessionStateChange|DM session aborted|lastError' /tmp/vdm-delta.log | tail -20
+    fail 'fumo-session-complete'
+fi
+if grep -q 'DM session aborted' /tmp/vdm-delta.log; then
+    grep -aE 'DM session aborted|lastError' /tmp/vdm-delta.log | tail -10
+    fail 'fumo-session-aborted'
+fi
+echo 'HARNESS_CHECK fumo-session-complete PASS'
+
 if grep -q '210.183.168.13' /tmp/vdm-delta.log /tmp/mock-dm.log; then
     fail 'fumo-production-log'
 fi
@@ -160,8 +193,8 @@ echo 'HARNESS_CHECK fumo-no-production PASS'
 echo '=== MOCK DM REQUEST ==='
 head -5 /tmp/mock-dm.log 2>/dev/null
 echo '=== VDM TRIGGER ==='
-grep -aE 'dmc_startFumoSession|Triggering DM session|Open connection|Performing HTTP POST' \
-    /tmp/vdm-delta.log 2>/dev/null | head -10
+grep -aE 'dmc_startFumoSession|Triggering DM session|Open connection|Performing HTTP POST|onSessionStateChange' \
+    /tmp/vdm-delta.log 2>/dev/null | head -20
 kill "$DM_PID" "$OEM_PID" "$SERVER_PID" 2>/dev/null || true
 sleep 1
 kill -9 "$DM_PID" "$OEM_PID" "$SERVER_PID" 2>/dev/null || true

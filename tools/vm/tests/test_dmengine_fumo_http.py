@@ -19,9 +19,11 @@ class DmengineFumoHttpTests(unittest.TestCase):
         self.assertEqual(scenario['requires_mode'], 'compat')
         self.assertEqual(set(scenario['checks']),
                          {'fumo-ready', 'fumo-http-post', 'fumo-syncml',
-                          'fumo-trigger', 'fumo-no-production',
+                          'fumo-response', 'fumo-trigger',
+                          'fumo-session-complete', 'fumo-no-production',
                           'dmengine-fumo-http'})
-        self.assertIn('no update completion is claimed',
+        self.assertIn('no update-success claim', scenario['description'])
+        self.assertIn('SCOMO session state 1 with lastError 0',
                       scenario['description'])
 
     def test_command_uses_loopback_and_session_trigger(self) -> None:
@@ -32,8 +34,8 @@ class DmengineFumoHttpTests(unittest.TestCase):
                      'ip link set lo up', '127.0.0.1:8002/dm/message',
                      '/tmp/mock-oem 0', 'content_type=application/vnd.syncml.dm+wbxml',
                      'body_prefix=02', 'Triggering DM session',
-                     'MOCK DM REQUEST', 'VDM TRIGGER',
-                     'fumo-no-production'):
+                     'onSessionStateChange', 'MOCK DM REQUEST',
+                     'VDM TRIGGER', 'fumo-no-production'):
             self.assertIn(text, command)
 
     def test_helper_and_build_wiring(self) -> None:

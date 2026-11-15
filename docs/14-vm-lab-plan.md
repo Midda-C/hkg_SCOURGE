@@ -1078,6 +1078,13 @@ items beyond that.
   loopback mock endpoint. Real run PASS with six checks. The mock returns an
   empty 200, so update completion is not claimed. 4 new tests; 515 tests
   (75 skipped); doctor green.
+- **2026-11-15 — WBXML SyncML response completes the session**: decoded the
+  WBXML tag table (token = table value + 0x3f; END = 0x01). The mock now
+  returns Status 200 for the Alert/Replace commands plus Final. The real
+  engine parses all three statuses, finishes with `result=0x600a` and reports
+  SCOMO session state 1/lastError 0 with no abort. Real run PASS with eight
+  checks. No update operations or success claim. 515 tests (75 skipped);
+  doctor green.
 - **2026-11-15 — NAS import verified**: 9.4 GB preservation copy complete;
   all archives, partitions, runtime files and the navi2 archive match.
   `meta/SOURCE.txt` was finalized after the original manifest, so its one
