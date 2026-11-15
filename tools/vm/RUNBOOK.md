@@ -903,8 +903,18 @@ MOCK_DM_DOWNLOAD method=GET path=/object.bin bytes=52 preamble=RedBendEFDPackage
 `/package.bin` is an OMA Download Descriptor (`application/vnd.oma.dd+xml`),
 not the object. After the engine parses it, the probe sends the OEM
 confirmation command code 10 (`DMC_REQ_DL_OK`), which lets the engine fetch
-the descriptor's `objectURI`. The mock object is a 52-byte RedBend EF DP
-header: 20-byte `RedBendEFDPackage` preamble, version 4, one component.
+the descriptor's `objectURI`. The mock object is a 108-byte RedBend EF DP:
+20-byte `RedBendEFDPackage` preamble, version 4, one 28-byte component entry
+(`LABCOMP`/`LABID`/`1.0`/`LABVENDOR`) and a NUL-terminated string table.
+
+The container can be checked independently:
+
+```sh
+python3 -B launch.py check-dp <package.dp>
+```
+
+It validates the preamble, version, declared size, component-table range,
+string offsets, installer type and NUL termination.
 
 The engine logs `DL session complete`, advances FUMO state `30` (downloading)
 to `40` (downloaded), and in this run also to `50` (update progressing). The

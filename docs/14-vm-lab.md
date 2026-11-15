@@ -94,9 +94,10 @@ VM-validated (vendor kernel):
 - FUMO package download (`dmengine-fumo-download`): the mock sends a
   `syncml:auth-md5` server Cred and a FUMO Exec, then an OMA Download
   Descriptor. OEM confirmation code 10 (`DMC_REQ_DL_OK`) lets the engine
-  fetch the DP object; `DL session complete` and FUMO state 30 -> 40 are
-  asserted. The DP header is a structural fixture, so this is a download,
-  not an install
+  fetch a 108-byte DP with one component entry and string table; `DL session
+  complete` and FUMO state 30 -> 40 are asserted. `launch.py check-dp`
+  validates the container layout. The DP is a structural fixture, so this is
+  a download, not an install
 - device-model regression (`device-model`): asserts Q35 host bridge, SDHCI
   root, ICH9 LPC/SATA and no virtio; substrate only, not captured BXT hardware
 - AppDMClient fota callback (`dmclient-fota-events`): `/fotaInterface`

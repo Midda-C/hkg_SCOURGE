@@ -1098,10 +1098,12 @@ items beyond that.
   that mirrors the client's exact WBXML layout is accepted (`Server
   authentication (by client), 401`). The mock then serves an OMA Download
   Descriptor; OEM confirmation code 10 (`DMC_REQ_DL_OK`) lets the engine
-  fetch the 52-byte DP object. It logs `DL session complete` and advances
-  FUMO state 30 -> 40. The DP header is a structural fixture with no component
-  table or signature, so no install or update-success claim. Real run PASS
-  with fourteen checks; 518 tests (75 skipped); doctor green.
+  fetch a 108-byte DP with one component entry and string table. It logs
+  `DL session complete` and advances FUMO state 30 -> 40. The DP remains a
+  structural fixture (no signature or update payload), so no install or
+  update-success claim. Added `harness/dp.py` and `launch.py check-dp` to
+  build and validate the container; 17 new tests. Real run PASS with fourteen
+  checks; 535 tests (75 skipped); doctor green.
 - **2026-11-15 — NAS import verified**: 9.4 GB preservation copy complete;
   all archives, partitions, runtime files and the navi2 archive match.
   `meta/SOURCE.txt` was finalized after the original manifest, so its one

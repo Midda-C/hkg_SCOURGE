@@ -380,25 +380,39 @@ static void put_u32(unsigned char *out, size_t offset, unsigned int value)
     out[offset + 3] = (unsigned char)((value >> 24) & 0xff);
 }
 
-/* Minimal RedBend EF DP header: 20-byte preamble, version 4, one component.
- * The component table and signatures are intentionally absent; this is a
- * structural lab fixture, not a bootable update package. */
+/* Structural RedBend EF DP: 20-byte preamble, version 4, one 28-byte
+ * component entry and a NUL-terminated string table. Signatures and update
+ * payloads are intentionally absent; this is a lab fixture, not bootable. */
 static int build_dp_package(unsigned char *out, size_t capacity)
 {
     static const char preamble[] = "RedBendEFDPackage";
     const size_t header_length = 52;
-    if (capacity < header_length)
+    const size_t entry_length = 28;
+    const size_t string_base = header_length + entry_length;
+    const size_t total_length = 108;
+    if (capacity < total_length)
         return 0;
-    memset(out, 0, header_length);
+    memset(out, 0, total_length);
     memcpy(out, preamble, sizeof(preamble) - 1);
     put_u32(out, 20, 4);            /* DP version */
     put_u32(out, 24, 1);            /* component count */
-    put_u32(out, 28, (unsigned int)header_length);
+    put_u32(out, 28, (unsigned int)total_length);
     put_u32(out, 32, 0);            /* delta table pointer */
     put_u32(out, 36, 0);            /* scripts pointer */
     put_u32(out, 44, (unsigned int)header_length); /* component table */
-    put_u32(out, 48, (unsigned int)header_length); /* string table */
-    return (int)header_length;
+    put_u32(out, 48, (unsigned int)string_base);   /* string table */
+    put_u32(out, 52, (unsigned int)string_base);       /* name: LABCOMP */
+    put_u32(out, 56, (unsigned int)string_base + 8);   /* id: LABID */
+    put_u32(out, 60, (unsigned int)string_base + 14);  /* version: 1.0 */
+    put_u32(out, 64, (unsigned int)string_base + 18);  /* vendor */
+    put_u32(out, 68, 0);            /* installer type */
+    put_u32(out, 72, 0);            /* update count */
+    put_u32(out, 76, 0);            /* update table pointer */
+    memcpy(out + string_base, "LABCOMP", 8);
+    memcpy(out + string_base + 8, "LABID", 6);
+    memcpy(out + string_base + 14, "1.0", 4);
+    memcpy(out + string_base + 18, "LABVENDOR", 10);
+    return (int)total_length;
 }
 
 int main(int argc, char **argv)

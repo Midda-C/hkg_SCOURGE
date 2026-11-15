@@ -67,6 +67,7 @@ from harness.dm_queue import (OEM_COMMAND_TYPE, OEM_EVENT_TYPE, QueueError,
                               decode_message, encode_event, encode_command,
                               parse_strace)
 from harness.dm_tree import check_dm_tree, diff_trees
+from harness.dp import check_dp
 from harness.fumo import run_exchange, run_script
 from harness.mof import MofError, build_notification, decode_notification
 from harness.update_state import check_update_state
@@ -1686,6 +1687,9 @@ def main() -> int:
     check_update_parser.add_argument(
         '--verify-files', action='store_true',
         help='compare declared IONIQ5_EU.ver sizes for files present on the media')
+    check_dp_parser = sub.add_parser(
+        'check-dp', help='validate a RedBend EF DP container')
+    check_dp_parser.add_argument('path', type=Path)
     check_dm_parser = sub.add_parser(
         'check-dm-tree', help='validate a RedBend RDM tree without exposing credentials')
     check_dm_parser.add_argument('path', type=Path)
@@ -2239,6 +2243,10 @@ def main() -> int:
     if args.action == 'check-update':
         report = check_update_media(args.path, verify_hashes=args.verify_hashes,
                                     verify_files=args.verify_files)
+        print(json.dumps(report, indent=2))
+        return 0 if report['ok'] else 1
+    if args.action == 'check-dp':
+        report = check_dp(args.path)
         print(json.dumps(report, indent=2))
         return 0 if report['ok'] else 1
     if args.action == 'check-dm-tree':
