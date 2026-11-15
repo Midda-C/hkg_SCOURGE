@@ -41,8 +41,8 @@ class DmengineFumoDownloadUpdateTests(unittest.TestCase):
                      'E_VDM_FUMO_STATE_update_progressing',
                      'event to OEM handler = [77]',
                      'strData = [/update//lab-fumo]',
-                     'MOCK_OEM_SENT code=20 field1=200',
-                     'VDMC_FUMO_updateReport] result = [200]',
+                     'MOCK_OEM_SENT code=20 field1=$RESULT_CODE',
+                     'VDMC_FUMO_updateReport] result = [$RESULT_CODE]',
                      'fumo-update-result-sent',
                      'fumo-update-result-reported'):
             self.assertIn(text, command)

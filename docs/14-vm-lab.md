@@ -107,6 +107,9 @@ VM-validated (vendor kernel):
   state 30 -> 40 -> 60, hands event 77 with `/update//lab-fumo` to the OEM
   handler, then reports lab result 200, reaching state 90 and idle. The
   result is lab-supplied; no physical install is claimed
+- FUMO failure result (`dmengine-fumo-update-failure`): the lab OEM reports
+  result 500; the engine reports the failure through a DM session and returns
+  to idle without state 90 (negative result path)
 - device-model regression (`device-model`): asserts Q35 host bridge, SDHCI
   root, ICH9 LPC/SATA and no virtio; substrate only, not captured BXT hardware
 - AppDMClient fota callback (`dmclient-fota-events`): `/fotaInterface`

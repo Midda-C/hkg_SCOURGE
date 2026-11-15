@@ -1123,6 +1123,13 @@ items beyond that.
   and the physical updater is not run, so no install/update-success is
   claimed. Real run PASS with twenty checks; 541 tests (75 skipped); doctor
   green.
+- **2026-11-15 — FUMO update failure result**: the same combined flow reports
+  lab result `500` through OEM command `20`. The engine accepts it, logs
+  `VDMC_FUMO_updateReport result=[500]`, triggers the DM report session,
+  returns to idle and never enters success state `90`. `dmengine-fumo-update-
+  failure` asserts the failure report and absence of success (negative). Real
+  run PASS with twenty-one checks; 3 new tests; 544 tests (75 skipped); doctor
+  green.
 - **2026-11-15 — NAS import verified**: 9.4 GB preservation copy complete;
   all archives, partitions, runtime files and the navi2 archive match.
   `meta/SOURCE.txt` was finalized after the original manifest, so its one

@@ -20,6 +20,7 @@ DM_PID=
 SERVER_PID=
 LOG=/log_data/AppUpgrade/fota/vdm.log
 MODE=${FUMO_MODE:-download}
+RESULT_CODE=${FUMO_RESULT:-200}
 LOG_LEVEL=notice
 case "$MODE" in
     update|combined) LOG_LEVEL=debug ;;
@@ -285,12 +286,12 @@ if [ "$MODE" = combined ]; then
     echo 'HARNESS_CHECK fumo-update-handoff PASS'
 
     : > /tmp/mock-oem-result.log
-    /tmp/mock-oem 20 /tmp/mock-oem-result.log 15 200 0 >/tmp/mock-oem-result.out 2>&1 &
+    /tmp/mock-oem 20 /tmp/mock-oem-result.log 15 "$RESULT_CODE" 0 >/tmp/mock-oem-result.out 2>&1 &
     RESULT_PID=$!
     result_wait=0
     while [ "$result_wait" -lt 30 ]; do
         tail -c +$((LOG_MARK + 1)) "$LOG" > /tmp/vdm-delta.log 2>/dev/null
-        grep -q 'Set state, 90' /tmp/vdm-delta.log 2>/dev/null && break
+        grep -q "updateReport] result = \[$RESULT_CODE\]" /tmp/vdm-delta.log 2>/dev/null && break
         sleep 1
         result_wait=$((result_wait + 1))
     done
@@ -300,22 +301,33 @@ if [ "$MODE" = combined ]; then
     sleep 2
     tail -c +$((LOG_MARK + 1)) "$LOG" > /tmp/vdm-delta.log 2>/dev/null
 
-    if ! grep -q 'MOCK_OEM_SENT code=20 field1=200' /tmp/mock-oem-result.log 2>/dev/null \
-        || ! grep -qF 'VDMC_FUMO_updateReport] result = [200]' /tmp/vdm-delta.log; then
+    if ! grep -q "MOCK_OEM_SENT code=20 field1=$RESULT_CODE" /tmp/mock-oem-result.log 2>/dev/null \
+        || ! grep -qF "VDMC_FUMO_updateReport] result = [$RESULT_CODE]" /tmp/vdm-delta.log; then
         cat /tmp/mock-oem-result.log 2>/dev/null
         grep -aE 'updateReport|result = \[' /tmp/vdm-delta.log | tail -20
         fail 'fumo-update-result-sent'
     fi
     echo 'HARNESS_CHECK fumo-update-result-sent PASS'
 
-    if ! grep -qF 'VDM_FUMO_triggerReportSession(200)' /tmp/vdm-delta.log \
-        || ! grep -q 'Set state, 90' /tmp/vdm-delta.log; then
+    if ! grep -qF "VDM_FUMO_triggerReportSession($RESULT_CODE)" /tmp/vdm-delta.log; then
         grep -aE 'triggerReportSession|Set state' /tmp/vdm-delta.log | tail -30
         fail 'fumo-update-result-accepted'
     fi
     if grep -qF 'validateResultCode - invalid result code' /tmp/vdm-delta.log; then
         grep -aE 'validateResultCode' /tmp/vdm-delta.log | tail -10
         fail 'fumo-update-result-rejected'
+    fi
+    if [ "$RESULT_CODE" = 200 ]; then
+        if ! grep -q 'Set state, 90' /tmp/vdm-delta.log; then
+            grep -aE 'Set state' /tmp/vdm-delta.log | tail -20
+            fail 'fumo-update-result-accepted'
+        fi
+    else
+        if grep -q 'Set state, 90' /tmp/vdm-delta.log; then
+            grep -aE 'Set state' /tmp/vdm-delta.log | tail -20
+            fail 'fumo-update-failure'
+        fi
+        echo 'HARNESS_CHECK fumo-update-failure PASS'
     fi
     echo 'HARNESS_CHECK fumo-update-result-accepted PASS'
 
@@ -373,7 +385,11 @@ kill "$DM_PID" "$OEM_PID" "$DLOK_PID" "$RESULT_PID" "$SERVER_PID" 2>/dev/null ||
 sleep 1
 kill -9 "$DM_PID" "$OEM_PID" "$DLOK_PID" "$RESULT_PID" "$SERVER_PID" 2>/dev/null || true
 if [ "$MODE" = combined ]; then
-    echo 'HARNESS_CHECK dmengine-fumo-download-update PASS'
+    if [ "$RESULT_CODE" = 200 ]; then
+        echo 'HARNESS_CHECK dmengine-fumo-download-update PASS'
+    else
+        echo 'HARNESS_CHECK dmengine-fumo-update-failure PASS'
+    fi
 elif [ "$MODE" = update ]; then
     echo 'HARNESS_CHECK dmengine-fumo-update PASS'
 else

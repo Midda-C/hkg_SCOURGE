@@ -995,6 +995,29 @@ The scenario runs dmengine at debug log level. A real run passes all twenty
 checks. `dmengine-fumo-download` and `dmengine-fumo-update` remain separate
 positive/negative scenarios.
 
+## dmengine FUMO update failure result (Mode C, negative)
+
+```sh
+python3 -B launch.py run --kernel compat --profile research \
+  --scenario dmengine-fumo-update-failure --payload payload/tweaks-vm --timeout 340
+```
+
+Runs the same combined `DownloadAndUpdate` download/update handoff, but the lab
+OEM handler reports result `500` instead of success:
+
+```text
+MOCK_OEM_SENT code=20 field1=500
+VDMC_FUMO_updateReport] result = [500]
+VDM_FUMO_triggerReportSession(500)
+Set state, 10
+DM session complete
+```
+
+The engine accepts and reports the failure through a DM session, returns to
+idle and does **not** enter success state `90`. The result is lab-supplied; the
+physical updater is not run, so no install claim is made. A real run passes all
+twenty-one checks.
+
 ## dmengine startup (Mode C)
 
 ```sh
