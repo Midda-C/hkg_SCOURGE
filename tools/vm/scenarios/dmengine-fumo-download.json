@@ -1,0 +1,21 @@
+{
+  "name": "dmengine-fumo-download",
+  "description": "Mode C FUMO package download: the mock returns a valid syncml:auth-md5 server credential and a FUMO Exec; the real dmengine accepts the server auth, executes the command and performs GET /package.bin (4096 bytes). The synthetic package is rejected by the engine (DL 0x6407), so no install or update-success claim.",
+  "requires": [
+    "payload"
+  ],
+  "requires_mode": "compat",
+  "checks": [
+    "fumo-ready",
+    "fumo-http-post",
+    "fumo-response",
+    "fumo-syncml",
+    "fumo-trigger",
+    "fumo-command",
+    "fumo-server-auth",
+    "fumo-download",
+    "fumo-no-production",
+    "dmengine-fumo-download"
+  ],
+  "blockers": {}
+}

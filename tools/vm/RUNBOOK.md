@@ -881,24 +881,34 @@ This is a completed DM session handshake, not an update: the mock performs no
 management operations and the scenario makes no update-success claim. A real
 run passes all eight checks.
 
-## dmengine FUMO auth gate (negative)
+## dmengine FUMO package download (Mode C)
 
 ```sh
 python3 -B launch.py run --kernel compat --profile research \
-  --scenario dmengine-fumo-auth-gate --payload payload/tweaks-vm --timeout 200
+  --scenario dmengine-fumo-download --payload payload/tweaks-vm --timeout 220
 ```
 
-Starts the same lab dmengine session, but the mock endpoint sends a FUMO
-`Exec` command on `./ManagedObjects/FUMO/Download` after the status handshake.
-The server does not authenticate itself, so the engine sends a second package
-with `407` for both `SyncHdr` and `Exec` and aborts the session with `0x6011`
-(`FUMO_Plugin_onSessionStateChange ... Error=[24593]`). No package GET occurs.
+After the status handshake the mock endpoint sends a FUMO `Exec` command on
+`./ManagedObjects/FUMO/Download` together with a server `Cred`. The engine
+accepts the server authentication (`Server authentication (by client), 401`),
+executes the command and performs a real `GET /package.bin`:
 
-A real run passes all eleven checks, including `fumo-command`,
-`fumo-auth-407`, `fumo-no-download` and `fumo-abort`. This is a **negative**
-test: server authentication is still unimplemented, so the download cannot
-proceed. The next step is a valid `syncml:auth-md5` server credential (or a
-working auth-none exchange).
+```text
+MOCK_DM_REQUEST method=POST path=/dm/message content_length=907
+MOCK_DM_RESPONSE status=200 syncml=1 session=4D bytes=341 exec=1
+MOCK_DM_REQUEST method=POST path=/dm/message content_length=457
+MOCK_DM_RESPONSE status=200 syncml=1 session=4D bytes=296 exec=0
+MOCK_DM_DOWNLOAD method=GET path=/package.bin bytes=4096 sha256_prefix=00010203
+```
+
+The lab server credential mirrors the client's exact `Cred` WBXML layout and
+reuses the client digest: the `lab`/`lab-secret` account is shared, and the
+digest is `base64(MD5(MD5("lab:lab-secret") + ":" + "00000000"))`.
+
+The synthetic 4096-byte package is not a valid FUMO payload, so the engine
+aborts the download with `DL session aborted, 0x6407`, FUMO result `409` and
+last error `25607`. This proves the authenticated Exec and package fetch, not
+an install or update. A real run passes all ten checks.
 
 ## dmengine startup (Mode C)
 

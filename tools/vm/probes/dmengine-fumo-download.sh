@@ -38,7 +38,7 @@ for dev in /dev/sd?; do
     fi
     umount /media/payload 2>/dev/null || true
 done
-[ -n "$PAYLOAD" ] || { echo 'HARNESS_BLOCKED dmengine-fumo-auth-gate payload missing'; exit 77; }
+[ -n "$PAYLOAD" ] || { echo 'HARNESS_BLOCKED dmengine-fumo-download payload missing'; exit 77; }
 trap 'kill "$OEM_PID" "$DM_PID" "$SERVER_PID" 2>/dev/null || true; cd /; umount "$PAYLOAD" 2>/dev/null || true' EXIT
 
 cp "$PAYLOAD/mock-dm-server" /tmp/mock-dm || fail 'fumo-server-copy'
@@ -132,14 +132,13 @@ LOG_MARK=$(wc -c < "$LOG" 2>/dev/null || echo 0)
 OEM_PID=$!
 
 request_wait=0
-while [ "$request_wait" -lt 60 ]; do
-    grep -q 'MOCK_DM_CLIENT_STATUS status=407' /tmp/mock-dm.log 2>/dev/null && break
+while [ "$request_wait" -lt 90 ]; do
+    grep -q 'MOCK_DM_DOWNLOAD method=GET path=/package.bin' /tmp/mock-dm.log 2>/dev/null && break
     sleep 1
     request_wait=$((request_wait + 1))
 done
 if ! grep -q 'MOCK_DM_REQUEST method=POST path=/dm/message' /tmp/mock-dm.log 2>/dev/null; then
     tail -40 /tmp/mock-dm.log 2>/dev/null
-    tail -40 /tmp/dmengine-fumo.out
     fail 'fumo-http-post'
 fi
 echo 'HARNESS_CHECK fumo-http-post PASS'
@@ -165,7 +164,6 @@ if ! grep -q 'body_prefix=02' /tmp/mock-dm.log; then
 fi
 echo 'HARNESS_CHECK fumo-syncml PASS'
 
-sleep 2
 tail -c +$((LOG_MARK + 1)) "$LOG" > /tmp/vdm-delta.log 2>/dev/null
 if ! grep -q '\[dmc_startFumoSession\] sesstionType = \[0\]' /tmp/vdm-delta.log \
     || ! grep -q 'Triggering DM session' /tmp/vdm-delta.log \
@@ -181,39 +179,35 @@ if ! grep -q 'MOCK_DM_RESPONSE status=200 syncml=1 session=.* exec=1' /tmp/mock-
 fi
 echo 'HARNESS_CHECK fumo-command PASS'
 
-if ! grep -q 'MOCK_DM_CLIENT_STATUS status=407' /tmp/mock-dm.log; then
-    tail -20 /tmp/mock-dm.log
-    fail 'fumo-auth-407'
+if ! grep -q 'CLIENT_DIGEST=' /tmp/mock-dm-auth.log 2>/dev/null; then
+    cat /tmp/mock-dm-auth.log 2>/dev/null
+    fail 'fumo-server-auth'
 fi
-echo 'HARNESS_CHECK fumo-auth-407 PASS'
+if grep -q 'MOCK_DM_CLIENT_STATUS status=407' /tmp/mock-dm.log; then
+    grep -a 'MOCK_DM_CLIENT_STATUS' /tmp/mock-dm.log
+    fail 'fumo-server-auth-407'
+fi
+echo 'HARNESS_CHECK fumo-server-auth PASS'
 
-if grep -q 'MOCK_DM_DOWNLOAD' /tmp/mock-dm.log; then
-    grep -a 'MOCK_DM_DOWNLOAD' /tmp/mock-dm.log
-    fail 'fumo-no-download'
+if ! grep -q 'MOCK_DM_DOWNLOAD method=GET path=/package.bin bytes=4096' /tmp/mock-dm.log; then
+    tail -40 /tmp/mock-dm.log
+    fail 'fumo-download'
 fi
-echo 'HARNESS_CHECK fumo-no-download PASS'
-
-if ! grep -q 'DM session aborted, 0x6011' /tmp/vdm-delta.log; then
-    grep -aE 'session aborted|onSessionStateChange|lastError' /tmp/vdm-delta.log | tail -20
-    fail 'fumo-abort'
-fi
-echo 'HARNESS_CHECK fumo-abort PASS'
+echo 'HARNESS_CHECK fumo-download PASS'
 
 if grep -q '210.183.168.13' /tmp/vdm-delta.log /tmp/mock-dm.log /tmp/lab-tree.xml /tmp/lab-dm-config.txt; then
     fail 'fumo-production-address'
 fi
 echo 'HARNESS_CHECK fumo-no-production PASS'
 
-kill "$DM_PID" "$OEM_PID" "$SERVER_PID" 2>/dev/null || true
-sleep 1
-kill -9 "$DM_PID" "$OEM_PID" "$SERVER_PID" 2>/dev/null || true
-echo 'HARNESS_CHECK dmengine-fumo-auth-gate PASS'
 echo '=== MOCK DM REQUEST ==='
-head -5 /tmp/mock-dm.log 2>/dev/null
+head -8 /tmp/mock-dm.log 2>/dev/null
 echo '=== VDM TRIGGER ==='
-grep -aE 'dmc_startFumoSession|Triggering DM session|Open connection|Performing HTTP POST|onSessionStateChange' \
+grep -aE 'dmc_startFumoSession|Triggering DM session|Open connection|Performing HTTP POST|onSessionStateChange|DL session' \
     /tmp/vdm-delta.log 2>/dev/null | head -20
+echo '=== PACKAGE GET ==='
+grep -a 'MOCK_DM_DOWNLOAD' /tmp/mock-dm.log 2>/dev/null | head -5
 kill "$DM_PID" "$OEM_PID" "$SERVER_PID" 2>/dev/null || true
 sleep 1
 kill -9 "$DM_PID" "$OEM_PID" "$SERVER_PID" 2>/dev/null || true
-echo 'HARNESS_CHECK dmengine-fumo-auth-gate PASS'
+echo 'HARNESS_CHECK dmengine-fumo-download PASS'

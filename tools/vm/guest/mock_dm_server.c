@@ -50,8 +50,11 @@
 #define TOKEN_CMD 0x4a
 #define TOKEN_DATA 0x4f
 #define TOKEN_FINAL 0x12
-#define TOKEN_REPLACE 0x60
 #define TOKEN_EXEC 0x51
+#define TOKEN_CRED 0x4e
+#define TOKEN_META 0x5a
+#define TOKEN_FORMAT 0x47
+#define TOKEN_TYPE 0x53
 #define WBXML_END 0x01
 #define WBXML_STRING 0x03
 #define WBXML_OPAQUE 0xc3
@@ -151,6 +154,17 @@ static const char *find_string(const struct wbxml_string *strings, int count,
     return NULL;
 }
 
+static const char *find_digest(const struct wbxml_string *strings, int count)
+{
+    for (int index = 0; index < count; index++) {
+        if (strings[index].length == 24
+            && strings[index].value[22] == '='
+            && strings[index].value[23] == '=')
+            return strings[index].value;
+    }
+    return NULL;
+}
+
 static int find_msgid(const unsigned char *body, size_t length, size_t after,
                       char *out, size_t out_size)
 {
@@ -220,7 +234,7 @@ static void put_status(struct buffer *buffer, const char *cmdid,
     put_byte(buffer, WBXML_END);
 }
 
-static void put_replace(struct buffer *buffer, const char *locuri,
+static void put_exec(struct buffer *buffer, const char *locuri,
                         const char *pkgurl)
 {
     (void)pkgurl;
@@ -238,10 +252,27 @@ static void put_replace(struct buffer *buffer, const char *locuri,
     put_byte(buffer, WBXML_END);        /* Exec */
 }
 
+static void put_server_cred(struct buffer *buffer, const char *digest)
+{
+    /* Mirror the client's Cred layout exactly. */
+    static const unsigned char prefix[] = {
+        TOKEN_CRED, TOKEN_META, 0x00, WBXML_END,
+        TOKEN_FORMAT, WBXML_OPAQUE, 0x03, 'b', '6', '4', WBXML_END,
+        TOKEN_TYPE, WBXML_OPAQUE, 0x0f, 's', 'y', 'n', 'c', 'm', 'l', ':',
+        'a', 'u', 't', 'h', '-', 'm', 'd', '5', WBXML_END, WBXML_END,
+        0x00, 0x00, TOKEN_DATA
+    };
+    for (size_t index = 0; index < sizeof(prefix); index++)
+        put_byte(buffer, prefix[index]);
+    put_opaque(buffer, digest);
+    put_byte(buffer, WBXML_END);
+    put_byte(buffer, WBXML_END);
+}
+
 static int build_response(const unsigned char *body, size_t length,
                           unsigned char *output, size_t capacity,
                           char *session, size_t session_size,
-                          int send_exec)
+                          int download_mode, int send_exec)
 {
     static const char string_table[] = "-//SYNCML//DTD SyncML 1.2//EN";
     struct wbxml_string strings[MAX_STRINGS];
@@ -300,13 +331,24 @@ static int build_response(const unsigned char *body, size_t length,
     put_opaque(&buffer, url);
     put_byte(&buffer, WBXML_END);
     put_byte(&buffer, WBXML_END);
+    if (download_mode) {
+        const char *digest = find_digest(strings, count);
+        if (digest != NULL) {
+            FILE *auth = fopen("/tmp/mock-dm-auth.log", "a");
+            if (auth != NULL) {
+                fprintf(auth, "CLIENT_DIGEST=%s\n", digest);
+                fclose(auth);
+            }
+            put_server_cred(&buffer, digest);
+        }
+    }
     put_byte(&buffer, WBXML_END);       /* SyncHdr */
     put_byte(&buffer, TOKEN_SYNCBODY);
     put_status(&buffer, "1", "1", "Alert");
     put_status(&buffer, "2", "2", "Replace");
     put_status(&buffer, "3", "3", "Alert");
     if (send_exec)
-        put_replace(&buffer, "./ManagedObjects/FUMO/Download",
+        put_exec(&buffer, "./ManagedObjects/FUMO/Download",
                     "http://127.0.0.1:8002/package.bin");
     put_byte(&buffer, TOKEN_FINAL);
     put_byte(&buffer, WBXML_END);       /* SyncBody */
@@ -464,7 +506,7 @@ int main(int argc, char **argv)
             response_body = build_response(
                 request + body_offset, (size_t)used - body_offset,
                 response, sizeof(response), session, sizeof(session),
-                download_mode && requests == 0);
+                download_mode, download_mode && requests == 0);
         }
         fprintf(log,
                 "MOCK_DM_REQUEST method=%s path=%s content_type=%s "

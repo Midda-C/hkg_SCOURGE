@@ -1088,16 +1088,19 @@ items beyond that.
 - **2026-11-15 — P2-7 FUMO auth gate characterized**: the mock can send a
   FUMO `Exec` command and serve a package GET, but the real engine rejects
   the unauthenticated server with status 407 for `SyncHdr` and `Exec` and
-  aborts 0x6011 (FUMO 24593). `dmengine-fumo-auth-gate` asserts the second
-  package, the 407, the abort and that no download occurs. Server MD5 auth is
-  the next blocker. Real run PASS with eleven checks; 3 new tests; 518 tests
+  aborts 0x6011 (FUMO 24593). The earlier `dmengine-fumo-auth-gate`
+  scenario asserted that gate; it is superseded by `dmengine-fumo-download`
+  once the server credential was recovered. Real run PASS with eleven checks; 3 new tests; 518 tests
   (75 skipped); doctor green.
-- **2026-11-15 — server-auth attempt documented**: the client's md5 digest
-  changes per session and does not match known `lab`/`lab-secret`/nonce
-  candidates; auth-none Cred/Chal and MinServerAuth/auth-type overrides did
-  not remove the 407. The negative auth-gate scenario remains the tested
-  boundary; the next step needs a captured server challenge/response or
-  deeper RE of `SESS_prepareChallenge`.
+- **2026-11-15 — server auth recovered, real package GET**: the digest is
+  `base64(MD5(MD5("lab:lab-secret") + ":" + "00000000"))`; the nonce is
+  `AAuthData` (`MDAwMDAwMDA=` -> ASCII `00000000`). A server `Cred` that
+  mirrors the client's exact WBXML layout is accepted (`Server authentication
+  (by client), 401`), the FUMO Exec runs and the engine performs a real
+  `GET /package.bin` (4096 bytes). The synthetic package is rejected by the
+  engine (`DL session aborted, 0x6407`; FUMO 409 / error 25607), so no install
+  or update-success claim. Supersedes the negative auth-gate scenario. Real
+  run PASS with ten checks; 518 tests (75 skipped); doctor green.
 - **2026-11-15 — NAS import verified**: 9.4 GB preservation copy complete;
   all archives, partitions, runtime files and the navi2 archive match.
   `meta/SOURCE.txt` was finalized after the original manifest, so its one

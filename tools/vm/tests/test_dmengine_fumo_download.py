@@ -12,36 +12,37 @@ from harness.results import evaluate
 VM = Path(__file__).resolve().parents[1]
 
 
-class DmengineFumoAuthGateTests(unittest.TestCase):
+class DmengineFumoDownloadTests(unittest.TestCase):
     def test_scenario_contract(self) -> None:
-        scenario = load_scenario('dmengine-fumo-auth-gate')
+        scenario = load_scenario('dmengine-fumo-download')
         self.assertEqual(scenario['requires'], ['payload'])
         self.assertEqual(scenario['requires_mode'], 'compat')
         self.assertEqual(set(scenario['checks']),
                          {'fumo-ready', 'fumo-http-post', 'fumo-response',
                           'fumo-syncml', 'fumo-trigger', 'fumo-command',
-                          'fumo-auth-407', 'fumo-no-download', 'fumo-abort',
-                          'fumo-no-production', 'dmengine-fumo-auth-gate'})
-        self.assertIn('negative auth-gate', scenario['description'])
-        self.assertIn('No package download occurs', scenario['description'])
+                          'fumo-server-auth', 'fumo-download',
+                          'fumo-no-production', 'dmengine-fumo-download'})
+        self.assertIn('GET /package.bin', scenario['description'])
+        self.assertIn('no install or update-success claim',
+                      scenario['description'])
 
-    def test_command_uses_download_mode_and_asserts_407(self) -> None:
+    def test_command_uses_download_mode_and_asserts_get(self) -> None:
         command = scenario_command(
-            load_scenario('dmengine-fumo-auth-gate'), load_profile('research'),
+            load_scenario('dmengine-fumo-download'), load_profile('research'),
             kernel_target='compat')
         for text in ('/tmp/mock-dm 8002 /tmp/mock-dm.log download',
-                     'MOCK_DM_CLIENT_STATUS status=407',
-                     'exec=1', 'DM session aborted, 0x6011',
-                     'MOCK_DM_DOWNLOAD', 'fumo-no-download'):
+                     'CLIENT_DIGEST=', 'MOCK_DM_DOWNLOAD method=GET',
+                     'bytes=4096', 'status=407', 'fumo-server-auth',
+                     'fumo-download'):
             self.assertIn(text, command)
 
     def test_checks_fail_closed(self) -> None:
-        scenario = load_scenario('dmengine-fumo-auth-gate')
+        scenario = load_scenario('dmengine-fumo-download')
         text = ''.join(f'HARNESS_CHECK {check} PASS\n'
                        for check in scenario['checks'])
         self.assertEqual(evaluate(text, 0, scenario)['verdict'], 'PASS')
         self.assertEqual(evaluate(
-            text.replace('fumo-auth-407 PASS', 'fumo-auth-407 FAIL'),
+            text.replace('fumo-download PASS', 'fumo-download FAIL'),
             0, scenario)['verdict'], 'FAIL')
 
 
