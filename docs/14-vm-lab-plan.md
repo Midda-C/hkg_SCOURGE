@@ -1167,6 +1167,14 @@ items beyond that.
   startup, so phase-2 checks read the whole log. `dmengine-fumo-resume-restart`
   asserts the restart state, Range request, completion and notification. Real
   run PASS with ten checks; 3 new tests; 573 tests (75 skipped); doctor green.
+- **2026-11-15 — FUMO resume without ETag**: the mock serves a 64/184 partial
+  with `Accept-Ranges` but no ETag. The engine records offset 64, logs
+  `eTag=<[null]>` / `isIgnoreMissingETag=0`, sends **no** Range request and
+  re-downloads the full 184-byte object, which completes (state 40,
+  notification posted). `dmengine-fumo-resume-noetag` asserts the recorded
+  offset, the fallback full GET, completion and notification. This shows
+  resume requires an ETag, not just `Accept-Ranges`. Real run PASS with eight
+  checks; 3 new tests; 576 tests (75 skipped); doctor green.
 - **2026-11-15 — FUMO bad-signature boundary**: the mock flips one bit in
   the lab HMAC trailer. The engine still downloads the 184-byte object, posts
   the install notification and advances to state 40. `check-dp --key` rejects

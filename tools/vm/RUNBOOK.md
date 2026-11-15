@@ -1190,6 +1190,29 @@ post-download value in this run; the check accepts a completed DL/DM session
 plus state `50` and the notification. A real run passes all ten checks. No
 install is claimed.
 
+## dmengine FUMO resume without an ETag (Mode C)
+
+```sh
+python3 -B launch.py run --kernel compat --profile research \
+  --scenario dmengine-fumo-resume-noetag --payload payload/tweaks-vm --timeout 320
+```
+
+The mock advertises `Accept-Ranges: bytes` on the first 64/184 response but
+omits the ETag. The engine records the offset but refuses to resume:
+
+```text
+MOCK_DM_NOETAG_PARTIAL method=GET path=/object.bin bytes=64 total=184
+DL resume: got offset=64, eTag=<[null]>, isIgnoreMissingETag=0
+MOCK_DM_NOETAG_FULL method=GET path=/object.bin bytes=184 range=none
+DL session complete
+Set state, 40
+MOCK_DM_NOTIFY path=/notify bytes=11 body=900 Success
+```
+
+No `Range: bytes=64-` is sent; the engine performs a full GET from zero and the
+download completes. This proves resume requires an ETag, not just
+`Accept-Ranges`. A real run passes all eight checks. No install is claimed.
+
 ## dmengine startup (Mode C)
 
 ```sh

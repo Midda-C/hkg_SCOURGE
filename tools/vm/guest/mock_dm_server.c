@@ -447,10 +447,11 @@ int main(int argc, char **argv)
     int badsig_mode = argc > 3 && strcmp(argv[3], "badsig") == 0;
     int partial_mode = argc > 3 && strcmp(argv[3], "partial") == 0;
     int resume_mode = argc > 3 && strcmp(argv[3], "resume") == 0;
+    int noetag_mode = argc > 3 && strcmp(argv[3], "noetag") == 0;
     int download_mode = argc > 3
         && (strcmp(argv[3], "download") == 0 || update_mode
             || combined_mode || missing_mode || notify_fail_mode
-            || badsig_mode || partial_mode || resume_mode);
+            || badsig_mode || partial_mode || resume_mode || noetag_mode);
     int server = socket(AF_INET, SOCK_STREAM, 0);
     int one = 1;
     struct sockaddr_in addr;
@@ -624,6 +625,45 @@ int main(int argc, char **argv)
             int package_length = build_dp_package(package, sizeof(package));
             if (badsig_mode && package_length > 0)
                 package[package_length - 1] ^= 0x01;
+            if (noetag_mode) {
+                static int noetag_object_requests = 0;
+                char *range_header = strcasestr((char *)request, "Range:");
+                if (noetag_object_requests++ == 0) {
+                    header_length = snprintf(
+                        header, sizeof(header),
+                        "HTTP/1.1 200 OK\r\n"
+                        "Content-Type: application/octet-stream\r\n"
+                        "Accept-Ranges: bytes\r\n"
+                        "Content-Length: %d\r\n"
+                        "Connection: close\r\n\r\n", package_length);
+                    send_all(client, (const unsigned char *)header,
+                             (size_t)header_length);
+                    send_all(client, package, 64);
+                    fprintf(log, "MOCK_DM_NOETAG_PARTIAL method=GET "
+                                 "path=/object.bin bytes=64 total=%d\n",
+                            package_length);
+                } else {
+                    header_length = snprintf(
+                        header, sizeof(header),
+                        "HTTP/1.1 200 OK\r\n"
+                        "Content-Type: application/octet-stream\r\n"
+                        "Accept-Ranges: bytes\r\n"
+                        "Content-Length: %d\r\n"
+                        "Connection: close\r\n\r\n", package_length);
+                    send_all(client, (const unsigned char *)header,
+                             (size_t)header_length);
+                    send_all(client, package, (size_t)package_length);
+                    fprintf(log, "MOCK_DM_NOETAG_FULL method=GET "
+                                 "path=/object.bin bytes=%d range=%s\n",
+                            package_length,
+                            range_header != NULL ? "present" : "none");
+                }
+                fflush(log);
+                close(client);
+                free(request);
+                requests++;
+                continue;
+            }
             if (partial_mode || resume_mode) {
                 char *range_header = strcasestr((char *)request, "Range:");
                 unsigned long range_offset = 0;
