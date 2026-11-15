@@ -22,7 +22,7 @@ SCENARIO_NAMES = ('boot', 'usb-discovery', 'dbus-ready', 'dmclient-events',
                   'vendor-esinit-fixture', 'update-preflight',
                   'update-preflight-negative', 'dmengine-startup',
                   'dmengine-oem-queue', 'device-model',
-                  'recovery-repeat-update')
+                  'dmclient-fota-events', 'recovery-repeat-update')
 
 
 def load_profile(name: str) -> dict:

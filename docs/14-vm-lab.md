@@ -88,6 +88,9 @@ VM-validated (vendor kernel):
   policy or HTTP FUMO update
 - device-model regression (`device-model`): asserts Q35 host bridge, SDHCI
   root, ICH9 LPC/SATA and no virtio; substrate only, not captured BXT hardware
+- AppDMClient fota callback (`dmclient-fota-events`): `/fotaInterface`
+  `sendEventToDMClientFromAppUpgrade(0/1/2)` produces real dmengine queue
+  commands `0x28/0x29/0x2a`; callback only, no HTTP update or credentials
 - dmengine OEM queue codec (`dmengine-queue`): encode/decode the 1048-byte
   SysV command/event message (key 0xd54, mtype 0x36/0x48) and parse
   `strace -xx` queue logs; the AppDMClient event source remains the session

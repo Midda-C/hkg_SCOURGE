@@ -801,11 +801,30 @@ The codec only encodes/decodes messages; it does not perform queue I/O.
 partial 300-byte captures.
 
 The traced dmengine emitted events 93, 92 and 66 (notification) and blocked
-waiting for a type-0x36 command. Under the phase4/AppDMClient run, AppDMClient
-consumed dmengine events on key 0xd54 but sent no type-0x36 commands in either
-the `dmclient-events` or `updater-launch` path; AppDMClient also uses its own
-queue key 0xe9b. The missing callback is the AppDMClient event source that
-calls `startFumoUpdate`, not the queue layout.
+waiting for a type-0x36 command. A plain `dmclient-events` run sends no
+type-0x36 commands; the fota callback below is the event source that calls
+`startFumoUpdate`. AppDMClient also uses its own queue key 0xe9b.
+
+## AppDMClient fota callback (research)
+
+```sh
+python3 -B launch.py run --profile research \
+  --scenario dmclient-fota-events --usb update-k.img \
+  --tools tools.dev.img --timeout 540
+```
+
+Runs the updater-launch path (USB, standby, updater exec) and then calls
+`sendEventToDMClientFromAppUpgrade(int)` on `com.lge.hkmc.avn.upgrade.fota`
+object `/fotaInterface` for events 0, 1 and 2. The running AppDMClient turns
+those into real SysV type-0x36 commands `0x28`, `0x29` and `0x2a` on dmengine's
+queue; the scenario asserts each command and `fota-callback`.
+
+A real run passes all eight checks (`dmclient-usb`, `dmclient-standby`,
+`updater-exec`, `updater-alive`, `fota-command-28/29/2a`, `fota-callback`).
+This proves the AppDMClient → dmengine callback and queue commands. Feeding
+those commands to dmengine alone still does not produce an HTTP request, so
+the mock-DM HTTP exchange remains open. It is not a real update or a stock
+manager test.
 
 ## dmengine OEM queue lab handler (Mode C)
 

@@ -1063,6 +1063,14 @@ items beyond that.
   Q35 host bridge, SDHCI root (`mmcblk0`), ICH9 LPC/SATA and no virtio in the
   vendor kernel. Real run PASS; 3 new tests; 508 tests (75 skipped); doctor
   green. Documented as substrate coverage, not BXT equivalence.
+- **2026-11-15 — AppDMClient fota callback reproduced**: `dmclient-fota-events`
+  runs the updater-launch path, then calls
+  `sendEventToDMClientFromAppUpgrade(0/1/2)` on `/fotaInterface`; the running
+  AppDMClient emits real type-0x36 commands `0x28/0x29/0x2a` to dmengine.
+  Real run PASS with all eight checks. Feeding those commands to dmengine
+  alone still yields no HTTP request, so the mock-DM exchange remains open.
+  3 new tests; 511 tests (75 skipped); doctor green after rebuilding the
+  tools image.
 - **2026-11-15 — NAS import verified**: 9.4 GB preservation copy complete;
   all archives, partitions, runtime files and the navi2 archive match.
   `meta/SOURCE.txt` was finalized after the original manifest, so its one
