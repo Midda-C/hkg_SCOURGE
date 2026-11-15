@@ -1054,6 +1054,11 @@ items beyond that.
   without `update-k.img`; the vendor kernel rejects default
   `metadata_csum`/`64bit` features, so the builder pins 4K/256-byte
   no-checksum features. 3 new tests; 502 tests (75 skipped); doctor green.
+- **2026-11-15 — P2-7 OEM queue lab handler**: `dmengine-oem-queue` runs the
+  real dmengine with `mock-oem-queue`, sends a type-0x36 command and receives
+  event 66 after a MOF-bus-aware `recvDM_01`. Real run PASS with six checks.
+  AppDMClient policy/HTTP update remains the gate. 3 new tests; 505 tests
+  (75 skipped); doctor green.
 - **2026-11-15 — NAS import verified**: 9.4 GB preservation copy complete;
   all archives, partitions, runtime files and the navi2 archive match.
   `meta/SOURCE.txt` was finalized after the original manifest, so its one

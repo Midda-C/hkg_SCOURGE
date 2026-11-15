@@ -790,6 +790,27 @@ the `dmclient-events` or `updater-launch` path; AppDMClient also uses its own
 queue key 0xe9b. The missing callback is the AppDMClient event source that
 calls `startFumoUpdate`, not the queue layout.
 
+## dmengine OEM queue lab handler (Mode C)
+
+```sh
+python3 -B launch.py run --kernel compat --profile research \
+  --scenario dmengine-oem-queue --payload payload/tweaks-vm --timeout 240
+```
+
+Runs the real dmengine with the lab device-info segment and lab tree/config,
+plus `mock-oem-queue`. The lab handler:
+
+- opens SysV key `0xd54`
+- sends one mtype `0x36` command (code 1)
+- reads mtype `0x48` events and logs codes/fields
+- waits for dmengine's `com.lge.hkmc.avn.upgrade.fota.mofInterface` bus name,
+  then sends `recvDM_01` with a lab notification
+
+The scenario requires the mock command send, the MOF bus name, dmengine event
+66 and no production address. A real run passes all six checks. It proves the
+OEM side of the queue protocol; it does not implement AppDMClient policy or
+complete an HTTP FUMO update.
+
 ## dmengine startup (Mode C)
 
 ```sh
