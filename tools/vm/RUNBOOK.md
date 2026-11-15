@@ -766,6 +766,19 @@ new version. `--fail download` returns to Idle with the package cleared;
 transitions, oversized chunks and digest/size mismatches fail closed and are
 recorded as error events. No sockets, credentials, OEM code or VM are used.
 
+`--script FILE` runs a JSON step list instead of the canonical exchange. Ops
+are `download`, `begin-download`, `append` (hex `data`), `complete-download`,
+`fail-download`, `install`, `begin-install`, `complete-install`,
+`fail-install`, `reset` and `status`. Each step records its before/after state,
+ok flag and error; the first failing step stops the run. Example:
+
+```json
+[{"op": "begin-download"},
+ {"op": "fail-download", "reason": "network"},
+ {"op": "download"},
+ {"op": "install"}]
+```
+
 ## DM/RDM tree validation and diff
 
 ```sh

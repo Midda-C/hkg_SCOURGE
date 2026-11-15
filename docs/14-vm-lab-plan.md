@@ -1025,6 +1025,11 @@ items beyond that.
   Real run PASS: FUMO and SCOMO plugins initialize and `DevID len 24` is
   accepted; no production address. 3 new tests; 481 tests (74 skipped);
   doctor green. Session triggering remains the next gate.
+- **2026-11-15 — P2-7 scripted FUMO exchange**: `fumo-exchange --script
+  FILE` runs per-step download/install/failure/reset operations with
+  before/after state and fail-closed error records. The MOF trigger
+  investigation reached the vendor `recvDM_01` handler and event 93 but no
+  HTTP session yet. 5 new tests; 486 tests (74 skipped); doctor green.
 - **2026-11-15 — NAS import verified**: 9.4 GB preservation copy complete;
   all archives, partitions, runtime files and the navi2 archive match.
   `meta/SOURCE.txt` was finalized after the original manifest, so its one

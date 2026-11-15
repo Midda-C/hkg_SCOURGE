@@ -253,6 +253,79 @@ class MockDmEndpoint:
         return package
 
 
+def run_script(steps: list[dict], installed: str | None = None,
+               token: str = 'lab-token', chunk_size: int = 7,
+               packages: dict[str, Package] | None = None) -> dict:
+    """Run a scripted offline FUMO exchange with per-step state evidence."""
+    if not isinstance(steps, list) or not steps:
+        raise FumoError('script must be a non-empty list')
+    if chunk_size <= 0:
+        raise FumoError('chunk size must be positive')
+    available = packages or {'mango-rootfs': make_package('mango-rootfs', '8')}
+    endpoint = MockDmEndpoint(token, available, installed)
+    machine = FumoMachine(installed)
+    report = {'ok': True, 'installed_before': installed,
+              'installed_after': None, 'final_state': None,
+              'steps': [], 'queries': endpoint.queries, 'events': machine.events,
+              'error': None}
+    for index, step in enumerate(steps):
+        if not isinstance(step, dict):
+            raise FumoError(f'script step {index} is not an object')
+        operation = step.get('op')
+        before = machine.state
+        record = {'index': index, 'op': operation, 'from': int(before),
+                  'to': None, 'ok': False}
+        try:
+            if operation == 'download':
+                selected = endpoint.query(str(step.get('package', 'mango-rootfs')),
+                                          str(step.get('token', token)))
+                machine.begin_download(selected)
+                for offset in range(0, len(selected.data), chunk_size):
+                    machine.append_download(selected.data[offset:offset + chunk_size])
+                machine.complete_download()
+            elif operation == 'begin-download':
+                selected = endpoint.query(str(step.get('package', 'mango-rootfs')),
+                                          str(step.get('token', token)))
+                machine.begin_download(selected)
+            elif operation == 'append':
+                data = step.get('data')
+                if not isinstance(data, str):
+                    raise FumoError('append requires a hex string')
+                machine.append_download(bytes.fromhex(data))
+            elif operation == 'complete-download':
+                machine.complete_download()
+            elif operation == 'fail-download':
+                machine.fail_download(str(step.get('reason', 'scripted')))
+            elif operation == 'install':
+                machine.begin_install()
+                machine.complete_install()
+            elif operation == 'begin-install':
+                machine.begin_install()
+            elif operation == 'complete-install':
+                machine.complete_install()
+            elif operation == 'fail-install':
+                machine.fail_install(str(step.get('reason', 'scripted')))
+            elif operation == 'reset':
+                machine.reset()
+            elif operation == 'status':
+                pass
+            else:
+                raise FumoError(f'unknown op: {operation!r}')
+            record['ok'] = True
+        except (FumoError, ValueError) as exc:
+            record['error'] = str(exc)
+            report['error'] = str(exc)
+        record['to'] = int(machine.state)
+        report['steps'].append(record)
+        if not record['ok']:
+            break
+    report.update({'installed_after': machine.installed_version,
+                   'final_state': int(machine.state),
+                   'events': machine.events})
+    report['ok'] = report['error'] is None
+    return report
+
+
 def run_exchange(installed: str | None = None, package_version: str = '8',
                  token: str = 'lab-token', fail_stage: str | None = None,
                  chunk_size: int = 7) -> dict:

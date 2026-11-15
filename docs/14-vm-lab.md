@@ -75,7 +75,8 @@ VM-validated (vendor kernel):
   auth structure, DTD/entity rejection and credential-redacted leaf diffs
 - offline FUMO exchange model (`fumo-exchange`): strict Idle/Downloading/
   Downloaded/Updating transitions, package size/hash/version admission, mock
-  DM endpoint and injected download/install failures; not dmengine or SyncML
+  DM endpoint, injected failures and a per-step `--script` runner; not
+  dmengine or SyncML
 - dmengine startup (`dmengine-startup`): real vendor DM engine with a lab
   DMCDEVINFO SysV segment, tree/config rewrite, FUMO/SCOMO plugin init and
   device-info acceptance; no DM session or production address

@@ -6,11 +6,13 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
 from harness.fumo import (FumoError, FumoMachine, MockDmEndpoint, Package,
-                          State, make_package, run_exchange, version_key)
+                          State, make_package, run_exchange, run_script,
+                          version_key)
 
 VM = Path(__file__).resolve().parents[1]
 
@@ -193,6 +195,63 @@ class ExchangeReportTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertEqual(json.loads(completed.stdout)['final_state'], 10)
 
+
+class FumoScriptTests(unittest.TestCase):
+    def test_full_script(self) -> None:
+        report = run_script([{'op': 'download'}, {'op': 'install'}])
+        self.assertTrue(report['ok'])
+        self.assertEqual(report['installed_after'], '8')
+        self.assertEqual(report['final_state'], 10)
+        self.assertEqual([step['ok'] for step in report['steps']],
+                         [True, True])
+        self.assertEqual(report['steps'][0]['from'], 10)
+        self.assertEqual(report['steps'][0]['to'], 30)
+
+    def test_failure_then_retry_script(self) -> None:
+        report = run_script([
+            {'op': 'begin-download'},
+            {'op': 'fail-download', 'reason': 'network'},
+            {'op': 'download'},
+            {'op': 'install'},
+        ])
+        self.assertTrue(report['ok'])
+        self.assertEqual(report['steps'][1]['to'], 10)
+        self.assertEqual(report['steps'][3]['to'], 10)
+        self.assertEqual(report['installed_after'], '8')
+
+    def test_invalid_operation_stops_fail_closed(self) -> None:
+        report = run_script([{'op': 'download'}, {'op': 'bogus'}])
+        self.assertFalse(report['ok'])
+        self.assertEqual(report['final_state'], 30)
+        self.assertEqual(report['steps'][-1]['ok'], False)
+        self.assertIn('unknown op', report['error'])
+
+    def test_bad_append_hex_fails_closed(self) -> None:
+        report = run_script([{'op': 'begin-download'},
+                             {'op': 'append', 'data': 'not-hex'}])
+        self.assertFalse(report['ok'])
+        self.assertEqual(report['final_state'], 20)
+
+    def test_cli_script(self) -> None:
+        with tempfile.TemporaryDirectory(prefix='vm-fumo-script-') as tmp:
+            path = Path(tmp) / 'script.json'
+            path.write_text(json.dumps([{'op': 'download'},
+                                        {'op': 'install'}]))
+            completed = subprocess.run(
+                [sys.executable, '-B', str(VM / 'launch.py'),
+                 'fumo-exchange', '--script', str(path)],
+                cwd=VM, capture_output=True, text=True, check=False)
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            report = json.loads(completed.stdout)
+            self.assertTrue(report['ok'])
+            self.assertEqual(report['final_state'], 10)
+            path.write_text(json.dumps([{'op': 'bogus'}]))
+            completed = subprocess.run(
+                [sys.executable, '-B', str(VM / 'launch.py'),
+                 'fumo-exchange', '--script', str(path)],
+                cwd=VM, capture_output=True, text=True, check=False)
+            self.assertEqual(completed.returncode, 1)
+            self.assertFalse(json.loads(completed.stdout)['ok'])
 
 if __name__ == '__main__':
     unittest.main()

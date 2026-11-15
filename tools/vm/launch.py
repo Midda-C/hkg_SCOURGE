@@ -64,7 +64,7 @@ from harness.visual import compare as visual_compare
 from harness.visual import list_baselines
 from harness.capture import check_capture
 from harness.dm_tree import check_dm_tree, diff_trees
-from harness.fumo import run_exchange
+from harness.fumo import run_exchange, run_script
 from harness.update_state import check_update_state
 from harness.update_media import check_update_media
 from harness.result_schema import (check_all_bench, check_all_bench_dir,
@@ -1694,6 +1694,8 @@ def main() -> int:
     fumo.add_argument('--package-version', default='8')
     fumo.add_argument('--fail', choices=('download', 'install'), default=None)
     fumo.add_argument('--chunk-size', type=int, default=7)
+    fumo.add_argument('--script', type=Path, default=None,
+                      help='JSON list of FUMO operations (download, install, failures)')
     check_state = sub.add_parser(
         'check-update-state', help='audit vendor /update metadata without exposing URLs')
     check_state.add_argument('path', type=Path)
@@ -2219,10 +2221,15 @@ def main() -> int:
             ok = ok and report['identical']
         return 0 if ok else 1
     if args.action == 'fumo-exchange':
-        report = run_exchange(installed=args.installed,
-                              package_version=args.package_version,
-                              fail_stage=args.fail,
-                              chunk_size=args.chunk_size)
+        if args.script is not None:
+            steps = json.loads(args.script.read_text())
+            report = run_script(steps, installed=args.installed,
+                                chunk_size=args.chunk_size)
+        else:
+            report = run_exchange(installed=args.installed,
+                                  package_version=args.package_version,
+                                  fail_stage=args.fail,
+                                  chunk_size=args.chunk_size)
         print(json.dumps(report, indent=2))
         return 0 if report['ok'] else 1
     if args.action == 'check-update-state':
