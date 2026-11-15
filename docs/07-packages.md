@@ -138,9 +138,9 @@ Summary for package authors:
   the stock binary; only startup-group/preload spawns verify. A sigstub
   patch now ships as part of the signatureless-update chain
   (`tools/update-debug/applauncher_sigstub.sh` for already-rooted cars,
-  baked into the build-4 stage-1 rootfs — VM-validated, car validation
-  pending, docs/08); until that chain is car-validated, custom apps stay
-  on Modes A/B. The alternative route to a separate-process app is
+  baked into the build-5 stage-1 rootfs — VM-validated and car-validated,
+  docs/08 and docs/17); the normal-USB chain is confirmed, so custom apps
+  can rely on the patched launcher. The alternative route to a separate-process app is
   **Mode G** (own Wayland process outside AppLauncher, where no `.sign`
   check applies — high confidence per the research, with a hard safety
   rule: never crash weston, its death triggers a MICOM watchdog reset of
