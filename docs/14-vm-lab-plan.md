@@ -1104,6 +1104,13 @@ items beyond that.
   update-success claim. Added `harness/dp.py` and `launch.py check-dp` to
   build and validate the container; 17 new tests. Real run PASS with fourteen
   checks; 535 tests (75 skipped); doctor green.
+- **2026-11-15 — FUMO update request reaches the engine**: after download the
+  mock answers the DM report session with a FUMO `Update` Exec. The engine
+  queues `./ManagedObjects/FUMO/Update`, then rejects the structural DP with
+  `0x6011` / FUMO `24593` and never reaches a completed update state.
+  `dmengine-fumo-update` asserts the request, rejection and no completion
+  (negative). Real run PASS with seventeen checks; 3 new tests; 538 tests
+  (75 skipped); doctor green.
 - **2026-11-15 — NAS import verified**: 9.4 GB preservation copy complete;
   all archives, partitions, runtime files and the navi2 archive match.
   `meta/SOURCE.txt` was finalized after the original manifest, so its one

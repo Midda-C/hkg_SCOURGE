@@ -32,7 +32,7 @@ class DmengineFumoDownloadTests(unittest.TestCase):
         command = scenario_command(
             load_scenario('dmengine-fumo-download'), load_profile('research'),
             kernel_target='compat')
-        for text in ('/tmp/mock-dm 8002 /tmp/mock-dm.log download',
+        for text in ('/tmp/mock-dm 8002 /tmp/mock-dm.log "$MODE"',
                      'CLIENT_DIGEST=', 'MOCK_DM_DD method=GET',
                      '/tmp/mock-oem 10', 'MOCK_DM_DOWNLOAD method=GET path=/object.bin',
                      'bytes=108', 'DL session complete', 'Set state, 40',

@@ -18,6 +18,9 @@ DLOK_PID=
 DM_PID=
 SERVER_PID=
 LOG=/log_data/AppUpgrade/fota/vdm.log
+MODE=${FUMO_MODE:-download}
+LOG_LEVEL=notice
+[ "$MODE" = update ] && LOG_LEVEL=debug
 
 fail() {
     echo "HARNESS_FAIL $1"
@@ -63,7 +66,7 @@ ln -sf /etc/shadow.Global /tmp/shadow || fail 'fumo-shadow'
 mkdir -p /update/fota/dme /update/usb/bin
 cp /app/share/dmengine/config.txt /tmp/lab-dm-config.txt || fail 'fumo-config'
 sed -i \
-    -e 's#^log_all=.*#log_all=notice#' \
+    -e "s#^log_all=.*#log_all=$LOG_LEVEL#" \
     -e 's#^is_MOFClient_used=.*#is_MOFClient_used=false#' \
     -e 's#^dmtreefile=.*#dmtreefile=tree.xml#' \
     -e 's#^MOFServer_host_name=.*#MOFServer_host_name=127.0.0.1#' \
@@ -90,7 +93,7 @@ if grep -q '210.183.168.13' /tmp/lab-tree.xml /tmp/lab-dm-config.txt; then
 fi
 
 : > /tmp/mock-dm.log
-/tmp/mock-dm 8002 /tmp/mock-dm.log download >/tmp/mock-dm.out 2>&1 &
+/tmp/mock-dm 8002 /tmp/mock-dm.log "$MODE" >/tmp/mock-dm.out 2>&1 &
 SERVER_PID=$!
 server_wait=0
 while [ "$server_wait" -lt 20 ]; do
@@ -238,6 +241,37 @@ if ! grep -q 'Set state, 30' /tmp/vdm-delta.log \
 fi
 echo 'HARNESS_CHECK fumo-state PASS'
 
+if [ "$MODE" = update ]; then
+    update_wait=0
+    while [ "$update_wait" -lt 45 ]; do
+        grep -q 'MOCK_DM_UPDATE_EXEC' /tmp/mock-dm.log 2>/dev/null && break
+        sleep 1
+        update_wait=$((update_wait + 1))
+    done
+    sleep 3
+    tail -c +$((LOG_MARK + 1)) "$LOG" > /tmp/vdm-delta.log 2>/dev/null
+    if ! grep -q 'MOCK_DM_UPDATE_EXEC' /tmp/mock-dm.log 2>/dev/null \
+        || ! grep -q 'targetURI=./ManagedObjects/FUMO/Update' /tmp/vdm-delta.log; then
+        tail -40 /tmp/mock-dm.log
+        grep -aE 'FUMO/Update|DM Report|Update' /tmp/vdm-delta.log | tail -30
+        fail 'fumo-update-request'
+    fi
+    echo 'HARNESS_CHECK fumo-update-request PASS'
+
+    if ! grep -q 'FUMO_Plugin_onSessionStateChange(DM): Error=\[24593\]' /tmp/vdm-delta.log \
+        || ! grep -q 'DM session aborted, 0x6011' /tmp/vdm-delta.log; then
+        grep -aE 'onSessionStateChange|session aborted|lastError' /tmp/vdm-delta.log | tail -30
+        fail 'fumo-update-rejected'
+    fi
+    echo 'HARNESS_CHECK fumo-update-rejected PASS'
+
+    if grep -q 'Set state, 60' /tmp/vdm-delta.log; then
+        grep -aE 'Set state' /tmp/vdm-delta.log | tail -20
+        fail 'fumo-update-no-completion'
+    fi
+    echo 'HARNESS_CHECK fumo-update-no-completion PASS'
+fi
+
 if grep -q '210.183.168.13' /tmp/vdm-delta.log /tmp/mock-dm.log /tmp/lab-tree.xml /tmp/lab-dm-config.txt; then
     fail 'fumo-production-address'
 fi
@@ -253,4 +287,8 @@ grep -aE 'MOCK_DM_DD|MOCK_DM_DOWNLOAD' /tmp/mock-dm.log 2>/dev/null | head -8
 kill "$DM_PID" "$OEM_PID" "$DLOK_PID" "$SERVER_PID" 2>/dev/null || true
 sleep 1
 kill -9 "$DM_PID" "$OEM_PID" "$DLOK_PID" "$SERVER_PID" 2>/dev/null || true
-echo 'HARNESS_CHECK dmengine-fumo-download PASS'
+if [ "$MODE" = update ]; then
+    echo 'HARNESS_CHECK dmengine-fumo-update PASS'
+else
+    echo 'HARNESS_CHECK dmengine-fumo-download PASS'
+fi

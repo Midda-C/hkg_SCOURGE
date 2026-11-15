@@ -98,6 +98,10 @@ VM-validated (vendor kernel):
   complete` and FUMO state 30 -> 40 are asserted. `launch.py check-dp`
   validates the container layout. The DP is a structural fixture, so this is
   a download, not an install
+- FUMO update request (`dmengine-fumo-update`): the mock answers the DM report
+  session with a FUMO Update Exec. The engine queues
+  `./ManagedObjects/FUMO/Update` and rejects the structural DP with
+  `0x6011` / FUMO `24593`; no completed update state is asserted (negative)
 - device-model regression (`device-model`): asserts Q35 host bridge, SDHCI
   root, ICH9 LPC/SATA and no virtio; substrate only, not captured BXT hardware
 - AppDMClient fota callback (`dmclient-fota-events`): `/fotaInterface`

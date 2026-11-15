@@ -274,7 +274,7 @@ static void put_server_cred(struct buffer *buffer, const char *digest)
 static int build_response(const unsigned char *body, size_t length,
                           unsigned char *output, size_t capacity,
                           char *session, size_t session_size,
-                          int download_mode, int send_exec)
+                          int download_mode, int send_exec, int send_update)
 {
     static const char string_table[] = "-//SYNCML//DTD SyncML 1.2//EN";
     struct wbxml_string strings[MAX_STRINGS];
@@ -349,7 +349,9 @@ static int build_response(const unsigned char *body, size_t length,
     put_status(&buffer, "1", "1", "Alert");
     put_status(&buffer, "2", "2", "Replace");
     put_status(&buffer, "3", "3", "Alert");
-    if (send_exec)
+    if (send_update)
+        put_exec(&buffer, "./ManagedObjects/FUMO/Update", "");
+    else if (send_exec)
         put_exec(&buffer, "./ManagedObjects/FUMO/Download",
                     "http://127.0.0.1:8002/package.bin");
     put_byte(&buffer, TOKEN_FINAL);
@@ -419,7 +421,9 @@ int main(int argc, char **argv)
 {
     int port = argc > 1 ? atoi(argv[1]) : 8002;
     const char *log_path = argc > 2 ? argv[2] : "/tmp/mock-dm.log";
-    int download_mode = argc > 3 && strcmp(argv[3], "download") == 0;
+    int update_mode = argc > 3 && strcmp(argv[3], "update") == 0;
+    int download_mode = argc > 3
+        && (strcmp(argv[3], "download") == 0 || update_mode);
     int server = socket(AF_INET, SOCK_STREAM, 0);
     int one = 1;
     struct sockaddr_in addr;
@@ -584,11 +588,25 @@ int main(int argc, char **argv)
                 }
             }
         }
+        if (strcmp(method, "POST") == 0 && content_length > 900
+            && requests >= 2 && (size_t)used > body_offset) {
+            FILE *third = fopen("/tmp/dm-request3.bin", "wb");
+            if (third != NULL) {
+                fwrite(request + body_offset, 1,
+                       (size_t)used - body_offset, third);
+                fclose(third);
+            }
+        }
         if ((size_t)used > body_offset) {
+            int report = download_mode && content_length > 900
+                         && requests >= 2;
             response_body = build_response(
                 request + body_offset, (size_t)used - body_offset,
                 response, sizeof(response), session, sizeof(session),
-                download_mode, download_mode && requests == 0);
+                download_mode, download_mode && requests == 0,
+                update_mode && report);
+            if (update_mode && report)
+                fprintf(log, "MOCK_DM_UPDATE_EXEC path=/dm/message\n");
         }
         fprintf(log,
                 "MOCK_DM_REQUEST method=%s path=%s content_type=%s "

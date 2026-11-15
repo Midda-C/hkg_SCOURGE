@@ -921,6 +921,33 @@ to `40` (downloaded), and in this run also to `50` (update progressing). The
 DP is a structural fixture with no component table or signature, so no
 install or update-success is claimed. A real run passes all fourteen checks.
 
+## dmengine FUMO update request (Mode C, negative)
+
+```sh
+python3 -B launch.py run --kernel compat --profile research \
+  --scenario dmengine-fumo-update --payload payload/tweaks-vm --timeout 320
+```
+
+Runs the authenticated DD/DP download, then lets the mock answer the DM report
+session with a FUMO `Update` Exec on `./ManagedObjects/FUMO/Update`. The
+engine queues the command and reaches the update path:
+
+```text
+MOCK_DM_UPDATE_EXEC path=/dm/message
+targetURI=./ManagedObjects/FUMO/Update
+FUMO_Plugin_onSessionStateChange(DM): Error=[24593]
+DM session aborted, 0x6011
+```
+
+This is a **negative** install-request test. The 108-byte DP has no signature or
+update payload, so the engine rejects it and never reaches a completed update
+state (`Set state, 60` is absent). The scenario asserts the request, the
+rejection, and no completion; it does not claim an install. It runs dmengine at
+debug log level because the FUMO update target is logged at debug.
+
+A real run passes all seventeen checks. The positive download scenario remains
+`dmengine-fumo-download` (notice level, fourteen checks).
+
 ## dmengine startup (Mode C)
 
 ```sh
