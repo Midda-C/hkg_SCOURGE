@@ -1007,6 +1007,12 @@ items beyond that.
   corrupted manifest hash are rejected, restores the files and re-verifies.
   Real run PASS with nine checks in about six seconds; 3 new tests. 450 tests
   (73 skipped); doctor green.
+- **2026-11-15 — P2-7 FUMO exchange model**: `fumo-exchange` models OMA FUMO
+  states 10/20/30/40 with strict transitions, package version/URL/size/hash
+  admission, a mock DM token endpoint and injected download/install failures.
+  Canonical exchange ends at Idle with version 8; install failure stays
+  Downloaded for retry. Model only, not dmengine/SyncML. 18 new tests; 468
+  tests (73 skipped); doctor green.
 - **2026-11-15 — NAS import verified**: 9.4 GB preservation copy complete;
   all archives, partitions, runtime files and the navi2 archive match.
   `meta/SOURCE.txt` was finalized after the original manifest, so its one

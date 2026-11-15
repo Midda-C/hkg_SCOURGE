@@ -64,6 +64,7 @@ from harness.visual import compare as visual_compare
 from harness.visual import list_baselines
 from harness.capture import check_capture
 from harness.dm_tree import check_dm_tree, diff_trees
+from harness.fumo import run_exchange
 from harness.update_media import check_update_media
 from harness.result_schema import (check_all_bench, check_all_bench_dir,
                                    check_all_results, schema_state,
@@ -1686,6 +1687,12 @@ def main() -> int:
                                  help='diff leaf paths against a second tree (redacted)')
     check_dm_parser.add_argument('--fail-on-diff', action='store_true',
                                  help='with --compare, exit 1 when the trees differ')
+    fumo = sub.add_parser(
+        'fumo-exchange', help='run the offline FUMO state-machine exchange model')
+    fumo.add_argument('--installed', default=None, metavar='VERSION')
+    fumo.add_argument('--package-version', default='8')
+    fumo.add_argument('--fail', choices=('download', 'install'), default=None)
+    fumo.add_argument('--chunk-size', type=int, default=7)
     check_scenario = sub.add_parser('check-scenario',
                                     help='validate scenario JSON contracts')
     check_scenario.add_argument('scenario', nargs='?',
@@ -2207,6 +2214,13 @@ def main() -> int:
         if args.compare is not None and args.fail_on_diff:
             ok = ok and report['identical']
         return 0 if ok else 1
+    if args.action == 'fumo-exchange':
+        report = run_exchange(installed=args.installed,
+                              package_version=args.package_version,
+                              fail_stage=args.fail,
+                              chunk_size=args.chunk_size)
+        print(json.dumps(report, indent=2))
+        return 0 if report['ok'] else 1
     if args.action == 'check-bench':
         if args.all and args.path:
             ap.error('check-bench accepts a path or --all, not both')

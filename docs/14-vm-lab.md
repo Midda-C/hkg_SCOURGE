@@ -70,6 +70,9 @@ VM-validated (vendor kernel):
   media is restored; the base stick is never modified
 - DM/RDM tree validation and diff (`check-dm-tree`): FUMO state, account and
   auth structure, DTD/entity rejection and credential-redacted leaf diffs
+- offline FUMO exchange model (`fumo-exchange`): strict Idle/Downloading/
+  Downloaded/Updating transitions, package size/hash/version admission, mock
+  DM endpoint and injected download/install failures; not dmengine or SyncML
 - vendor systemd partial boot (`vendor-systemd`): real systemd reaches
   Multi-User; SMACK units fail, consistent with the missing vendor initramfs (documented)
 - vendor systemd D-Bus service/ordering (`vendor-systemd-dbus`): the research shell

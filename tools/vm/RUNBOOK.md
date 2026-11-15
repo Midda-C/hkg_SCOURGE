@@ -699,6 +699,25 @@ corrupted manifest hash are each rejected. It restores both files, re-verifies
 the baseline and requires nine checks. The base stick is untouched; the
 overlay is discarded after the run.
 
+## Offline FUMO exchange model
+
+```sh
+python3 -B launch.py fumo-exchange [--installed VERSION] \
+  [--package-version VERSION] [--fail download|install] [--chunk-size N]
+```
+
+A deterministic model of the OMA FUMO states (Idle 10, Downloading 20,
+Downloaded 30, Updating 40), not the vendor dmengine and not SyncML. It
+validates package names/versions, `http(s)` URLs without credentials or
+fragments, declared size and SHA-256, rejects downgrades, and drives a mock
+DM endpoint that checks a lab token and installed version.
+
+The canonical run downloads in chunks and installs, ending at Idle with the
+new version. `--fail download` returns to Idle with the package cleared;
+`--fail install` stays Downloaded so the install can be retried. Invalid
+transitions, oversized chunks and digest/size mismatches fail closed and are
+recorded as error events. No sockets, credentials, OEM code or VM are used.
+
 ## DM/RDM tree validation and diff
 
 ```sh
