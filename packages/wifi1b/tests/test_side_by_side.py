@@ -66,6 +66,11 @@ with (root / 'commands.log').open('a') as f:
     f.write(name + ' ' + repr(args) + '\n')
 def save():
     statefile.write_text(json.dumps(state))
+if name == 'md5sum':
+    if len(args) == 1 and args[0].endswith('/lib/systemd/system/connman.service'):
+        print('58f77230485566943fc8b7a38175034a  ' + args[0])
+        sys.exit(0)
+    os.execv('/usr/bin/md5sum', ['md5sum', *args])
 if name in ('sleep', 'mount', 'sync', 'chown', 'setfattr', 'iptables', 'ip6tables'):
     sys.exit(0)
 if name == 'date':
@@ -163,11 +168,16 @@ class Fixture:
         fake.write_text(FAKE)
         fake.chmod(0o755)
         for name in ("systemctl", "sleep", "mount", "sync", "chown", "date", "getfattr",
-                     "setfattr", "chsmack", "cp", "pidof", "dbus-send", "iptables", "ip6tables"):
+                     "setfattr", "chsmack", "cp", "pidof", "dbus-send", "iptables",
+                     "ip6tables", "md5sum"):
             (self.bin / name).symlink_to(fake)
-        for directory in ("etc/systemd/system", "tmp", "proc", "run/wifi1b", "home",
-                          "rw_data/wifi1b", "rw_data/wifi", "root/cache", "app/share/AppHomeScreen"):
+        for directory in ("etc/systemd/system", "etc/systemd/system/connman.service.d",
+                          "lib/systemd/system", "tmp", "proc", "run/wifi1b", "home",
+                          "rw_data/wifi1b", "rw_data/wifi", "root/cache",
+                          "app/share/AppHomeScreen"):
             (self.root / directory).mkdir(parents=True, exist_ok=True)
+        (self.root / "lib/systemd/system/connman.service").write_text(
+            "# fixture vendor connman unit\n[Service]\nExecStart=/bin/true\n")
         (self.root / "proc/mounts").write_text(f'device {self.root} ext4 rw 0 0\n')
         (self.root / "tmp/shells").write_text("")
         (self.root / "etc/passwd").write_text("root:x:0:0:root:/root:/bin/sh\ncar:x:0:0:Car User:/rw_data/wifi/home:/bin/sh\n")
@@ -262,7 +272,10 @@ class Fixture:
                         WIFI1B_RW_DIR=str(self.rw2),
                         WIFI1B_QML_ROOT=str(self.qml.parent),
                         CLEANUP_PROC_ROOT=str(self.root / "proc"),
-                        WIFI1B_SERVICE=str(self.root / "etc/systemd/system/wifi1b-daemon.service"))
+                        WIFI1B_SERVICE=str(self.root / "etc/systemd/system/wifi1b-daemon.service"),
+                        WIFI1B_CONNMAN_UNIT=str(self.root / "lib/systemd/system/connman.service"),
+                        WIFI1B_CONNMAN_DROPIN=str(
+                            self.root / "etc/systemd/system/connman.service.d/60-scourge-nodevice.conf"))
         state = {"active": {}, "enabled": {"wifi-daemon.service": "enabled"},
                  "home_pid": 1000, "serial": 1000}
         (self.root / "state.json").write_text(json.dumps(state))
@@ -555,6 +568,34 @@ def exercise_service_restore() -> None:
 
 exercise_service_restore()
 print("PASS: pre-existing service bytes and enabled/disabled state restored; foreign-modified service preserved")
+
+V21_CONNMAN = """# SPDX-FileCopyrightText: 2026 The SCOURGE Project contributors
+# SPDX-License-Identifier: AGPL-3.0-only
+# SCOURGE_CONNMAN_NODEVICE=1
+# Keep ConnMan away from the telematics modem interfaces.  The vendor unit
+# already excludes rmnet_usb1..7 and ncm0; rmnet_usb0 carries the primary
+# BlueLink/nav data route and must not be reconfigured by ConnMan when the
+# WiFi app starts it for client or AP mode.
+[Service]
+ExecStart=
+ExecStart=/usr/sbin/connmand -n --nodnsproxy --nobacktrace --nodevice=rmnet_usb0,rmnet_usb1,rmnet_usb2,rmnet_usb3,rmnet_usb4,rmnet_usb5,rmnet_usb6,rmnet_usb7,wwan0,usb0,dbg0,dbg1,dbg2,can0,eth1,eth2,ncmF0,usb1,eth0,tem0,br0,br0:0,ncm0
+"""
+
+with tempfile.TemporaryDirectory(prefix="wifi1b-connman-", dir="/tmp/opencode") as directory:
+    fixture = Fixture(Path(directory), tweaks=True)
+    dropin = (fixture.root /
+              "etc/systemd/system/connman.service.d/60-scourge-nodevice.conf")
+    payload_dropin = fixture.usb / "payload/systemd/60-connman-nodevice.conf"
+    report = fixture.run(fixture.install)
+    assert "status=OK" in report or "status=REBOOT_REQUIRED" in report, report
+    assert dropin.read_bytes() == payload_dropin.read_bytes()
+    dropin.write_text(V21_CONNMAN)
+    report = fixture.run(fixture.install)
+    assert "status=OK" in report or "status=REBOOT_REQUIRED" in report, report
+    assert dropin.read_bytes() == payload_dropin.read_bytes(), "known V21 drop-in not upgraded"
+    dropin.write_text("# owner changed this after install\n[Service]\nExecStart=/bin/true\n")
+    fixture.run(fixture.install, expect_fail=True)
+print("PASS: known V21 ConnMan drop-in upgrades; unknown owner override still refused")
 
 for prior in ('identical', 'unknown'):
     with tempfile.TemporaryDirectory(prefix='wifi1b-mdns-', dir='/tmp/opencode') as directory:

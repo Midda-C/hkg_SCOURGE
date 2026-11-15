@@ -80,7 +80,20 @@ bundle's own radio daemons; no manual WiFi Off step is needed.
 CarPlay AP defaults:
   SSID IONIQ5-CarPlay-B, 5 GHz channel 36, country GB
   static 10.42.0.1/24, own DHCP pool 10.42.0.10-200
-  SSH user wifi1b, UID 0, key-only, port 2224, bind-all
+  SSH user wifi1b, UID 0, key-only, configured port (default 2224), bind-all
+
+V22 BlueLink-safe client routing:
+  While rmnet_usb0/rmnet_usb1 has an IPv4 address, client mode installs no
+  WiFi default route. WiFi is SSH-only; the modem default and per-server host
+  routes stay authoritative. The V21 `route replace default via wlan0` route
+  is removed on client start. If no modem data IPv4 exists, a bounded
+  high-metric proto-66 fallback is installed. A 30 s audit reconciles the two.
+  Advanced: client_route_policy=fallback in /rw_data/wifi1b/config.conf.
+
+V22 Orange Pi USB-SSH:
+  usb0 is configured as 10.55.0.2/24 with no default route. The generated
+  runtime udev rule/helper uses the configured SSH port and remains available
+  when WiFi is Off. ConnMan is kept off usb0. A missing Pi is a no-op.
 
 The UID 0 wifi1b account is a deliberate product default, not a hidden
 credential, and it is NOT car-validated. Owner keys in /rw_data/wifi1b are
