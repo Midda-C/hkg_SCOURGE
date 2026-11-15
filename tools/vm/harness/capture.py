@@ -61,6 +61,20 @@ def parse_sums(path: Path) -> tuple[list[tuple[str, str]], list[str]]:
     return entries, problems
 
 
+def _target(root: Path, rel: str, problems: list[str]) -> Path | None:
+    candidate = root / rel
+    try:
+        resolved = candidate.resolve()
+        base = root.resolve()
+    except OSError as exc:
+        problems.append(f'cannot resolve hash target {rel}: {exc}')
+        return None
+    if resolved != base and base not in resolved.parents:
+        problems.append(f'hash target escapes capture root: {rel}')
+        return None
+    return candidate
+
+
 def check_capture(root: Path, verify_hashes: bool = False) -> dict:
     """Check capture layout and optional hashes; never extract target data."""
     root = Path(root)
@@ -106,7 +120,9 @@ def check_capture(root: Path, verify_hashes: bool = False) -> dict:
         entries, sum_problems = parse_sums(sums)
         problems.extend(sum_problems)
         for expected, rel in entries:
-            target = root / rel
+            target = _target(root, rel, problems)
+            if target is None:
+                continue
             if not target.is_file():
                 missing.append(rel)
                 continue
@@ -121,7 +137,9 @@ def check_capture(root: Path, verify_hashes: bool = False) -> dict:
         problems.extend(navi_problems)
         navi_entries = len(extra)
         for expected, rel in extra:
-            target = root / rel
+            target = _target(root, rel, problems)
+            if target is None:
+                continue
             if not target.is_file():
                 missing.append(rel)
                 continue

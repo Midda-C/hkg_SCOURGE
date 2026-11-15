@@ -110,6 +110,16 @@ class CaptureTests(unittest.TestCase):
         self.assertEqual(report['missing'], [])
         self.assertEqual(report['hashes_verified'], 5)
 
+    def test_hash_target_cannot_escape_root(self) -> None:
+        outside = self.root.parent / 'outside.txt'
+        outside.write_bytes(b'outside')
+        with (self.root / 'meta/SHA256SUMS').open('a') as handle:
+            handle.write(f'{digest(b"outside")}  ../outside.txt\n')
+        report = check_capture(self.root)
+        self.assertFalse(report['ok'])
+        self.assertTrue(any('escapes capture root' in problem
+                            for problem in report['problems']))
+
     def test_missing_root(self) -> None:
         report = check_capture(self.root / 'missing')
         self.assertFalse(report['ok'])
