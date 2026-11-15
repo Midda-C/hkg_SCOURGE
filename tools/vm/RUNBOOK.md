@@ -198,6 +198,8 @@ python3 -B launch.py daemon stop
 
 The daemon keeps the QEMU process, serial reader, QMP socket and state lock
 alive; `exec`/`screenshot` use a control socket in `runs/daemon/`.
+`daemon start --rootfs PATH` selects a local base vendor rootfs image, the
+same override as `run`.
 `daemon start` rejects zero/negative `--command-log-max`,
 `--screenshot-keep` and `--exec-output-max` before boot. `daemon exec` caps
 returned output at `--exec-output-max` bytes (default 1 MiB), keeping the tail
@@ -603,6 +605,30 @@ the vehicle/micom hardware. This proves socket/service startup in order,
 not on-demand client-triggered activation. The preparation is a **lab
 fixture**, not the vendor initramfs and not esinit; this is not stock boot
 equivalence.
+
+## Vendor esinit partial boot (Mode V)
+
+```sh
+python3 -B launch.py run --profile conformance --scenario vendor-esinit \
+  --rootfs /path/to/rootfs.img --timeout 180
+```
+
+Boots the vendor rootfs with its real `/lib/systemd/esinit` as PID 1. The
+scenario passes only when the serial log proves the non-FDE decision
+(`FDE SUPPORT: No`) and the selected non-FDE fstab
+(`[FDE] ***** use fstab for non FDE`); `boot_markers` maps each evidence
+string to a check. This exercises OEM/car/country detection, eMMC fsck and
+the FDE gate without the research shell.
+
+It stops there deliberately: without micom/thermal hardware, the lge-fan
+driver attach enters uninterruptible sleep in `__driver_attach` during
+`modprobe fan`, so systemd is never reached. The trace evidence is in
+`NOTES.md`. This is a partial boot, not stock equivalence.
+
+`--rootfs PATH` selects a local base image instead of the default
+`vm/rootfs.img`; the image stays outside git and overlays remain disposable.
+Use it when the default image lives on a slow network share. `doctor` and
+`daemon start` accept the same option.
 
 ## Troubleshooting
 

@@ -959,5 +959,21 @@ items beyond that.
   capture root; `../`/symlink escapes are rejected; `--reject-maps` turns
   map warnings into failures; unlisted archives/partitions are rejected.
   408 tests; doctor green.
+- **2026-11-15 — vendor esinit + local rootfs**: `vendor-esinit` boots the
+  real `/lib/systemd/esinit` as PID 1 and requires the non-FDE decision and
+  fstab selection (`FDE SUPPORT: No`, `use fstab for non FDE`) via the new
+  `boot_markers` contract. A traced run reaches `modprobe fan`, whose
+  `lge-fan` driver attach sleeps in `__driver_attach` without micom/thermal
+  hardware, so systemd is not reached; documented as a partial boot.
+  `--rootfs PATH` selects a local vendor rootfs base (OEM image outside git)
+  instead of the network-backed default and is shared by `run`, `doctor` and
+  `daemon start`. Real run PASS; 419 tests (71 skipped); doctor green with
+  both the default and a local base.
+- **2026-11-15 — NAS import verified**: 9.4 GB preservation copy complete;
+  all archives, partitions, runtime files and the navi2 archive match.
+  `meta/SOURCE.txt` was finalized after the original manifest, so its one
+  stale entry was corrected on the NAS with `SHA256SUMS.orig-20261115` and
+  `MANIFEST-CORRECTION.txt`; the capture script now writes metadata first and
+  hashes last, excluding `SHA256SUMS*`.
 - **Remaining:** P2-3 (recorder), P2-6 (hardware) and the now-feasible
   P2-7/P2-8/P2-9 slices using the car dump; P3 deferred.

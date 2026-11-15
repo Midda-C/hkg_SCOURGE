@@ -65,6 +65,11 @@ VM-validated (vendor kernel):
   prepares the missing runtime layout and hands PID 1 to systemd; the D-Bus
   socket/service start before Multi-User, with micommanager still failing
   without vehicle hardware (lab fixture, not stock/esinit)
+- vendor esinit partial boot (`vendor-esinit`): the real vendor
+  `/lib/systemd/esinit` runs as PID 1 through OEM/car/country detection, eMMC
+  fsck and the non-FDE fstab decision; the lge-fan driver attach blocks
+  without micom/thermal hardware, so systemd is not reached (partial boot,
+  documented hardware gate)
 - synthetic micom CAN interface smoke (`can-smoke`): READY/CALL/ACK for
   fixed and bulk calls; contract only, not real CAN timing
 - vehicle-state model (`vehicle-state`): lab-defined fixed-frame decode for
