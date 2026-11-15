@@ -62,6 +62,9 @@ VM-validated (vendor kernel):
 - offline update-media validation (`check-update`): package-map grammar,
   manifest coverage and confinement, optional hashes and declared sizes for a
   directory or raw ext4 stick; no decryption or updater execution
+- update-media preflight (`update-preflight`): read-only Mode V mount,
+  package-map grammar/sizes, manifest hashes and opaque-payload checks without
+  launching the updater
 - DM/RDM tree validation and diff (`check-dm-tree`): FUMO state, account and
   auth structure, DTD/entity rejection and credential-redacted leaf diffs
 - vendor systemd partial boot (`vendor-systemd`): real systemd reaches

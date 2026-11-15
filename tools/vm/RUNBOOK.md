@@ -664,6 +664,28 @@ arbitrary names. Exit 0/1 with a JSON report.
 The real `update-k.img` passes with 35 package entries, 2 manifest targets and
 header `NE_E.EUR.S5W_L.001.001.260128` / `IONIQ5_EU`.
 
+## Update-media preflight (Mode V)
+
+```sh
+python3 -B launch.py run --profile research --scenario update-preflight \
+  --usb update-k.img --timeout 240
+```
+
+Mounts the real update stick read-only in the vendor rootfs and validates it
+without launching `AppUpgrade`, decrypting the package or staging an update:
+
+- required `.lge.upgrade.xml`, `IONIQ5_EU.ver` and `MANIFEST.sha256`
+- the package blob is opaque (not plain XML), and the payload is not a plain
+  gzip or tar despite the `.tar.gz` name
+- the 7-field header, 6-field entries, product/path confinement, safe
+  filenames and declared sizes for files present on the stick
+- `MANIFEST.sha256` format and every listed hash
+- no `AppUpgrade`/`dmengine` process and no `/tmp/AppUpgrade` staging
+
+A real run with `update-k.img` passes all five checks in about six seconds.
+This is a preflight only; it does not verify the encrypted envelope or run the
+engine.
+
 ## DM/RDM tree validation and diff
 
 ```sh

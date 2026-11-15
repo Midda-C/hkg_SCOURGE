@@ -988,6 +988,12 @@ items beyond that.
   `--compare` reports credential-redacted leaf-path diffs; the stock and
   update trees are identical. 10 new tests; 441 tests (73 skipped); doctor
   green.
+- **2026-11-15 — P2-7 Mode V update preflight**: `update-preflight` mounts
+  `update-k.img` read-only in the vendor rootfs, validates the package-map
+  grammar/paths/sizes, verifies `MANIFEST.sha256`, requires an opaque
+  (encrypted) payload and asserts the updater was not launched. Real run PASS
+  with all five checks in about six seconds; 1 new probe test. 444 tests
+  (73 skipped); doctor green.
 - **2026-11-15 — NAS import verified**: 9.4 GB preservation copy complete;
   all archives, partitions, runtime files and the navi2 archive match.
   `meta/SOURCE.txt` was finalized after the original manifest, so its one

@@ -19,7 +19,7 @@ SCENARIO_NAMES = ('boot', 'usb-discovery', 'dbus-ready', 'dmclient-events',
                   'recovery-corrupt-media', 'recovery-usb-removal',
                   'recovery-power-loss', 'vendor-systemd',
                   'vendor-systemd-dbus', 'vendor-esinit',
-                  'recovery-repeat-update')
+                  'update-preflight', 'recovery-repeat-update')
 
 
 def load_profile(name: str) -> dict:
@@ -95,6 +95,8 @@ echo 'HARNESS_CHECK recovery-no-space PASS'
         return (VM / 'probes' / 'recovery-corrupt-media.sh').read_text()
     if name == 'recovery-repeat-update':
         return (VM / 'probes' / 'recovery-repeat-update.sh').read_text()
+    if name == 'update-preflight':
+        return (VM / 'probes' / 'update-preflight.sh').read_text()
     if name == 'recovery-usb-removal':
         return r'''set -u
 modprobe ehci-pci 2>/dev/null || true
