@@ -1030,6 +1030,12 @@ items beyond that.
   before/after state and fail-closed error records. The MOF trigger
   investigation reached the vendor `recvDM_01` handler and event 93 but no
   HTTP session yet. 5 new tests; 486 tests (74 skipped); doctor green.
+- **2026-11-15 — P2-7 MOF notification codec**: `mof-notify` decodes and
+  builds the `msgtype=4&cor=<base64>` device/version notification with VIN,
+  previous/next versions and update id; server hosts are never printed. The
+  captured notification decodes to a 17-character VIN and 250226 -> 250604.
+  This supplies the `recvDM_01` input; the OEM session callback remains the
+  blocker. 5 new tests; 491 tests (75 skipped); doctor green.
 - **2026-11-15 — NAS import verified**: 9.4 GB preservation copy complete;
   all archives, partitions, runtime files and the navi2 archive match.
   `meta/SOURCE.txt` was finalized after the original manifest, so its one

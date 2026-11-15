@@ -723,6 +723,28 @@ corrupted manifest hash are each rejected. It restores both files, re-verifies
 the baseline and requires nine checks. The base stick is untouched; the
 overlay is discarded after the run.
 
+## MOF notification codec
+
+```sh
+python3 -B launch.py mof-notify <notification-uri>
+python3 -B launch.py mof-notify --encode [--vin ...] [--previous ...] \
+  [--next ...] [--update-id ...] [--host ...]
+```
+
+Decodes the captured `/dm/message?msgtype=4&cor=<base64>` notification shape:
+eight pipe-delimited device fields, a caret-delimited `VIN:<17>_AVN` record,
+previous/next versions, update id and client type. It validates the msgtype,
+path, base64, VIN, versions and numeric update id. Reports contain no server
+host or signed query values.
+
+`--encode` builds a lab notification with the default VIN
+`VIN:LABVIN00000000000_AVN`, versions and update id. This is the input the MOF
+client passes to `recvDM_01`; it does not provide the OEM callback that starts
+the engine's FUMO session.
+
+The captured notification decodes with msgtype 4, a 17-character VIN,
+`NE_E.XXX...250226` -> `NE_E.XXX...250604` and update id 54728.
+
 ## dmengine startup (Mode C)
 
 ```sh

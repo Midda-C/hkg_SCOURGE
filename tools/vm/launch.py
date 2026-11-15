@@ -65,6 +65,7 @@ from harness.visual import list_baselines
 from harness.capture import check_capture
 from harness.dm_tree import check_dm_tree, diff_trees
 from harness.fumo import run_exchange, run_script
+from harness.mof import MofError, build_notification, decode_notification
 from harness.update_state import check_update_state
 from harness.update_media import check_update_media
 from harness.result_schema import (check_all_bench, check_all_bench_dir,
@@ -1699,6 +1700,16 @@ def main() -> int:
     check_state = sub.add_parser(
         'check-update-state', help='audit vendor /update metadata without exposing URLs')
     check_state.add_argument('path', type=Path)
+    mof = sub.add_parser(
+        'mof-notify', help='decode a MOF/FUMO notification URI or build a lab one')
+    mof.add_argument('uri', nargs='?')
+    mof.add_argument('--encode', action='store_true')
+    mof.add_argument('--vin', default='VIN:LABVIN00000000000_AVN')
+    mof.add_argument('--previous', default='NE_E.EUR.S5W_L.001.001.250226')
+    mof.add_argument('--next', dest='next_version',
+                     default='NE_E.EUR.S5W_L.001.001.250604')
+    mof.add_argument('--update-id', default='54728')
+    mof.add_argument('--host', default='127.0.0.1:8002')
     check_scenario = sub.add_parser('check-scenario',
                                     help='validate scenario JSON contracts')
     check_scenario.add_argument('scenario', nargs='?',
@@ -2232,6 +2243,22 @@ def main() -> int:
                                   chunk_size=args.chunk_size)
         print(json.dumps(report, indent=2))
         return 0 if report['ok'] else 1
+    if args.action == 'mof-notify':
+        try:
+            if args.encode:
+                uri = build_notification(args.vin, args.previous,
+                                         args.next_version, args.update_id,
+                                         args.host)
+                report = {'ok': True, 'uri': uri}
+            else:
+                if not args.uri:
+                    ap.error('mof-notify requires a URI or --encode')
+                report = {'ok': True, **decode_notification(args.uri)}
+        except MofError as exc:
+            print(json.dumps({'ok': False, 'error': str(exc)}, indent=2))
+            return 1
+        print(json.dumps(report, indent=2))
+        return 0
     if args.action == 'check-update-state':
         report = check_update_state(args.path)
         print(json.dumps(report, indent=2))

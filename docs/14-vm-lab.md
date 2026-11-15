@@ -80,6 +80,9 @@ VM-validated (vendor kernel):
 - dmengine startup (`dmengine-startup`): real vendor DM engine with a lab
   DMCDEVINFO SysV segment, tree/config rewrite, FUMO/SCOMO plugin init and
   device-info acceptance; no DM session or production address
+- MOF notification codec (`mof-notify`): decode/encode the
+  `msgtype=4&cor=...` device/version notification, with host redaction;
+  supplies the `recvDM_01` input but not the OEM session callback
 - vendor systemd partial boot (`vendor-systemd`): real systemd reaches
   Multi-User; SMACK units fail, consistent with the missing vendor initramfs (documented)
 - vendor systemd D-Bus service/ordering (`vendor-systemd-dbus`): the research shell
