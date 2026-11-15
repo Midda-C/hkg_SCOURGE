@@ -12,7 +12,8 @@ import unittest
 from pathlib import Path
 
 from harness.dp import (DpComponent, DpError, DpUpdate, HEADER_SIZE,
-                        PREAMBLE, build_dp, check_dp, parse_dp)
+                        PREAMBLE, SIG_MAGIC, SIG_TRAILER, build_dp, check_dp,
+                        parse_dp)
 
 
 class DpBuildTests(unittest.TestCase):
@@ -69,6 +70,38 @@ class DpBuildTests(unittest.TestCase):
         self.assertEqual(report['components'][0]['update_count'], 1)
         self.assertEqual(report['components'][0]['updates'],
                          [{'offset': 116, 'size': 16}])
+
+    def test_signature_trailer(self) -> None:
+        key = b'lab-dp-key'
+        body = build_dp([DpComponent('LABCOMP', 'LABID',
+                                     vendor='LABVENDOR')])
+        data = build_dp([DpComponent('LABCOMP', 'LABID',
+                                     vendor='LABVENDOR')], signing_key=key)
+        self.assertEqual(len(data), len(body) + SIG_TRAILER)
+        self.assertEqual(data[len(body):len(body) + len(SIG_MAGIC)], SIG_MAGIC)
+        report = parse_dp(data, key)
+        self.assertTrue(report['ok'], report['problems'])
+        self.assertEqual(report['body_size'], len(body))
+        self.assertEqual(report['signature'],
+                         {'present': True, 'algorithm': 'hmac-sha256',
+                          'valid': True})
+
+    def test_signature_detects_tampering(self) -> None:
+        key = b'lab-dp-key'
+        data = bytearray(build_dp([DpComponent('LABCOMP', 'LABID',
+                                               updates=(DpUpdate(b'DATA'),))],
+                                  signing_key=key))
+        data[data.index(b'DATA')] ^= 0x01
+        report = parse_dp(bytes(data), key)
+        self.assertFalse(report['ok'])
+        self.assertIn('signature mismatch', report['problems'])
+
+    def test_signature_without_key_is_unverified(self) -> None:
+        data = build_dp([DpComponent('LABCOMP', 'LABID')],
+                        signing_key=b'lab-dp-key')
+        report = parse_dp(data)
+        self.assertTrue(report['ok'], report['problems'])
+        self.assertEqual(report['signature']['valid'], None)
 
     def test_rejects_empty_component_list(self) -> None:
         with self.assertRaises(DpError):
@@ -143,6 +176,16 @@ class DpFileTests(unittest.TestCase):
         self.assertTrue(report['ok'], report['problems'])
         self.assertEqual(report['source'], str(path))
         self.assertEqual(report['components'][0]['name'], 'LABCOMP')
+
+    def test_check_dp_with_key(self) -> None:
+        data = build_dp([DpComponent('LABCOMP', 'LABID')],
+                        signing_key=b'lab-dp-key')
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'package.dp'
+            path.write_bytes(data)
+            report = check_dp(path, b'lab-dp-key')
+        self.assertTrue(report['ok'], report['problems'])
+        self.assertTrue(report['signature']['valid'])
 
     def test_check_dp_missing_file(self) -> None:
         report = check_dp(Path('/nonexistent/lab.dp'))

@@ -386,8 +386,9 @@ static void put_u32(unsigned char *out, size_t offset, unsigned int value)
 }
 
 /* Structural RedBend EF DP: 20-byte preamble, version 4, one 28-byte
- * component entry, one update-table entry and a NUL-terminated string table.
- * Signatures are intentionally absent; this is a lab fixture, not bootable. */
+ * component entry, one update-table entry, a NUL-terminated string table and
+ * a 16-byte update payload. A 52-byte lab HMAC-SHA256 trailer follows the
+ * 132-byte DP body; this is a lab fixture, not a vendor signature. */
 static int build_dp_package(unsigned char *out, size_t capacity)
 {
     static const char preamble[] = "RedBendEFDPackage";
@@ -396,14 +397,21 @@ static int build_dp_package(unsigned char *out, size_t capacity)
     const size_t update_base = header_length + entry_length;
     const size_t string_base = update_base + 8;
     const size_t payload_base = string_base + 28;
-    const size_t total_length = payload_base + 16;
+    const size_t body_length = payload_base + 16;
+    const size_t total_length = body_length + 52;
+    static const unsigned char signature[32] = {
+        0x06, 0xb4, 0xa8, 0xa0, 0x42, 0x86, 0xdd, 0xaf,
+        0x29, 0x7b, 0x13, 0x91, 0xf8, 0xe3, 0x02, 0x3b,
+        0x3f, 0x73, 0xf7, 0xcf, 0x5a, 0xe3, 0x7c, 0x73,
+        0x9a, 0x00, 0x58, 0xa0, 0x88, 0x06, 0x1f, 0x6c
+    };
     if (capacity < total_length)
         return 0;
     memset(out, 0, total_length);
     memcpy(out, preamble, sizeof(preamble) - 1);
     put_u32(out, 20, 4);            /* DP version */
     put_u32(out, 24, 1);            /* component count */
-    put_u32(out, 28, (unsigned int)total_length);
+    put_u32(out, 28, (unsigned int)body_length);
     put_u32(out, 32, 0);            /* delta table pointer */
     put_u32(out, 36, 0);            /* scripts pointer */
     put_u32(out, 44, (unsigned int)header_length); /* component table */
@@ -422,6 +430,9 @@ static int build_dp_package(unsigned char *out, size_t capacity)
     memcpy(out + string_base + 14, "1.0", 4);
     memcpy(out + string_base + 18, "LABVENDOR", 10);
     memcpy(out + payload_base, "LABUPDATE-DATA01", 16);
+    memcpy(out + body_length, "RedBendEFDSig", 13);
+    put_u32(out, (unsigned int)body_length + 16, 32);
+    memcpy(out + body_length + 20, signature, sizeof(signature));
     return (int)total_length;
 }
 

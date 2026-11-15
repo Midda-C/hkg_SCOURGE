@@ -27,6 +27,8 @@ package.
 """
 from __future__ import annotations
 
+import hashlib
+import hmac
 import struct
 from dataclasses import dataclass
 from pathlib import Path
@@ -38,6 +40,9 @@ ENTRY_SIZE = 28
 MAX_COMPONENTS = 64
 MAX_STRING = 255
 INSTALLER_TYPES = (0, 1, 2, 3)
+SIG_MAGIC = b'RedBendEFDSig\0\0\0'
+SIG_LENGTH = 32
+SIG_TRAILER = len(SIG_MAGIC) + 4 + SIG_LENGTH
 
 
 class DpError(ValueError):
@@ -89,8 +94,17 @@ def _get_u32(data: bytes, offset: int, label: str) -> int:
     return struct.unpack_from('<I', data, offset)[0]
 
 
-def build_dp(components: list[DpComponent] | tuple[DpComponent, ...]) -> bytes:
-    """Build a version-4 DP with a component table and string table."""
+def sign_dp(body: bytes, key: bytes) -> bytes:
+    """Append a lab HMAC-SHA256 signature trailer (not a vendor signature)."""
+    if not key:
+        raise DpError('a signing key must not be empty')
+    digest = hmac.new(key, body, hashlib.sha256).digest()
+    return body + SIG_MAGIC + struct.pack('<I', len(digest)) + digest
+
+
+def build_dp(components: list[DpComponent] | tuple[DpComponent, ...],
+             signing_key: bytes | None = None) -> bytes:
+    """Build a version-4 DP with component/update tables and optional signature."""
     if not components:
         raise DpError('a DP needs at least one component')
     if len(components) > MAX_COMPONENTS:
@@ -141,18 +155,38 @@ def build_dp(components: list[DpComponent] | tuple[DpComponent, ...]) -> bytes:
         struct.pack_into('<2I', data, update_base + index * 8, offset, size)
     data[string_base:string_base + len(strings)] = strings
     data[payload_base:] = payloads
-    return bytes(data)
+    result = bytes(data)
+    return sign_dp(result, signing_key) if signing_key is not None else result
 
 
-def parse_dp(data: bytes) -> dict:
+def parse_dp(data: bytes, key: bytes | None = None) -> dict:
     """Parse and validate a version-4 DP container."""
     data = bytes(data)
     problems: list[str] = []
-    report: dict = {'ok': False, 'size': len(data), 'version': None,
-                    'components': [], 'problems': problems}
+    report: dict = {'ok': False, 'size': len(data), 'body_size': len(data),
+                    'version': None, 'components': [], 'signature': None,
+                    'problems': problems}
     if len(data) < HEADER_SIZE:
         problems.append(f'container is shorter than {HEADER_SIZE} bytes')
         return report
+    body_length = len(data)
+    signature = None
+    if len(data) >= SIG_TRAILER and data[-SIG_TRAILER:-SIG_TRAILER + len(SIG_MAGIC)] == SIG_MAGIC:
+        stored_length = struct.unpack_from('<I', data, len(data) - SIG_LENGTH - 4)[0]
+        if stored_length != SIG_LENGTH:
+            problems.append(f'invalid signature length {stored_length}')
+            return report
+        body_length = len(data) - SIG_TRAILER
+        signature = {'present': True, 'algorithm': 'hmac-sha256',
+                     'valid': None}
+        if key is not None:
+            expected = hmac.new(key, data[:body_length], hashlib.sha256).digest()
+            signature['valid'] = hmac.compare_digest(
+                expected, data[-SIG_LENGTH:])
+            if not signature['valid']:
+                problems.append('signature mismatch')
+        report['signature'] = signature
+        report['body_size'] = body_length
     if data[:len(PREAMBLE)] != PREAMBLE:
         problems.append('preamble is not RedBendEFDPackage')
         return report
@@ -168,21 +202,21 @@ def parse_dp(data: bytes) -> dict:
         problems.append(f'unsupported DP version {version} (expected {VERSION})')
     if count == 0 or count > MAX_COMPONENTS:
         problems.append(f'invalid component count {count}')
-    if declared_size != len(data):
-        problems.append(f'declared DP size {declared_size} != actual {len(data)}')
-    if delta_ptr and delta_ptr >= len(data):
+    if declared_size != body_length:
+        problems.append(f'declared DP size {declared_size} != actual body {body_length}')
+    if delta_ptr and delta_ptr >= body_length:
         problems.append('delta pointer is outside the container')
-    if scripts_ptr and scripts_ptr >= len(data):
+    if scripts_ptr and scripts_ptr >= body_length:
         problems.append('scripts pointer is outside the container')
-    if component_ptr + ENTRY_SIZE * count > len(data):
+    if component_ptr + ENTRY_SIZE * count > body_length:
         problems.append('component table is outside the container')
-    if string_ptr >= len(data):
+    if string_ptr >= body_length:
         problems.append('string table is outside the container')
     if problems:
         return report
 
     def read_string(offset: int, label: str) -> str:
-        if offset >= len(data) or offset < string_ptr:
+        if offset >= body_length or offset < string_ptr:
             raise DpError(f'{label} offset {offset} is outside the string table')
         end = data.find(b'\0', offset)
         if end < 0:
@@ -209,14 +243,14 @@ def parse_dp(data: bytes) -> dict:
             if installer_type not in INSTALLER_TYPES:
                 raise DpError(f'component {index} has invalid installer type '
                               f'{installer_type}')
-            if update_count and update_ptr + update_count * 8 > len(data):
+            if update_count and update_ptr + update_count * 8 > body_length:
                 raise DpError(f'component {index} update table is outside the container')
             updates = []
             for update_index in range(update_count):
                 entry = update_ptr + update_index * 8
                 offset = _get_u32(data, entry, 'update payload offset')
                 size = _get_u32(data, entry + 4, 'update payload size')
-                if size == 0 or offset + size > len(data):
+                if size == 0 or offset + size > body_length:
                     raise DpError(f'component {index} update payload is outside '
                                   'the container')
                 updates.append({'offset': offset, 'size': size})
@@ -237,14 +271,15 @@ def parse_dp(data: bytes) -> dict:
     return report
 
 
-def check_dp(path: Path) -> dict:
+def check_dp(path: Path, key: bytes | None = None) -> dict:
     """Validate a DP file and return a JSON-ready report."""
     source = Path(path)
     try:
         data = source.read_bytes()
     except OSError as exc:
         return {'ok': False, 'source': str(source), 'size': None,
-                'version': None, 'components': [], 'problems': [str(exc)]}
-    report = parse_dp(data)
+                'version': None, 'components': [], 'signature': None,
+                'problems': [str(exc)]}
+    report = parse_dp(data, key)
     report['source'] = str(source)
     return report

@@ -1098,7 +1098,8 @@ items beyond that.
   that mirrors the client's exact WBXML layout is accepted (`Server
   authentication (by client), 401`). The mock then serves an OMA Download
   Descriptor; OEM confirmation code 10 (`DMC_REQ_DL_OK`) lets the engine
-  fetch a 132-byte DP with component/update tables and a 16-byte payload. It logs
+  fetch a 184-byte object (132-byte DP body plus a 52-byte lab HMAC trailer)
+  with component/update tables and a 16-byte payload. It logs
   `DL session complete` and advances FUMO state 30 -> 40. The DP remains a
   structural fixture (no signature or update payload), so no install or
   update-success claim. Added `harness/dp.py` and `launch.py check-dp` to
@@ -1150,6 +1151,12 @@ items beyond that.
   proves the C fixture is byte-identical to the Python builder. All FUMO
   scenarios still download it. 3 new tests; 547 tests (75 skipped); doctor
   green.
+- **2026-11-15 — DP signature trailer**: `harness/dp.py` supports a lab
+  HMAC-SHA256 trailer and `check-dp --key`; the mock serves a 184-byte object
+  (132-byte body + 52-byte trailer). A loopback test verifies the C fixture
+  against the Python builder, and tampering is rejected. This is an integrity
+  fixture, not a vendor firmware signature. All FUMO scenarios still download
+  it. 4 new tests; 557 tests (75 skipped); doctor green.
 - **2026-11-15 — NAS import verified**: 9.4 GB preservation copy complete;
   all archives, partitions, runtime files and the navi2 archive match.
   `meta/SOURCE.txt` was finalized after the original manifest, so its one

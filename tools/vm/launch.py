@@ -1690,6 +1690,9 @@ def main() -> int:
     check_dp_parser = sub.add_parser(
         'check-dp', help='validate a RedBend EF DP container')
     check_dp_parser.add_argument('path', type=Path)
+    check_dp_parser.add_argument(
+        '--key', default=None,
+        help='lab HMAC key for the optional signature trailer')
     check_dm_parser = sub.add_parser(
         'check-dm-tree', help='validate a RedBend RDM tree without exposing credentials')
     check_dm_parser.add_argument('path', type=Path)
@@ -2246,7 +2249,8 @@ def main() -> int:
         print(json.dumps(report, indent=2))
         return 0 if report['ok'] else 1
     if args.action == 'check-dp':
-        report = check_dp(args.path)
+        report = check_dp(args.path,
+                          args.key.encode() if args.key else None)
         print(json.dumps(report, indent=2))
         return 0 if report['ok'] else 1
     if args.action == 'check-dm-tree':

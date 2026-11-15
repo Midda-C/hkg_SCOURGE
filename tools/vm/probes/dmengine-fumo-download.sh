@@ -274,7 +274,7 @@ if ! grep -q 'MOCK_OEM_SENT code=10' /tmp/mock-oem-dlok.log 2>/dev/null; then
 fi
 echo 'HARNESS_CHECK fumo-confirm PASS'
 
-if ! grep -q 'MOCK_DM_DOWNLOAD method=GET path=/object.bin bytes=132 preamble=RedBendEFDPackage version=4 components=1' /tmp/mock-dm.log; then
+if ! grep -q 'MOCK_DM_DOWNLOAD method=GET path=/object.bin bytes=184 preamble=RedBendEFDPackage version=4 components=1' /tmp/mock-dm.log; then
     tail -40 /tmp/mock-dm.log
     fail 'fumo-download'
 fi

@@ -66,17 +66,20 @@ class MockDmServerDpTests(unittest.TestCase):
         self.assertEqual(content_type, 'application/octet-stream')
         expected = build_dp([DpComponent(
             'LABCOMP', 'LABID', '1.0', 'LABVENDOR',
-            updates=(DpUpdate(b'LABUPDATE-DATA01'),))])
+            updates=(DpUpdate(b'LABUPDATE-DATA01'),))],
+            signing_key=b'lab-dp-key')
         self.assertEqual(data, expected)
-        report = parse_dp(data)
+        report = parse_dp(data, b'lab-dp-key')
         self.assertTrue(report['ok'], report['problems'])
+        self.assertTrue(report['signature']['valid'])
+        self.assertEqual(report['body_size'], 132)
         self.assertEqual(report['components'][0]['name'], 'LABCOMP')
 
     def test_download_descriptor_points_at_the_dp(self) -> None:
         data, content_type = self.get('/package.bin')
         text = data.decode('ascii')
         self.assertEqual(content_type, 'application/vnd.oma.dd+xml')
-        self.assertIn('<size>132</size>', text)
+        self.assertIn('<size>184</size>', text)
         self.assertIn(
             '<objectURI>http://127.0.0.1:8002/object.bin</objectURI>', text)
         self.assertIn('<installNotifyURI>', text)
