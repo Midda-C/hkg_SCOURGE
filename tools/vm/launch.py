@@ -62,7 +62,14 @@ from harness.state import StateBusy, create_state_overlays
 from harness.visual import baseline as visual_baseline
 from harness.visual import compare as visual_compare
 from harness.visual import list_baselines
+from harness.result_schema import (check_all_bench, check_all_bench_dir,
+                                   check_all_results, schema_state,
+                                   validate_bench, validate_file,
+                                   validate_result)
 from harness.results import evaluate, evaluate_systemd_transition, phase_summary
+from harness.scenarios import (PROFILE_NAMES, profile_state,
+                               scenario_state, validate_profile,
+                               validate_scenario)
 from harness.storage import VOLUMES, cleanup_storage, create_storage, mount_script, parse_sizes
 from harness.tools import check_tools
 
@@ -109,6 +116,94 @@ def validate_pin_cpu(cpu: int | None) -> int | None:
     if cpu not in allowed:
         raise ValueError(f'pin cpu {cpu} is not available; allowed: {sorted(allowed)}')
     return cpu
+
+
+DAEMON_KERNELS = ('vendor', 'compat')
+DAEMON_DISPLAYS = ('none', 'gtk', 'vnc', 'egl-headless')
+DAEMON_DISPLAY_DEVICES = ('none', 'std', 'virtio-vga', 'virtio-vga-gl')
+DAEMON_CACHES = ('writeback', 'writethrough', 'directsync', 'unsafe', 'none')
+
+
+def restart_config_problem(config) -> str | None:
+    """Return why a stored daemon config cannot be restarted, if anything."""
+    if not isinstance(config, dict):
+        return 'config must be an object'
+    kernel = config.get('kernel_target', 'vendor')
+    if kernel not in DAEMON_KERNELS:
+        return f'unsupported kernel_target: {kernel!r}'
+    display = config.get('display', 'none')
+    if display not in DAEMON_DISPLAYS:
+        return f'unsupported display: {display!r}'
+    device = config.get('display_device', 'none')
+    if device not in DAEMON_DISPLAY_DEVICES:
+        return f'unsupported display_device: {device!r}'
+    cache = config.get('cache', 'writeback')
+    if cache not in DAEMON_CACHES:
+        return f'unsupported cache: {cache!r}'
+    if kernel != 'compat' and (config.get('share') or config.get('network')
+                               or config.get('audio') or config.get('usb_host')):
+        return 'share/network/audio/usb_host require the compat kernel'
+    for key in ('ready_timeout', 'lock_timeout'):
+        value = config.get(key)
+        if value is not None:
+            if (not isinstance(value, (int, float))
+                    or isinstance(value, bool) or not math.isfinite(value)
+                    or value <= 0):
+                return f'{key} must be a finite positive number'
+    for key in ('command_log_max', 'screenshot_keep', 'exec_output_max'):
+        value = config.get(key)
+        if value is not None and (not isinstance(value, int)
+                                  or isinstance(value, bool) or value <= 0):
+            return f'{key} must be a positive integer'
+    return None
+
+
+def daemon_restart_argv(config: dict, daemon_dir: Path,
+                        reset: bool = False) -> list[str]:
+    """Build `daemon start` arguments from a stored daemon config."""
+    argv = [sys.executable, '-B', str(VM / 'launch.py'), 'daemon', 'start',
+            '--daemon-dir', str(daemon_dir),
+            '--kernel', config.get('kernel_target', 'vendor')]
+    if reset:
+        argv.append('--reset')
+    mapping = (
+        ('state', '--state'), ('tools', '--tools'), ('usb', '--usb'),
+        ('payload', '--payload'), ('share', '--share'),
+        ('display', '--display'), ('vnc_display', '--vnc-display'),
+        ('display_device', '--display-device'),
+        ('smp', '--smp'), ('memory_mb', '--memory'),
+        ('label', '--label'), ('cache', '--cache'),
+        ('ready_timeout', '--ready-timeout'),
+        ('lock_timeout', '--lock-timeout'),
+        ('command_log_max', '--command-log-max'),
+        ('screenshot_keep', '--screenshot-keep'),
+        ('exec_output_max', '--exec-output-max'),
+        ('pin_cpu', '--pin-cpu'),
+    )
+    for key, flag in mapping:
+        value = config.get(key)
+        if value is not None:
+            argv.extend([flag, str(value)])
+    if config.get('network'):
+        argv.append('--network')
+    if config.get('audio'):
+        argv.append('--audio')
+    if config.get('apic'):
+        argv.append('--apic')
+    for device in config.get('usb_host') or []:
+        argv.extend(['--usb-host', str(device)])
+    return argv
+
+
+def parse_click(value: str) -> tuple[int, int]:
+    """Parse --click X,Y with clear errors."""
+    parts = value.split(',')
+    if len(parts) != 2:
+        raise ValueError('--click requires X,Y')
+    try:
+        return int(parts[0].strip()), int(parts[1].strip())
+    except ValueError as exc:
+        raise ValueError('--click coordinates must be integers') from exc
 
 
 def qemu_preexec(pin_cpu: int | None = None):
@@ -158,7 +253,11 @@ class RSP:
         self.buf = self.buf[i + 3:]
         if int(csum, 16) != sum(payload) & 0xFF:
             raise RuntimeError("RSP checksum mismatch")
-        self.sock.sendall(b"+")
+        try:
+            self.sock.sendall(b"+")
+        except OSError:
+            # A stub may close immediately after its final packet (D/detach).
+            pass
         return payload
 
     def cmd(self, payload: str, stop: bool = False) -> bytes:
@@ -167,6 +266,37 @@ class RSP:
         if stop and not (data.startswith(b"T") or data.startswith(b"S")):
             raise RuntimeError(f"expected stop packet, got {data!r}")
         return data
+
+
+def _rsp_expect_ok(response: bytes, operation: str) -> None:
+    if response != b"OK":
+        raise RuntimeError(f"gdbstub {operation} failed: {response!r}")
+
+
+def _rsp_connect(sock_path: Path, proc: subprocess.Popen,
+                 deadline: float) -> tuple[socket.socket, int]:
+    """Connect once the stub is actually servicing the socket.
+
+    QEMU creates the socket before the stub is ready, so a single connect can
+    race with startup. Retry transient connect errors until the deadline.
+    """
+    attempts = 0
+    while True:
+        attempts += 1
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.settimeout(max(0.05, deadline - time.monotonic()))
+        try:
+            sock.connect(str(sock_path))
+            return sock, attempts
+        except OSError as exc:
+            sock.close()
+            if proc.poll() is not None:
+                raise RuntimeError(
+                    f"QEMU exited before gdb connect (rc={proc.returncode})") from exc
+            if time.monotonic() > deadline:
+                raise TimeoutError(
+                    f"QEMU gdbstub connect failed after {attempts} attempts: {exc}") from exc
+            time.sleep(0.1)
 
 
 def patch_sdhci(run_dir: Path, proc: subprocess.Popen, timeout: float = 30) -> dict:
@@ -178,35 +308,38 @@ def patch_sdhci(run_dir: Path, proc: subprocess.Popen, timeout: float = 30) -> d
         if time.monotonic() > deadline:
             raise TimeoutError("QEMU gdb socket did not appear")
         time.sleep(0.05)
-    # The socket is created before QEMU's gdbstub is necessarily servicing it.
     print(f"[vm] gdb socket present: {sock_path}", flush=True)
-    time.sleep(min(0.75, max(0, deadline - time.monotonic())))
-    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    sock.settimeout(max(0.001, deadline - time.monotonic()))
-    print("[vm] connecting to gdbstub", flush=True)
-    sock.connect(str(sock_path))
-    print("[vm] gdb connected; querying status", flush=True)
+    sock, attempts = _rsp_connect(sock_path, proc, deadline)
+    print(f"[vm] gdb connected after {attempts} attempt(s); querying status", flush=True)
     rsp = RSP(sock, deadline)
     try:
-        rsp.cmd("?")
+        status = rsp.cmd("?")
+        if not (status.startswith(b"T") or status.startswith(b"S")):
+            raise RuntimeError(f"unexpected gdbstub status packet: {status!r}")
         print("[vm] status ok; setting driver-init breakpoint", flush=True)
-        rsp.cmd(f"Z1,{DRIVER_INIT:x},1")
+        _rsp_expect_ok(rsp.cmd(f"Z1,{DRIVER_INIT:x},1"), "breakpoint insert")
         print("[vm] breakpoint set; continuing", flush=True)
         stop = rsp.cmd("c", stop=True)
+        signal = stop[:3]
+        if signal not in (b"T05", b"S05"):
+            raise RuntimeError(
+                "expected a breakpoint trap (T05/S05), "
+                f"got {stop.decode(errors='replace')!r}")
         print(f"[vm] stopped at driver init ({stop.decode(errors='replace')})", flush=True)
         actual = bytes.fromhex(rsp.cmd(f"m{TABLE_ENTRY:x},20").decode())
         if actual != EXPECTED:
             raise RuntimeError(
                 "SDHCI table bytes differ; refusing guest-memory write\n"
                 f"expected {EXPECTED.hex()}\nactual   {actual.hex()}")
-        rsp.cmd(f"M{TABLE_ENTRY:x},20:{COMPAT.hex()}")
+        _rsp_expect_ok(rsp.cmd(f"M{TABLE_ENTRY:x},20:{COMPAT.hex()}"), "memory write")
         check = bytes.fromhex(rsp.cmd(f"m{TABLE_ENTRY:x},20").decode())
         if check != COMPAT:
             raise RuntimeError("guest-memory readback mismatch")
-        rsp.cmd(f"z1,{DRIVER_INIT:x},1")
-        rsp.cmd("D")
+        _rsp_expect_ok(rsp.cmd(f"z1,{DRIVER_INIT:x},1"), "breakpoint remove")
+        _rsp_expect_ok(rsp.cmd("D"), "detach")
         return {"driver_init": hex(DRIVER_INIT), "table_entry": hex(TABLE_ENTRY),
-                "stop": stop.decode(errors="replace"),
+                "stop": stop.decode(errors="replace"), "stop_signal": signal.decode(),
+                "connect_attempts": attempts,
                 "original": EXPECTED.hex(), "replacement": COMPAT.hex()}
     finally:
         sock.close()
@@ -309,7 +442,9 @@ def build_payload_image(src: Path, out: Path) -> Path:
     if not src.is_dir():
         raise SystemExit(f"payload is not a directory: {src}")
     total = sum(p.stat().st_size for p in src.rglob("*") if p.is_file())
-    size_mb = max(8, (total + 4 * 1024 * 1024 + 1024 * 1024 - 1) // (1024 * 1024))
+    # ext4 journal + 4 KiB block granularity + directory overhead need real
+    # headroom on top of the raw byte total.
+    size_mb = max(8, (total + 12 * 1024 * 1024 + 1024 * 1024 - 1) // (1024 * 1024))
     validate_output(out, (ROOTFS, KERNEL, TOOLS, UPDATE))
     subprocess.run(["truncate", "-s", f"{size_mb}M", str(out)], check=True)
     subprocess.run([
@@ -520,10 +655,16 @@ class Serial:
             self.fh.close()
             self.fh = None
 
-    def read_until(self, needle: bytes, timeout: float) -> bytes:
+    def read_until(self, needle: bytes, timeout: float,
+                   fatal: bool = False) -> bytes:
         deadline = time.monotonic() + timeout
         with self.cond:
             while needle not in self.log:
+                if fatal and b"Kernel panic" in self.log:
+                    raise RuntimeError(
+                        "guest kernel panic while waiting for "
+                        f"{needle.decode(errors='replace')!r}; tail:\n"
+                        + self.log[-2000:].decode(errors="replace"))
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise TimeoutError(
@@ -577,7 +718,19 @@ def execute_guest(ser: Serial, command: str, timeout: float) -> tuple[str, str, 
     return token, output, guest_rc, round(time.monotonic() - started, 3)
 
 
-def run(cmd: str | None, interactive: bool, timeout: float,
+def run(*args, **kwargs) -> int:
+    """Run one managed boot and return the final result rc.
+
+    The core body can update the verdict in its finally block (QMP screenshot
+    checks, recovery-thread errors, cleanup); capture the final rc after that
+    block instead of returning an earlier value.
+    """
+    outcome = {'rc': 1}
+    _run_impl(*args, outcome=outcome, **kwargs)
+    return outcome['rc']
+
+
+def _run_impl(cmd: str | None, interactive: bool, timeout: float,
         usb: Path | None = None, tools: Path | None = None,
         kernel_mode: str = "auto", payload: Path | None = None,
         profile_name: str = 'research', scenario_name: str | None = None,
@@ -593,13 +746,18 @@ def run(cmd: str | None, interactive: bool, timeout: float,
         label: str = "", state: Path | None = None, reset: bool = False,
         network: bool = False, audio: bool = False,
         usb_host: list[str] | None = None, cache: str = "writeback",
-        pin_cpu: int | None = None, lock_info: dict | None = None) -> int:
+        pin_cpu: int | None = None, dry_run: bool = False,
+        lock_info: dict | None = None, outcome: dict | None = None) -> int:
     profile = load_profile(profile_name)
     scenario = load_scenario(scenario_name) if scenario_name else None
     if profile_name == 'conformance' and (scenario is None or interactive):
         raise ValueError('conformance requires a managed --scenario; arbitrary commands are research only')
     if interactive and screenshot:
         raise ValueError('--screenshot requires noninteractive execution')
+    if dry_run and interactive:
+        raise ValueError('--dry-run cannot be interactive')
+    if dry_run and (screenshot or qmp_screenshot):
+        raise ValueError('--dry-run cannot capture screenshots')
     if display_device not in ('none', 'std', 'virtio-vga', 'virtio-vga-gl'):
         raise ValueError(f'unknown display device: {display_device}')
     if qmp_screenshot and display_device == 'none':
@@ -829,7 +987,8 @@ def run(cmd: str | None, interactive: bool, timeout: float,
         # ownership information for cleanup and post-mortem inspection.
         if state is not None:
             try:
-                overlays, state_lock = create_state_overlays(state, inputs, reset=reset)
+                overlays, state_lock = create_state_overlays(
+                    state, inputs, reset=reset, mode=kernel_target)
             except StateBusy as exc:
                 raise RuntimeError(str(exc)) from exc
             result['state'].update({
@@ -847,6 +1006,11 @@ def run(cmd: str | None, interactive: bool, timeout: float,
                          share, display, vnc_display, network, audio,
                          usb_host, cache)
         (run_dir / 'command.json').write_text(json.dumps(argv, indent=2) + '\n')
+        if dry_run:
+            result.update(verdict='DRY-RUN', rc=0, dry_run=True)
+            print(f"[vm] dry-run: {run_dir / 'command.json'}", flush=True)
+            print(json.dumps(argv, indent=2))
+            return 0
         if kernel_target == 'compat':
             result['kernel_mode'] = 'compat'
         else:
@@ -870,7 +1034,7 @@ def run(cmd: str | None, interactive: bool, timeout: float,
             marker = str(scenario.get('boot_marker', 'Reached target Multi-User System'))
             text = ''
             try:
-                ser.read_until(marker.encode(), remaining())
+                ser.read_until(marker.encode(), remaining(), fatal=True)
                 # Brief settle so unit failures around the target are captured.
                 time.sleep(float(scenario.get('settle_seconds', 2)))
                 text = bytes(ser.log).decode(errors='replace')
@@ -917,7 +1081,7 @@ def run(cmd: str | None, interactive: bool, timeout: float,
                         proc.stdin.flush()
             result.update(rc=proc.returncode, verdict='PASS' if proc.returncode == 0 else 'FAIL')
             return result['rc']
-        ser.read_until(b'IONIQ_VM_READY', remaining())
+        ser.read_until(b'IONIQ_VM_READY', remaining(), fatal=True)
         result['boot_seconds'] = round(time.monotonic() - boot_start, 3)
         wait_shell(ser, remaining())
         result['readiness_seconds'] = round(time.monotonic() - boot_start, 3)
@@ -970,7 +1134,7 @@ def run(cmd: str | None, interactive: bool, timeout: float,
                 ser.send(f'echo P28_SHELL pid=$$ ppid=$PPID; exec {raw_exec}\n')
                 try:
                     if final_marker:
-                        ser.read_until(final_marker.encode(), remaining())
+                        ser.read_until(final_marker.encode(), remaining(), fatal=True)
                     # Settle so post-target unit failures are recorded too.
                     time.sleep(settle_seconds)
                 except (TimeoutError, EOFError):
@@ -1262,6 +1426,8 @@ def run(cmd: str | None, interactive: bool, timeout: float,
             result.update(verdict='FAIL', rc=1, cleanup_errors=cleanup_errors)
         result['total_seconds'] = round(time.monotonic() - t0, 3)
         (run_dir / 'result.json').write_text(json.dumps(result, indent=2) + '\n')
+        if outcome is not None:
+            outcome['rc'] = result['rc']
         print(f"[vm] {result['verdict']} rc={result['rc']} result={run_dir / 'result.json'}", flush=True)
         if cleanup_errors:
             raise OSError('; '.join(cleanup_errors))
@@ -1336,6 +1502,20 @@ def doctor(verify_images: bool = False, tools: Path | None = None,
     check("free_disk_gb", usage.free > 10 * 1024 ** 3,
           round(usage.free / 1024 ** 3, 1))
     note("runs", runs_stats(VM))
+    scenarios = scenario_state(VM)
+    check("scenarios", scenarios["ok"], scenarios)
+    profiles = profile_state(VM)
+    check("profiles", profiles["ok"], profiles)
+    result_schema = check_all_results(VM)
+    check("result_schema", result_schema["ok"], {
+        k: result_schema[k]
+        for k in ("checked", "valid", "legacy", "invalid", "missing",
+                  "bench_only")
+    })
+    bench_schema = check_all_bench(VM)
+    check("bench_schema", bench_schema["ok"], {
+        k: bench_schema[k] for k in ("checked", "valid", "invalid")
+    })
 
     state = compat_state(VM)
     if graphics:
@@ -1358,6 +1538,14 @@ def doctor(verify_images: bool = False, tools: Path | None = None,
         actions.append("stop the running vm-lab QEMU processes before a managed run")
     if checks.get("tools_manifest", {}).get("ok") is False:
         actions.append("rebuild the tools image: sh build_tools.sh tools.$(date +%Y%m%d).img")
+    if checks.get("scenarios", {}).get("ok") is False:
+        actions.append("fix scenario JSON contract problems reported by doctor")
+    if checks.get("profiles", {}).get("ok") is False:
+        actions.append("fix profile JSON contract problems reported by doctor")
+    if checks.get("result_schema", {}).get("ok") is False:
+        actions.append("inspect invalid runs: launch.py check-run --all")
+    if checks.get("bench_schema", {}).get("ok") is False:
+        actions.append("inspect invalid benchmark documents under runs/bench-*")
     if graphics:
         if checks.get("compat_initramfs", {}).get("ok") is False:
             actions.append("build the compat initramfs: sh compat/build-initramfs.sh")
@@ -1439,10 +1627,37 @@ def main() -> int:
     lst.add_argument('--label', default=None)
     lst.add_argument('--scenario', default=None)
     lst.add_argument('--verdict', default=None)
+    lst.add_argument('--schema', choices=('ok', 'legacy', 'invalid', 'missing'),
+                     default=None, help='filter by result schema state')
     lst.add_argument('--limit', type=int, default=20)
     lst.add_argument('--json', action='store_true')
     show = sub.add_parser('show', help='print a run result')
     show.add_argument('run')
+    show.add_argument('--strict', action='store_true',
+                      help='exit 1 when the result schema has problems')
+    check = sub.add_parser('check-run', help='validate a run result against the schema')
+    check.add_argument('run', nargs='?')
+    check.add_argument('--all', action='store_true',
+                       help='validate every run result under runs/')
+    check_bench = sub.add_parser('check-bench',
+                                 help='validate a bench directory or bench.json')
+    check_bench.add_argument('path', type=Path, nargs='?')
+    check_bench.add_argument('--all', action='store_true',
+                             help='validate every runs/bench-*/bench.json')
+    check_bench.add_argument('--root', type=Path, default=None,
+                             help='bench root for --all (default: runs/)')
+    check_scenario = sub.add_parser('check-scenario',
+                                    help='validate scenario JSON contracts')
+    check_scenario.add_argument('scenario', nargs='?',
+                                help='registered scenario name or JSON path')
+    check_scenario.add_argument('--all', action='store_true',
+                                help='validate every registered scenario')
+    check_profile = sub.add_parser('check-profile',
+                                   help='validate profile JSON contracts')
+    check_profile.add_argument('profile', nargs='?',
+                               help='research|conformance or profile JSON path')
+    check_profile.add_argument('--all', action='store_true',
+                               help='validate every registered profile')
     extract = sub.add_parser('extract', help='copy an artifact out of a run')
     extract.add_argument('run')
     extract.add_argument('member')
@@ -1501,10 +1716,28 @@ def main() -> int:
     ds.add_argument('--ready-timeout', type=float, default=180)
     ds.add_argument('--lock-timeout', type=float, default=180,
                     help='lock queue wait, capped at --ready-timeout')
+    ds.add_argument('--command-log-max', type=int, default=1024 * 1024,
+                    help='daemon command-log cap in bytes (rotates once)')
+    ds.add_argument('--screenshot-keep', type=int, default=10,
+                    help='keep the newest N screenshot captures in the daemon dir')
+    ds.add_argument('--exec-output-max', type=int, default=1024 * 1024,
+                    help='exec output cap in bytes (keeps the tail)')
     ds.add_argument('--pin-cpu', type=int, default=None, metavar='N',
                     help='pin all QEMU threads to host CPU N (performance experiment)')
     dserve = dsub.add_parser('_serve')
     dserve.add_argument('--config', type=Path, required=True)
+    drestart = dsub.add_parser('restart', help='stop and start with the stored config')
+    drestart.add_argument('--daemon-dir', type=Path, default=VM / 'runs' / 'daemon')
+    drestart.add_argument('--reset', action='store_true',
+                          help='discard persistent state overlays on restart')
+    dlist = dsub.add_parser('list', help='list daemon directories and liveness')
+    dlist.add_argument('--root', type=Path, default=VM / 'runs')
+    dlist.add_argument('--json', action='store_true')
+    dlist.add_argument('--fail-stale', action='store_true',
+                       help='exit 1 when any daemon entry is stale')
+    dlist.add_argument('--state', choices=('starting', 'ready', 'stopped',
+                                           'error', 'stale'), default=None,
+                       help='only show entries in this state')
     for name in ('status', 'stop', 'screenshot', 'console', 'exec'):
         p = dsub.add_parser(name)
         p.add_argument('--daemon-dir', type=Path, default=VM / 'runs' / 'daemon')
@@ -1586,6 +1819,8 @@ def main() -> int:
                    help="vendor (exact 4.1.27-abl) or compat (pinned/host kernel + initramfs); legacy auto/bzimage/vmlinux select vendor sub-modes")
     r.add_argument("--payload", type=Path, default=None,
                    help="directory (built to ext4) or image for a third USB stick")
+    r.add_argument('--dry-run', action='store_true',
+                   help='build command.json and exit without starting QEMU')
     r.add_argument('--no-lock', action='store_true',
                    help='do not serialize this boot against other VM runs (unsafe)')
     r.add_argument('--lock-timeout', type=float, default=600,
@@ -1616,6 +1851,26 @@ def main() -> int:
         if args.daemon_action == '_serve':
             config = json.loads(args.config.read_text())
             return daemon_mod._serve(config)
+        if args.daemon_action == 'list':
+            rows = daemon_mod.list_daemons(args.root)
+            if args.state == 'stale':
+                rows = [row for row in rows if row['stale']]
+            elif args.state:
+                rows = [row for row in rows if row['state'] == args.state]
+            if args.json:
+                print(json.dumps(rows, indent=2))
+            else:
+                for row in rows:
+                    marker = ' STALE' if row['stale'] else ''
+                    print(f"{row['dir']} {row['state'] or 'unknown':8} "
+                          f"daemon={'alive' if row['daemon_alive'] else 'dead':5} "
+                          f"qemu={'alive' if row['qemu_alive'] else 'dead':5} "
+                          f"kernel={row['kernel'] or '?'} "
+                          f"log={row['command_log_bytes']}B "
+                          f"shots={row['screenshot_count']}{marker}")
+            if args.fail_stale and any(row['stale'] for row in rows):
+                return 1
+            return 0
         daemon_dir = args.daemon_dir.resolve()
         if args.daemon_action == 'start':
             if args.reset and args.state is None:
@@ -1625,6 +1880,12 @@ def main() -> int:
                     validate_pin_cpu(args.pin_cpu)
                 except ValueError as exc:
                     ap.error(str(exc))
+            if args.command_log_max <= 0:
+                ap.error('--command-log-max must be positive')
+            if args.screenshot_keep <= 0:
+                ap.error('--screenshot-keep must be positive')
+            if args.exec_output_max <= 0:
+                ap.error('--exec-output-max must be positive')
             if args.kernel == 'compat':
                 pin = verify_kernel_pin()
                 if not pin['ok']:
@@ -1661,6 +1922,9 @@ def main() -> int:
                 'cache': args.cache,
                 'ready_timeout': args.ready_timeout,
                 'lock_timeout': args.lock_timeout,
+                'command_log_max': args.command_log_max,
+                'screenshot_keep': args.screenshot_keep,
+                'exec_output_max': args.exec_output_max,
                 'pin_cpu': args.pin_cpu,
             }
             try:
@@ -1669,6 +1933,33 @@ def main() -> int:
                 ap.error(str(exc))
             print(json.dumps(status, indent=2))
             return 0
+        if args.daemon_action == 'restart':
+            config_file = daemon_mod.config_path(daemon_dir)
+            if not config_file.is_file():
+                print('ERROR: daemon config missing; start it first',
+                      file=sys.stderr)
+                return 1
+            try:
+                config = json.loads(config_file.read_text())
+            except (OSError, json.JSONDecodeError) as exc:
+                print(f'ERROR: cannot read daemon config: {exc}', file=sys.stderr)
+                return 1
+            problem = restart_config_problem(config)
+            if problem:
+                print(f'ERROR: cannot restart: {problem}', file=sys.stderr)
+                return 1
+            try:
+                validate_pin_cpu(config.get('pin_cpu'))
+            except ValueError as exc:
+                print(f'ERROR: cannot restart: {exc}', file=sys.stderr)
+                return 1
+            if args.reset and not config.get('state'):
+                print('ERROR: --reset requires a daemon started with --state',
+                      file=sys.stderr)
+                return 1
+            daemon_mod.stop(daemon_dir)
+            argv = daemon_restart_argv(config, daemon_dir, reset=args.reset)
+            return subprocess.run(argv, cwd=str(VM)).returncode
         if args.daemon_action == 'status':
             status = daemon_mod.read_status(daemon_dir)
             try:
@@ -1688,15 +1979,24 @@ def main() -> int:
             print(json.dumps(status, indent=2))
             return 0 if status.get('state') == 'stopped' else 1
         if args.daemon_action == 'exec':
+            if not math.isfinite(args.timeout) or args.timeout <= 0:
+                ap.error('daemon exec timeout must be finite and positive')
             try:
                 response = daemon_mod.request(
                     daemon_dir, {'action': 'exec', 'cmd': args.cmd,
                                  'timeout': args.timeout},
                     timeout=args.timeout + 30)
             except (OSError, RuntimeError, TimeoutError) as exc:
-                ap.error(str(exc))
+                print(f'ERROR: {exc}', file=sys.stderr)
+                return 1
             if not response.get('ok'):
-                ap.error(response.get('error', 'daemon exec failed'))
+                print(f"ERROR: {response.get('error', 'daemon exec failed')}",
+                      file=sys.stderr)
+                return 1
+            if response.get('output_truncated'):
+                print(f"WARNING: output truncated to "
+                      f"{len(response.get('output', '').encode())} bytes",
+                      file=sys.stderr)
             print(response.get('output', ''))
             return int(response.get('rc', 1))
         if args.daemon_action == 'screenshot':
@@ -1707,11 +2007,18 @@ def main() -> int:
                     daemon_dir, {'action': 'screenshot', 'output': str(capture)},
                     timeout=30)
             except (OSError, RuntimeError, TimeoutError) as exc:
-                ap.error(str(exc))
+                print(f'ERROR: {exc}', file=sys.stderr)
+                return 1
             if not response.get('ok'):
-                ap.error(response.get('error', 'daemon screenshot failed'))
+                print(f"ERROR: {response.get('error', 'daemon screenshot failed')}",
+                      file=sys.stderr)
+                return 1
             if requested is not None:
-                shutil.copy2(capture, requested)
+                try:
+                    shutil.copy2(capture, requested)
+                except OSError as exc:
+                    capture.unlink(missing_ok=True)
+                    ap.error(f'cannot copy screenshot to {requested}: {exc}')
                 response['copied_to'] = str(requested)
                 # The daemon dir is never pruned; keep only the copy.
                 capture.unlink(missing_ok=True)
@@ -1727,7 +2034,7 @@ def main() -> int:
             ap.error('input requires exactly one of --click X,Y or --key QCODE')
         try:
             if args.click:
-                x, y = (int(part) for part in args.click.split(',', 1))
+                x, y = parse_click(args.click)
                 result = qmp_click(args.qmp, x, y, args.width, args.height,
                                    args.button)
             else:
@@ -1737,22 +2044,140 @@ def main() -> int:
         print(json.dumps(result, indent=2))
         return 0
     if args.action == 'list':
+        if args.limit < 0:
+            ap.error('--limit must be non-negative')
         runs = filter_runs(collect_runs(VM), args.label, args.scenario,
-                           args.verdict)[:args.limit]
+                           args.verdict)
+        if args.schema:
+            runs = [item for item in runs if item['schema_state'] == args.schema]
+        runs = runs[:args.limit]
         if args.json:
             print(json.dumps(runs, indent=2))
         else:
             for item in runs:
                 label = f" [{item['label']}]" if item['label'] else ''
+                marker = ' !schema' if item['schema_state'] == 'invalid' else ''
                 print(f"{item['run']} {item['verdict']:8} {item['mode']:6} "
-                      f"{item['scenario'] or 'custom':20} {label}")
+                      f"{item['scenario'] or 'custom':20} {label}{marker}")
         return 0
+    if args.action == 'check-run':
+        if args.all and args.run:
+            ap.error('check-run accepts a run id or --all, not both')
+        if args.all:
+            report = check_all_results(VM)
+            print(json.dumps(report, indent=2))
+            return 0 if report['ok'] else 1
+        if not args.run:
+            ap.error('check-run requires a run id or --all')
+        run_path = VM / 'runs' / args.run / 'result.json'
+        data, problems = validate_file(run_path)
+        print(json.dumps({
+            'run': args.run,
+            'ok': not problems,
+            'schema_state': schema_state(data, problems),
+            'schema_version': (data or {}).get('schema_version'),
+            'problems': problems,
+        }, indent=2))
+        return 0 if not problems else 1
+    if args.action == 'check-scenario':
+        if args.all and args.scenario:
+            ap.error('check-scenario accepts a scenario or --all, not both')
+        if args.all:
+            report = scenario_state(VM)
+            print(json.dumps(report, indent=2))
+            return 0 if report['ok'] else 1
+        if not args.scenario:
+            ap.error('check-scenario requires a scenario or --all')
+        value = args.scenario
+        path = Path(value)
+        if path.is_file():
+            name = path.stem
+        elif value in SCENARIO_NAMES:
+            name = value
+            path = VM / 'scenarios' / f'{name}.json'
+        else:
+            print(json.dumps({'scenario': value, 'ok': False,
+                              'problems': ['unknown scenario or missing file']},
+                             indent=2))
+            return 1
+        try:
+            data = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError) as exc:
+            print(json.dumps({'scenario': name, 'path': str(path), 'ok': False,
+                              'problems': [f'cannot read: {exc}']}, indent=2))
+            return 1
+        problems = validate_scenario(name, data, VM)
+        print(json.dumps({'scenario': name, 'path': str(path),
+                          'ok': not problems, 'problems': problems}, indent=2))
+        return 0 if not problems else 1
+    if args.action == 'check-profile':
+        if args.all and args.profile:
+            ap.error('check-profile accepts a profile or --all, not both')
+        if args.all:
+            report = profile_state(VM)
+            print(json.dumps(report, indent=2))
+            return 0 if report['ok'] else 1
+        if not args.profile:
+            ap.error('check-profile requires a profile or --all')
+        value = args.profile
+        path = Path(value)
+        if path.is_file():
+            name = path.stem
+        elif value in PROFILE_NAMES:
+            name = value
+            path = VM / 'profiles' / f'{name}.json'
+        else:
+            print(json.dumps({'profile': value, 'ok': False,
+                              'problems': ['unknown profile or missing file']},
+                             indent=2))
+            return 1
+        try:
+            data = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError) as exc:
+            print(json.dumps({'profile': name, 'path': str(path), 'ok': False,
+                              'problems': [f'cannot read: {exc}']}, indent=2))
+            return 1
+        problems = validate_profile(name, data)
+        print(json.dumps({'profile': name, 'path': str(path),
+                          'ok': not problems, 'problems': problems}, indent=2))
+        return 0 if not problems else 1
+    if args.action == 'check-bench':
+        if args.all and args.path:
+            ap.error('check-bench accepts a path or --all, not both')
+        if args.all:
+            root = args.root or (VM / 'runs')
+            report = check_all_bench_dir(root)
+            print(json.dumps(report, indent=2))
+            return 0 if report['ok'] else 1
+        if not args.path:
+            ap.error('check-bench requires a path or --all')
+        path = args.path
+        if path.is_dir():
+            path = path / 'bench.json'
+        try:
+            data = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError) as exc:
+            print(json.dumps({'path': str(path), 'ok': False,
+                              'problems': [f'cannot read: {exc}']}, indent=2))
+            return 1
+        problems = validate_bench(data)
+        print(json.dumps({'path': str(path), 'ok': not problems,
+                          'problems': problems}, indent=2))
+        return 0 if not problems else 1
     if args.action in ('show', 'extract'):
         run_path = VM / 'runs' / args.run / 'result.json'
         if args.action == 'show':
             if not run_path.is_file():
                 ap.error(f'run result not found: {run_path}')
-            print(run_path.read_text())
+            raw = run_path.read_text()
+            print(raw, end='' if raw.endswith('\n') else '\n')
+            data, problems = validate_file(run_path)
+            state = schema_state(data, problems)
+            print(f"schema: {state}"
+                  + (f" ({len(problems)} problem(s))" if problems else ''),
+                  file=sys.stderr)
+            if args.strict and problems:
+                return 1
             return 0
         try:
             print(json.dumps(extract_run(VM, args.run, args.member,
@@ -1798,7 +2223,7 @@ def main() -> int:
         kernel_target, vendor_mode = 'vendor', args.kernel
     if args.pin_cpu is not None:
         validate_pin_cpu(args.pin_cpu)
-    lock = (nullcontext({'held': False}) if args.no_lock
+    lock = (nullcontext({'held': False}) if args.no_lock or args.dry_run
             else run_lock(VM, args.lock_timeout))
     try:
         with lock as lock_info:
@@ -1811,7 +2236,8 @@ def main() -> int:
                        args.failure_bundle, kernel_target, args.allow_kernel_mismatch,
                        args.share, args.display, args.vnc_display, args.label,
                        args.state, args.reset, args.network, args.audio, args.usb_host,
-                       args.cache, pin_cpu=args.pin_cpu, lock_info=lock_info)
+                       args.cache, pin_cpu=args.pin_cpu,
+                       dry_run=args.dry_run, lock_info=lock_info)
     except LockTimeout as exc:
         print(f'ERROR: {exc}', file=sys.stderr)
         return 1

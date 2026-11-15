@@ -581,5 +581,361 @@ items beyond that.
   - **P2-6 hardware validation**: no WiFi/BT/CAN dongle is attached and the
     host `/dev/bus/usb` nodes are root-only; plumbing is complete but the
     hardware validation is blocked.
+- **2026-11-14 — P3-2 opportunistic (gdbstub/panic)**: `patch_sdhci` retries
+  transient connects, validates all replies and the breakpoint trap, and
+  records connect/stop evidence; boot readiness fails fast on a guest kernel
+  panic. Fake-stub tests cover the handshake and failure modes. Real boot,
+  vendor-systemd-dbus and daemon start/stop PASS. Known-issue probes now
+  resolve in both the VM and public layouts. 247 tests.
+- **2026-11-14 — daemon boot diagnostics**: a failed `daemon start` now keeps
+  `serial_tail` and `qemu_returncode` in status, and the CLI error includes
+  the serial tail. `daemon._serial_tail` is bounded and unit-tested. 248
+  tests.
+- **2026-11-14 — automated benchmark**: `bench.py` runs a scenario N times
+  under the global lock, keeps per-run logs and writes
+  `runs/bench-<id>/bench.json` with mean/median/min/max; nonzero exit if any
+  run fails. Two-run `boot` smoke PASS (6.748/6.775 s). 253 tests.
+- **2026-11-14 — daemon failure e2e + bench matrix**: a fake-QEMU
+  `daemon start` records `serial_tail`/`qemu_returncode` and surfaces the
+  tail; `bench.py --matrix` compares cache modes and optional pinned CPUs
+  with an unpinned baseline, accepts `--kernel vendor|compat`, and has a
+  failure-path test that still writes `bench.json`/exits 1. `--compare`
+  flags relative mean regressions (demo +7.15% → REGRESSED, rc=1).
+  Four-cell smoke PASS. 260 tests.
+- **2026-11-14 — benchmark metrics + dry-run**: bench.json records boot,
+  readiness and scenario metrics; `--compare --metric` selects one, with
+  legacy fallbacks and an empty-comparison failure. `launch.py run --dry-run`
+  prints the QEMU argv and records `DRY-RUN` without booting or locking.
+  Bench adds `--warmup N` and `source` provenance. 268 tests.
+- **2026-11-14 — scenario-contract validation**: `harness/scenarios.py`
+  validates all 25 scenario contracts (checks, requirements, modes,
+  blockers, storage, probes, transitions) and doctor reports a `scenarios`
+  check. 272 tests.
+- **2026-11-14 — bounded failure bundles**: failure-bundle collection has a
+  45 s total deadline; wedged sections are skipped while serial tails and
+  summary still land. 273 tests.
+- **2026-11-14 — result schema validation**: `harness/result_schema.py`,
+  `launch.py check-run`, `show --strict`, and schema fields/markers in
+  `list`; `check-run --all` and doctor report bulk schema health (current
+  corpus: 1181 valid, 159 legacy, 0 invalid, 66 result-less); real run
+  validates with schema 3 and zero problems. 279 tests.
+- **2026-11-14 — daemon state-survival test**: gated two-boot integration
+  test writes a marker through one daemon, stops it, restarts on the same
+  `--state`, and verifies the marker survives; real run PASS (52.6 s).
+  280 tests (14 skipped).
+- **2026-11-14 — QMP screenshot regression test**: gated `ui-smoke` run
+  captures a real QMP frame, baselines it, verifies zero-diff, then perturbs
+  a copy and requires a failure. Real run PASS (20.7 s). 281 tests
+  (15 skipped).
+- **2026-11-14 — bench schema validation**: `validate_bench` covers the
+  generated benchmark document and legacy compatibility; `bench.py` writes
+  `schema_version: 1`, validates after writing, and rejects malformed
+  comparisons with rc=2. 283 tests.
+- **2026-11-14 — end-to-end benchmark comparison test**: two real boots,
+  self/permissive comparisons at rc=0 and a mean-doubled candidate at
+  rc=1/REGRESSED; mutates summary+metrics and cleans bench dirs. Real run
+  PASS (12.4 s). 284 tests (16 skipped).
+- **2026-11-14 — daemon diagnostics test**: opt-in test verifies command-log
+  capture, console serial tail, status reachability/QEMU/serial bytes/lock,
+  and guest rc=3 propagation. Real run PASS (7.6 s). 285 tests (17 skipped).
+- **2026-11-14 — real benchmark matrix test**: opt-in four-cell
+  writeback/writethrough × unpinned/pinned run asserts variants, rows,
+  summary keys and metrics; real run PASS (27.7 s). 286 tests (18 skipped).
+- **2026-11-14 — QMP failure diagnostics + exit-code fix**: opt-in test
+  unlinks the QMP socket before capture, requiring FAIL/qmp_error/cleanup.
+  Fixed `run()` to return the rc after `finally` updates, so CLI exit codes
+  now match result.json. 287 tests (19 skipped).
+- **2026-11-14 — daemon screenshot artifact test**: capture through the
+  daemon, validate PNG metadata/dimensions/size and copy cleanup; real run
+  PASS (9.3 s). Cumulative 90 VM commits; 288 tests (20 skipped).
+- **2026-11-14 — daemon screenshot failure test**: unlink the daemon QMP
+  socket, require a QMP diagnostic/no artifact while the daemon remains
+  healthy, then stop and verify QEMU is gone. Real run PASS (23.0 s).
+  Cumulative 91 VM commits; 289 tests (21 skipped).
+- **2026-11-14 — daemon dead-QEMU recovery test**: kill QEMU, detect dead
+  status, wait for process cleanup, restart in the same directory and verify
+  exec. Real run PASS (14.0 s). Cumulative 92 VM commits; 290 tests
+  (22 skipped).
+- **2026-11-14 — stale control-socket recovery**: request fails fast for a
+  missing socket after ready, with a ~0.5 s grace; gated test verifies status
+  diagnostics, exec failure, stale-daemon termination and clean restart. Real
+  run PASS (26.0 s). Cumulative 93 VM commits; 292 tests (23 skipped).
+- **2026-11-14 — daemon SIGKILL recovery + token ledger**: SIGKILL the
+  daemon, require QEMU parent-death reaping, unreachable status and clean
+  restart; real run PASS (14.3 s). 293 tests (24 skipped); 94 VM commits.
+  Available OpenCode session token evidence is recorded in NOTES (15.06M
+  non-cache; 806M including cache reads at last query).
+- **2026-11-14 — persistent state across daemon SIGKILL**: write marker,
+  SIGKILL daemon/QEMU, restart same `--state`, verify marker and lock
+  release. Real run PASS (14.1 s). 294 tests (25 skipped); 95 VM commits.
+- **2026-11-14 — daemon exec timeout recovery**: overlong exec fails with a
+  completion-timeout diagnostic and the daemon accepts a subsequent exec.
+  Real run PASS (11.1 s). 295 tests (26 skipped); 96 VM commits.
+- **2026-11-14 — daemon state reset test**: marker written to persistent
+  state is removed after `--reset`; real run PASS (17.7 s). 296 tests
+  (27 skipped); 97 VM commits.
+- **2026-11-14 — real warmup/provenance benchmark test**: one warmup + one
+  measured boot, schema-valid document, PASS rows, source provenance and
+  metrics. Real run PASS (14.1 s). 297 tests (28 skipped); 98 VM commits.
+- **2026-11-14 — daemon state-lock contention**: external `state.lock`
+  holder makes start fail with state-busy and no QEMU; release then verifies
+  clean start/exec/stop. Real run PASS (7.7 s). 298 tests (29 skipped); 99
+  VM commits.
+- **2026-11-14 — daemon stop during in-flight exec**: stop waits at most
+  1 s for the guest lock, cuts off a 20 s exec, kills QEMU and reports
+  stopped. Real run PASS (9.5 s). 299 tests (30 skipped); 100 VM commits.
+- **2026-11-14 — QMP input integration**: compat daemon receives a real key
+  and absolute click; responses and QEMU health verified. Real run PASS
+  (5.2 s). 300 tests (31 skipped); 101 VM commits.
+- **2026-11-14 — duplicate daemon start guard**: second start fails
+  "already running" without disturbing the original; exec/status verified.
+  Real run PASS (8.6 s). 301 tests (32 skipped); 102 VM commits.
+- **2026-11-14 — daemon screenshot path boundary**: outside-directory
+  screenshot request rejected, no file, daemon remains healthy. Real run
+  PASS (6.7 s). 302 tests (33 skipped); 103 VM commits.
+- **2026-11-14 — compat benchmark integration**: real `--kernel compat` run,
+  schema/PASS/metrics assertions. Real run PASS (4.1 s). 303 tests (34
+  skipped); 104 VM commits.
+- **2026-11-14 — daemon state-backing integrity**: wrong backing rejected
+  before QEMU; error status has no QEMU. Real run PASS (0.3 s). 304 tests
+  (35 skipped); 105 VM commits.
+- **2026-11-14 — daemon corrupt-state recovery**: corrupted overlay fails
+  before QEMU; `--reset` rebuilds and starts cleanly. Real run PASS (14.6 s).
+  305 tests (36 skipped); 106 VM commits.
+- **2026-11-14 — real failure-bundle integration**: guest exit 7 produces a
+  bundle with summary/dmesg/serial tail and cleanup; summary now includes a
+  guest-output tail. Real run PASS (9.8 s). 306 tests (37 skipped); 107 VM
+  commits.
+- **2026-11-14 — daemon concurrent exec**: two simultaneous execs are
+  serialized; both succeed with isolated output and the daemon stays ready.
+  Real run PASS (8.6 s). 307 tests (38 skipped); 108 VM commits.
+- **2026-11-14 — QMP input validation**: out-of-bounds click and invalid
+  qcode fail cleanly while the daemon stays healthy. Real run PASS (5.2 s).
+  308 tests (39 skipped); 109 VM commits.
+- **2026-11-14 — daemon corrupt-status recovery**: bad status.json does not
+  crash; exec/stop/restart recover. Real run PASS (13.4 s). 309 tests
+  (40 skipped); 110 VM commits.
+- **2026-11-14 — one-shot state persistence/reset**: marker survives two
+  runs and disappears after `--reset`. Real run PASS (18.8 s). 310 tests
+  (41 skipped); 111 VM commits.
+- **2026-11-14 — one-shot state-lock contention**: held state.lock fails a
+  run before QEMU; release allows clean run. Real run PASS (6.2 s). 311 tests
+  (42 skipped); 112 VM commits.
+- **2026-11-14 — daemon post-stop diagnostics**: idempotent stop; stopped/
+  unreachable status; exec/screenshot fail fast; clean restart. Real run
+  PASS (16.1 s). 312 tests (43 skipped); 113 VM commits.
+- **2026-11-14 — daemon screenshot copy failure**: failed copy cleans the
+  capture and reports a clear error; daemon remains healthy. Real run PASS
+  (6.7 s). 313 tests (44 skipped); 114 VM commits.
+- **2026-11-14 — benchmark source-mismatch diagnostics**: compare reports
+  git_head match/warning and optional strict failure. Real two-boot test
+  PASS (11.7 s). 314 tests (44 skipped); 115 VM commits.
+- **2026-11-14 — screenshot copy-failure restart**: failed copy leaves the
+  daemon healthy; stop/restart/exec in the same dir succeeds. Real run PASS
+  (14.5 s). 314 tests (44 skipped); 116 VM commits.
+- **2026-11-14 — failure-bundle opt-out**: exit-7 run with
+  `--no-failure-bundle` fails/cleans up without bundle metadata. Real run
+  PASS (5.6 s). 315 tests (45 skipped); 117 VM commits.
+- **2026-11-14 — screenshot symlink escape check**: in-tree symlink to an
+  outside path is rejected with no artifact; daemon healthy. Real run PASS
+  (7.7 s). 315 tests (45 skipped); 118 VM commits.
+- **2026-11-14 — console missing-serial test**: deleted serial.log produces
+  a clear console error; exec/status/stop remain healthy. Real run PASS
+  (8.2 s). 316 tests (46 skipped); 119 VM commits.
+- **2026-11-14 — dry-run state lock release**: dry run builds state overlays
+  and releases the lock; subsequent real run succeeds. Real run PASS (6.3 s).
+  317 tests (47 skipped); 120 VM commits.
+- **2026-11-14 — matrix+warmup benchmark**: two variants with warmup and
+  measured PASS rows, schema and metrics validated. Real run PASS (25.8 s).
+  318 tests (48 skipped); 121 VM commits.
+- **2026-11-14 — one-shot state-backing mismatch**: wrong backing fails
+  before QEMU; result FAIL/no qemu_pid. Real run PASS (0.1 s). 319 tests
+  (49 skipped); 122 VM commits.
+- **2026-11-14 — daemon missing-config recovery**: deleted config.json does
+  not block stop; restart recreates it. Real run PASS (13.0 s). 320 tests
+  (50 skipped); 123 VM commits.
+- **2026-11-14 — read-only screenshot copy failure**: copy fails cleanly,
+  capture removed, daemon healthy. Real run PASS (26.3 s). 321 tests
+  (51 skipped); 124 VM commits.
+- **2026-11-14 — dry-run boot-lock bypass**: dry runs complete while the
+  global lock is held, with DRY-RUN/no QEMU. Real run PASS (0.15 s). 322
+  tests (52 skipped); 125 VM commits.
+- **2026-11-14 — one-shot missing-overlay rebuild**: deleted state overlay
+  is recreated and loses the marker. Real run PASS (12.7 s). 323 tests
+  (53 skipped); 126 VM commits.
+- **2026-11-14 — daemon missing-status recovery**: deleted status.json does
+  not block status/exec/stop/restart. Real run PASS (15.7 s). 324 tests
+  (54 skipped); 127 VM commits.
+- **2026-11-14 — daemon command-log corruption**: log failures no longer
+  discard exec results; response records `log_error`; test uses a directory
+  in place of the log. Real run PASS (6.9 s). 325 tests (55 skipped); 128 VM
+  commits.
+- **2026-11-14 — QMP right-click coverage**: right-button absolute click
+  verified with a live compat daemon. Real run PASS (4.4 s). 326 tests
+  (56 skipped); 129 VM commits.
+- **2026-11-14 — daemon command-log rotation**: `--command-log-max` caps
+  and rotates `daemon-commands.log` once; unit+gated coverage at a 256-byte
+  cap. 326 tests + 1; 130 VM commits.
+- **2026-11-14 — benchmark matrix validation**: matrix CPUs checked against
+  affinity before the lock; duplicate variants collapsed; invalid CPU exits 2
+  with no bench dir. 331 tests; 131 VM commits.
+- **2026-11-14 — verdict/rc consistency**: schema enforces PASS/DRY-RUN rc 0,
+  BLOCKED rc 77 + blockers, FAIL nonzero rc; corpus clean. 332 tests; 132 VM
+  commits.
+- **2026-11-14 — vehicle-state fail-closed**: unknown D-Bus method must
+  return `UnknownMethod`; real scenario PASS on eight checks; 332 tests;
+  133 VM commits.
+- **2026-11-14 — can-smoke fail-closed**: unknown CAN method must return
+  `UnknownMethod`; real run PASS on five checks; 332 tests; 134 VM commits.
+- **2026-11-14 — clean daemon CLI errors**: exec/screenshot failures print
+  `ERROR:` and exit 1 (no usage dump); gated failure paths re-verified. 332
+  tests; 135 VM commits.
+- **2026-11-14 — list schema filter**: `list --schema` filters by
+  ok/legacy/invalid/missing. 333 tests; 136 VM commits.
+- **2026-11-14 — daemon control protocol robustness**: unknown
+  action/malformed JSON rejected without disturbing the daemon. 334 tests;
+  137 VM commits.
+- **2026-11-14 — scenario metadata validation**: boot/exit markers,
+  expected_fail, power-loss/USB-removal metadata and numeric bounds checked;
+  25 scenarios valid. 334 tests; 138 VM commits.
+- **2026-11-14 — compat audio playback**: gated HDA-card + hw:0,0 playback
+  PASS. 335 tests; 139 VM commits.
+- **2026-11-14 — daemon restart command**: restart reuses config.json and
+  produces a new QEMU PID with working exec. 336 tests; 140 VM commits.
+- **2026-11-14 — daemon restart --reset**: discards state on restart and is
+  rejected without `--state`; marker and error gated tests PASS. 338 tests;
+  141 VM commits.
+- **2026-11-14 — restart argv extraction**: stored-config mapping is a pure
+  function with full unit coverage; gated restart re-verified. 339 tests;
+  142 VM commits.
+- **2026-11-14 — daemon restart edge cases**: restart-while-stopped works;
+  corrupt config fails clearly without QEMU. 340 tests; 143 VM commits.
+- **2026-11-14 — console line clamping**: zero/negative tails clamp to one
+  line; unit coverage. 341 tests; 144 VM commits.
+- **2026-11-14 — daemon list**: lists daemon dirs with recorded state,
+  daemon/QEMU liveness and kernel/state config; unit + gated coverage.
+  343 tests; 145 VM commits.
+- **2026-11-14 — daemon list stale marker**: ready/starting records with a
+  dead daemon process show `STALE`; unit + gated coverage. 343 tests; 146 VM
+  commits.
+- **2026-11-14 — daemon list --fail-stale**: scriptable stale detection with
+  exit 1; CLI tests. 344 tests; 147 VM commits.
+- **2026-11-14 — benchmark row rc agreement**: PASS with nonzero rc becomes
+  FAIL in warmup/measured rows. 345 tests; 148 VM commits.
+- **2026-11-14 — benchmark child validation**: child result.json schema is
+  enforced per row; failures retain schema_problems. 346 tests; 149 VM
+  commits.
+- **2026-11-14 — bench row/variant consistency**: rows/warmups must match
+  benchmarked scenarios, declared variants and repeat/warmup bounds. 347
+  tests; 150 VM commits.
+- **2026-11-14 — bulk benchmark schema health**: doctor validates every
+  bench.json; unit coverage. 348 tests; 151 VM commits.
+- **2026-11-14 — visual tolerance bounds**: tolerance restricted to 0..255;
+  unit coverage. 349 tests; 152 VM commits.
+- **2026-11-14 — daemon exec timeout validation**: finite/positive required;
+  0/-1/nan/inf rejected up front. 350 tests; 153 VM commits.
+- **2026-11-14 — bench compare accepts directories**: `--compare` takes
+  bench dirs or JSON paths. 352 tests; 154 VM commits.
+- **2026-11-14 — check-bench**: per-document benchmark schema validation
+  CLI with JSON report and 0/1 exit. 353 tests; 155 VM commits.
+- **2026-11-14 — check-bench --all**: bulk benchmark validation CLI; 353
+  tests; 156 VM commits.
+- **2026-11-14 — benchmark shape comparison**: cross-shape comparisons are
+  flagged and optionally rejected. 354 tests; 157 VM commits.
+- **2026-11-14 — profile validation**: doctor validates profile contracts
+  and conformance no-bypass; tests cover malformed/missing/extra. 357 tests;
+  158 VM commits.
+- **2026-11-14 — frame-limit boundary**: overflow write logged/dropped,
+  decoded state unchanged; real vehicle-state PASS on nine checks. 357 tests;
+  159 VM commits.
+- **2026-11-14 — screenshot retention bound**: `--screenshot-keep` prunes
+  daemon captures; unit + gated coverage. 359 tests; 160 VM commits.
+- **2026-11-14 — regression summary diagnostics**: suite rows carry
+  guest_rc/error/failures/checks; real two-scenario suite PASS. 361 tests;
+  161 VM commits.
+- **2026-11-14 — daemon start timeout reaping**: failed readiness terminates
+  and reaps the child; PID test + normal start/exec/stop re-verified. 362
+  tests; 162 VM commits.
+- **2026-11-14 — check-scenario**: per-contract CLI validation with JSON
+  report and 0/1 exit. 363 tests; 163 VM commits.
+- **2026-11-14 — check-profile**: per-profile CLI validation with JSON
+  report and 0/1 exit. 364 tests; 164 VM commits.
+- **2026-11-14 — benchmark Mode C wiring**: mode/share/visible-frame
+  requirements honored; real ui-smoke compat bench PASS. 365 tests; 165 VM
+  commits.
+- **2026-11-14 — provenance validation**: images/overlays/harness_sources
+  structures checked; corpus clean. 366 tests; 166 VM commits.
+- **2026-11-14 — status artifact counters**: command log bytes and screenshot
+  count in daemon status; gated assertions. 366 tests; 167 VM commits.
+- **2026-11-14 — power-loss helper integration**: two-phase helper PASS with
+  marker/killed/recovered evidence. 367 tests; 168 VM commits.
+- **2026-11-14 — result directory integrity**: current-schema run_dir must
+  match the containing directory; corpus clean. 368 tests; 169 VM commits.
+- **2026-11-14 — visual name hardening**: path-like baseline names rejected.
+  369 tests; 170 VM commits.
+- **2026-11-14 — benchmark duplicate rejection**: duplicate variants/rows/
+  warmups are invalid. 370 tests; 171 VM commits.
+- **2026-11-14 — list state filter**: daemon list can filter by state/stale.
+  371 tests; 172 VM commits.
+- **2026-11-14 — bench-only result accounting**: benchmark dirs are separate
+  from missing runs. 371 tests; 173 VM commits.
+- **2026-11-14 — state mode guard**: vendor/compat state reuse requires
+  `--reset`; unit + gated coverage. 373 tests; 174 VM commits.
+- **2026-11-14 — check-scenario --all**: bulk scenario validation CLI;
+  374 tests; 175 VM commits.
+- **2026-11-14 — check-profile --all**: bulk profile validation CLI; 375
+  tests; 176 VM commits.
+- **2026-11-14 — exec output cap**: tail-limited output with truncation
+  warning; unit + gated coverage. 377 tests; 177 VM commits.
+- **2026-11-14 — list artifact counters**: daemon list reports command-log
+  bytes and screenshot count. 377 tests; 178 VM commits.
+- **2026-11-14 — restart preserves caps**: exec truncation and screenshot
+  retention still apply after restart. 378 tests; 179 VM commits.
+- **2026-11-14 — limit validation coverage**: zero/negative daemon limits
+  rejected before boot. 379 tests; 180 VM commits.
+- **2026-11-14 — constant-memory bbox**: screenshot scanning avoids per-pixel
+  lists; unit coverage. 380 tests; 181 VM commits.
+- **2026-11-14 — QMP button validation**: library rejects unknown pointer
+  buttons. 381 tests; 182 VM commits.
+- **2026-11-14 — click parsing**: clear `--click X,Y` validation. 382 tests;
+  183 VM commits.
+- **2026-11-14 — show consistency**: `show --strict` uses validate_file.
+  382 tests; 184 VM commits.
+- **2026-11-14 — bounded console tail**: block-wise tail reads and byte-based
+  follow. 383 tests; 185 VM commits.
+- **2026-11-14 — CLI argument validation coverage**: bench threshold and
+  regress repeat/timeout/storage guards tested. 386 tests; 186 VM commits.
+- **2026-11-14 — counters across restart**: status counters reset and
+  recompute. 387 tests; 187 VM commits.
+- **2026-11-14 — order-insensitive bench shape**: no false mismatch on
+  reordered scenarios/variants. 388 tests; 188 VM commits.
+- **2026-11-14 — capped output logging**: capped exec text is stored/rotated
+  within the log cap. 389 tests; 189 VM commits.
+- **2026-11-14 — status caps**: active log/screenshot/exec caps visible in
+  status. 389 tests; 190 VM commits.
+- **2026-11-14 — restart config guard**: invalid stored config fails before
+  stopping a healthy daemon. 390 tests; 191 VM commits.
+- **2026-11-14 — restart pin guard**: unavailable stored pin fails before
+  stop. 390 tests; 192 VM commits.
+- **2026-11-14 — restart preserves log cap/pin**: config+status assertions.
+  390 tests; 193 VM commits.
+- **2026-11-14 — gated list filters**: ready/stopped filters against a live
+  daemon. 390 tests; 194 VM commits.
+- **2026-11-14 — evidence schema**: storage/power-loss/USB-removal blocks
+  validated. 391 tests; 195 VM commits.
+- **2026-11-14 — list caps**: daemon list reports stored resource caps.
+  391 tests; 196 VM commits.
+- **2026-11-14 — list limit validation**: negative limits rejected; zero
+  returns empty. 392 tests; 197 VM commits.
+- **2026-11-14 — screenshot schema**: screenshot/artifact/QMP evidence
+  validated. 393 tests; 198 VM commits.
+- **2026-11-14 — patch/phase/audit schema**: evidence blocks validated.
+  394 tests; 199 VM commits.
+- **2026-11-14 — lock/bundle schema**: lock and failure-bundle evidence
+  validated. 395 tests; 200 VM commits.
+- **2026-11-14 — manifest/pin schema**: tools-manifest and compat-pin
+  evidence validated. 396 tests; 201 VM commits.
+- **2026-11-14 — runtime provenance schema**: QEMU/runtime/options/state/
+  share blocks validated. 397 tests; 203 VM commits.
 - **Remaining:** only the blocked items above; no feasible P2 work remains.
-  P3 is deferred per the plan (P3-1/P3-2 retry-later).
+  P3-1 is still deferred; P3-2's practical hardening is now landed.

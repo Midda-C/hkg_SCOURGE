@@ -20,6 +20,51 @@ from pathlib import Path
 from .governor import LockTimeout, run_lock
 
 DEFAULT_DAEMON_DIR = "runs/daemon"
+DEFAULT_COMMAND_LOG_MAX = 1024 * 1024
+DEFAULT_SCREENSHOT_KEEP = 10
+DEFAULT_EXEC_OUTPUT_MAX = 1024 * 1024
+
+
+def limit_output(output: str, max_bytes: int) -> tuple[str, int, bool]:
+    """Keep the tail of an exec output within `max_bytes` (UTF-8)."""
+    data = output.encode("utf-8", "replace")
+    if len(data) <= max_bytes:
+        return output, len(data), False
+    return data[-max_bytes:].decode("utf-8", "replace"), len(data), True
+
+
+def prune_screenshots(daemon_dir: Path, keep: int) -> list[str]:
+    """Keep the newest `keep` screenshot captures; return removed names."""
+    if keep <= 0:
+        return []
+    directory = Path(daemon_dir)
+    try:
+        files = sorted(directory.glob("screenshot-*.png"),
+                       key=lambda path: path.stat().st_mtime, reverse=True)
+    except OSError:
+        return []
+    removed = []
+    for path in files[keep:]:
+        try:
+            path.unlink()
+            removed.append(path.name)
+        except OSError:
+            pass
+    return removed
+
+
+def append_command_log(path: Path, text: str, max_bytes: int) -> None:
+    """Append a command record, rotating once when the cap is exceeded."""
+    path = Path(path)
+    data = text.encode()
+    if len(data) > max_bytes:
+        data = data[-max_bytes:]
+    if path.exists() and path.stat().st_size + len(data) > max_bytes:
+        backup = path.with_name(path.name + ".1")
+        backup.unlink(missing_ok=True)
+        path.replace(backup)
+    with path.open("ab") as handle:
+        handle.write(data)
 
 
 @contextmanager
@@ -98,12 +143,68 @@ def daemon_pid_matches(pid: int | None, daemon_dir: Path | None = None) -> bool:
     return True
 
 
+def list_daemons(root: Path) -> list[dict]:
+    """Describe daemon directories under `root` without contacting them."""
+    rows = []
+    root = Path(root)
+    try:
+        entries = sorted(path for path in root.iterdir()
+                         if path.is_dir()
+                         and ((path / "status.json").is_file()
+                              or (path / "config.json").is_file()))
+    except OSError:
+        return rows
+    for path in entries:
+        status = read_status(path)
+        config = {}
+        try:
+            raw = json.loads((path / "config.json").read_text())
+            if isinstance(raw, dict):
+                config = raw
+        except (OSError, json.JSONDecodeError):
+            config = {}
+        daemon_pid = status.get("daemon_pid")
+        qemu_pid = status.get("qemu_pid")
+        daemon_alive = bool(daemon_pid and daemon_pid_matches(daemon_pid, path))
+        command_log = path / "daemon-commands.log"
+        state = status.get("state")
+        rows.append({
+            "dir": str(path),
+            "state": state,
+            "daemon_pid": daemon_pid,
+            "daemon_alive": daemon_alive,
+            "qemu_pid": qemu_pid,
+            "qemu_alive": bool(qemu_pid and pid_alive(qemu_pid)),
+            "stale": state in ("starting", "ready") and not daemon_alive,
+            "kernel": config.get("kernel_target"),
+            "state_dir": config.get("state"),
+            "command_log_bytes": (command_log.stat().st_size
+                                  if command_log.is_file() else 0),
+            "screenshot_count": len(list(path.glob("screenshot-*.png"))),
+            "command_log_max": config.get("command_log_max"),
+            "screenshot_keep": config.get("screenshot_keep"),
+            "exec_output_max": config.get("exec_output_max"),
+        })
+    return rows
+
+
 def request(daemon_dir: Path, payload: dict, timeout: float = 15.0) -> dict:
     path = Path(daemon_dir) / "control.sock"
     deadline = time.monotonic() + timeout
+    missing_since = None
     while not path.exists():
         if time.monotonic() > deadline:
             raise TimeoutError(f"daemon control socket missing: {path}")
+        state = read_status(daemon_dir).get("state")
+        if state in ("ready", "error", "stopped"):
+            # The socket is normally created just after the ready status.
+            # A missing socket after a short grace is a stale/broken daemon.
+            if missing_since is None:
+                missing_since = time.monotonic()
+            elif time.monotonic() - missing_since > 0.5:
+                raise RuntimeError(f"daemon control socket missing: {path}")
+        else:
+            missing_since = None
         time.sleep(0.05)
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     sock.settimeout(max(0.1, deadline - time.monotonic()))
@@ -129,6 +230,12 @@ def _tail(path: Path, lines: int = 40) -> str:
     except OSError:
         return ""
     return "\n".join(text.splitlines()[-lines:]) + "\n"
+
+
+def _serial_tail(ser, limit: int = 4000) -> str:
+    if ser is None:
+        return ""
+    return bytes(ser.log[-limit:]).decode(errors="replace")
 
 
 def start(config: dict, launch_path: Path, timeout: float = 180.0) -> dict:
@@ -158,13 +265,32 @@ def start(config: dict, launch_path: Path, timeout: float = 180.0) -> dict:
                 status["daemon_pid"] = process.pid
                 return status
             if status.get("state") == "error":
-                raise RuntimeError(status.get("error") or "daemon failed to start")
+                message = status.get("error") or "daemon failed to start"
+                tail = status.get("serial_tail")
+                if tail:
+                    message += "\nserial tail:\n" + tail[-2000:]
+                raise RuntimeError(message)
             if process.poll() is not None:
                 raise RuntimeError(
                     f"daemon exited rc={process.returncode}: "
                     + _tail(daemon_dir / "daemon.log", 30))
             time.sleep(0.2)
-        raise TimeoutError("daemon did not become ready; see daemon.log")
+        # A daemon that never becomes ready must not keep QEMU or the boot
+        # lock alive. Reap it before reporting the timeout.
+        if process.poll() is None:
+            process.terminate()
+        try:
+            process.wait(10)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(10)
+        status = read_status(daemon_dir)
+        message = ("daemon did not become ready "
+                   f"(state={status.get('state')}); see daemon.log")
+        tail = status.get("serial_tail")
+        if tail:
+            message += "\nserial tail:\n" + tail[-2000:]
+        raise TimeoutError(message)
 
 
 def stop(config_dir: Path, timeout: float = 20.0) -> dict:
@@ -205,6 +331,9 @@ def _serve(config: dict) -> int:
     import launch  # late import avoids a module cycle
 
     daemon_dir = Path(config["daemon_dir"])
+    command_log_max = int(config.get("command_log_max", DEFAULT_COMMAND_LOG_MAX))
+    screenshot_keep = int(config.get("screenshot_keep", DEFAULT_SCREENSHOT_KEEP))
+    exec_output_max = int(config.get("exec_output_max", DEFAULT_EXEC_OUTPUT_MAX))
     kernel_target = config.get("kernel_target", "vendor")
     status = {"state": "starting", "daemon_pid": os.getpid(), "mode": kernel_target,
               "daemon_dir": str(daemon_dir), "started": time.time()}
@@ -251,7 +380,8 @@ def _serve(config: dict) -> int:
         state = Path(config["state"]).resolve() if config.get("state") else None
         if state is not None:
             overlays, state_lock = launch.create_state_overlays(
-                state, inputs, reset=bool(config.get("reset")))
+                state, inputs, reset=bool(config.get("reset")),
+                mode=kernel_target)
         else:
             overlays = {}
             for name, path in inputs.items():
@@ -287,12 +417,17 @@ def _serve(config: dict) -> int:
         if kernel_target == "vendor":
             launch.patch_sdhci(daemon_dir, proc, 30)
         started = time.monotonic()
-        ser.read_until(b"IONIQ_VM_READY", float(config.get("ready_timeout", 180)))
+        ser.read_until(b"IONIQ_VM_READY", float(config.get("ready_timeout", 180)),
+                       fatal=True)
         launch.wait_shell(ser, float(config.get("ready_timeout", 180)))
-        status.update({"state": "ready", "boot_seconds": round(time.monotonic() - started, 2),
+        status.update({"state": "ready",
+                       "boot_seconds": round(time.monotonic() - started, 2),
                        "qemu_pid": proc.pid, "qmp": str(qmp_socket),
                        "display": config.get("display", "none"),
                        "display_device": display_device,
+                       "command_log_max": command_log_max,
+                       "screenshot_keep": screenshot_keep,
+                       "exec_output_max": exec_output_max,
                        "overlays": {name: item["path"] for name, item in overlays.items()},
                        "state_dir": str(state) if state else None,
                        "serial": str(daemon_dir / "serial.log")})
@@ -316,10 +451,17 @@ def _serve(config: dict) -> int:
                 action = message.get("action")
                 if action == "status":
                     current = read_status(daemon_dir)
-                    current.update({"reachable": True,
-                                    "qemu_alive": proc.poll() is None,
-                                    "serial_bytes": (daemon_dir / "serial.log").stat().st_size
-                                    if (daemon_dir / "serial.log").is_file() else 0})
+                    command_log = daemon_dir / "daemon-commands.log"
+                    current.update({
+                        "reachable": True,
+                        "qemu_alive": proc.poll() is None,
+                        "serial_bytes": (daemon_dir / "serial.log").stat().st_size
+                        if (daemon_dir / "serial.log").is_file() else 0,
+                        "command_log_bytes": (command_log.stat().st_size
+                                              if command_log.is_file() else 0),
+                        "screenshot_count": len(list(
+                            daemon_dir.glob("screenshot-*.png"))),
+                    })
                     response = {"ok": True, "status": current}
                 elif action == "exec":
                     cmd = message.get("cmd")
@@ -329,10 +471,23 @@ def _serve(config: dict) -> int:
                         with guest_lock:
                             token, output, rc, seconds = launch.execute_guest(
                                 ser, cmd, float(message.get("timeout", 300)))
-                        with (daemon_dir / "daemon-commands.log").open("a") as log:
-                            log.write(f"=== {time.time()} rc={rc} ===\n{output}\n")
+                        output, output_bytes, truncated = limit_output(
+                            output, exec_output_max)
+                        log_error = None
+                        try:
+                            append_command_log(
+                                daemon_dir / "daemon-commands.log",
+                                f"=== {time.time()} rc={rc} ===\n{output}\n",
+                                command_log_max)
+                        except OSError as exc:
+                            log_error = f"{type(exc).__name__}: {exc}"
                         response = {"ok": True, "output": output, "rc": rc,
-                                    "seconds": seconds}
+                                    "seconds": seconds,
+                                    "output_bytes": output_bytes}
+                        if truncated:
+                            response["output_truncated"] = True
+                        if log_error:
+                            response["log_error"] = log_error
                 elif action == "screenshot":
                     output = Path(message.get("output", daemon_dir / "screenshot.png"))
                     output = output.resolve()
@@ -345,12 +500,19 @@ def _serve(config: dict) -> int:
                     output.parent.mkdir(parents=True, exist_ok=True)
                     result = launch.qmp_screendump(qmp_socket, output)
                     response = {"ok": True, "screenshot": result}
+                    pruned = prune_screenshots(daemon_dir, screenshot_keep)
+                    if pruned:
+                        response["pruned"] = pruned
                 elif action == "stop":
-                    try:
-                        with guest_lock:
+                    # Never let a long-running exec hold stop hostage. Sync
+                    # only when the guest lock is available without waiting.
+                    if guest_lock.acquire(timeout=1):
+                        try:
                             launch.execute_guest(ser, "sync", 10)
-                    except Exception:  # noqa: BLE001
-                        pass
+                        except Exception:  # noqa: BLE001
+                            pass
+                        finally:
+                            guest_lock.release()
                     response = {"ok": True, "stopping": True,
                                 "daemon_pid": os.getpid()}
                     handle.write((json.dumps(response) + "\n").encode())
@@ -379,7 +541,9 @@ def _serve(config: dict) -> int:
     except LockTimeout as exc:
         status.update({"state": "error", "error": f"lock timeout: {exc}"})
     except Exception as exc:  # noqa: BLE001
-        status.update({"state": "error", "error": f"{type(exc).__name__}: {exc}"})
+        status.update({"state": "error", "error": f"{type(exc).__name__}: {exc}",
+                       "serial_tail": _serial_tail(ser),
+                       "qemu_returncode": proc.poll() if proc is not None else None})
         if proc is not None and proc.poll() is None:
             proc.kill()
     finally:
@@ -397,6 +561,8 @@ def _serve(config: dict) -> int:
                 proc.wait(10)
             except Exception:  # noqa: BLE001
                 pass
+            if status.get("qemu_returncode") is None:
+                status["qemu_returncode"] = proc.returncode
         if ser is not None:
             try:
                 ser.close()
@@ -415,26 +581,46 @@ def _serve(config: dict) -> int:
     return 0 if status["state"] == "stopped" else 1
 
 
+def tail_text(path: Path, lines: int) -> str:
+    """Read only enough tail bytes to return the last `lines` lines."""
+    lines = max(1, int(lines))
+    block = 64 * 1024
+    chunks: list[bytes] = []
+    newlines = 0
+    with Path(path).open("rb") as handle:
+        handle.seek(0, 2)
+        position = handle.tell()
+        while position > 0 and newlines < lines + 1:
+            size = min(block, position)
+            position -= size
+            handle.seek(position)
+            chunk = handle.read(size)
+            chunks.append(chunk)
+            newlines += chunk.count(b"\n")
+    data = b"".join(reversed(chunks))
+    text = data.decode("utf-8", "replace")
+    return "\n".join(text.splitlines()[-lines:])
+
+
 def console(daemon_dir: Path, lines: int = 200, follow: bool = False) -> int:
     path = Path(daemon_dir) / "serial.log"
     if not path.is_file():
         raise RuntimeError(f"serial log missing: {path}")
-    data = path.read_text(errors="replace")
-    print("\n".join(data.splitlines()[-lines:]))
+    print(tail_text(path, lines))
     if not follow:
         return 0
-    position = len(data)
+    position = path.stat().st_size
     try:
         while True:
             time.sleep(0.2)
             if path.stat().st_size < position:
                 position = 0
-            with open(path, "r", errors="replace") as handle:
+            with path.open("rb") as handle:
                 handle.seek(position)
                 chunk = handle.read()
                 position = handle.tell()
             if chunk:
-                sys.stdout.write(chunk)
+                sys.stdout.write(chunk.decode("utf-8", "replace"))
                 sys.stdout.flush()
     except KeyboardInterrupt:
         return 0

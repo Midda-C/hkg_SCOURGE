@@ -1,9 +1,10 @@
 # vm-lab runbook — Mode V and Mode C
 
 Status: **VM-validated** where stated; this is a research harness, not a stock
-head-unit replica. Start with [docs/14-vm-lab-plan.md](../../docs/14-vm-lab-plan.md),
-then read [docs/14-vm-lab.md](../../docs/14-vm-lab.md) for what the lab can
-establish, its limits and its known issues.
+head-unit replica. Start with [PLAN.md](../PLAN.md), read
+[NOTES.md](../NOTES.md) for dated evidence, and use
+[FIDELITY.md](../FIDELITY.md) plus [compat/FIDELITY.md](../compat/FIDELITY.md)
+for the limits.
 
 ## Capability matrix
 
@@ -26,7 +27,13 @@ establish, its limits and its known issues.
 - `fakeroot`, `mkfs.ext4`, `e2fsck` for image/tools/storage builds.
 - Your own decrypted rootfs at `rootfs.img` and the vendor `bzImage` symlink;
   see the SCOURGE stage-1 flow. Never commit those images.
-- `python3 -B launch.py doctor --graphics` should be green before booting.
+- `python3 -B launch.py doctor --graphics` should be green before booting;
+  it also validates every scenario JSON contract (`scenarios` check),
+including boot/exit markers, fail/removal metadata and numeric bounds, and
+both profiles (`profiles` check: workaround keys/booleans, conformance
+no-bypass, limitations). Validate one scenario or profile while editing with
+`launch.py check-scenario <name|path>` (or `--all`) and
+`launch.py check-profile <name|path>` (or `--all`) (JSON report, exit 0/1).
 
 ## Build basics
 
@@ -103,9 +110,11 @@ python3 -B launch.py run --kernel compat --profile research \
 ## Daily workflow
 
 ```sh
-python3 -B launch.py list --limit 10
+python3 -B launch.py list --limit 10        # negative limits are rejected
 python3 -B launch.py list --label battery
-python3 -B launch.py show <run-id>
+python3 -B launch.py show <run-id>              # prints a schema: line to stderr
+python3 -B launch.py show <run-id> --strict     # same validate_file checks as check-run
+python3 -B launch.py check-run <run-id>         # JSON schema report, exit 0/1
 python3 -B launch.py extract <run-id> qmp-screenshot.png /tmp/shot.png
 python3 -B launch.py prune --keep 800        # dry-run
 python3 -B launch.py gc --apply              # destructive, explicit
@@ -115,6 +124,26 @@ python3 -B launch.py gc --apply --allow-no-result   # also regression/interrupte
 `prune`/`gc` never delete `runs/daemon` (a live daemon owns sockets and
 overlays there) and, by default, skip any directory without `result.json`
 (regression bundles, interrupted runs). `--allow-no-result` opts those in.
+
+`check-run` validates the result core schema (`schema_version`, verdict, rc,
+timings, images/overlays, per-image provenance, `harness_sources` hashes,
+storage volume evidence, power-loss/USB-removal evidence, screenshot/artifact
+metadata, gdbstub patch, phase and audit summaries, tools-manifest and compat-pin
+evidence, lock and failure-bundle metadata, runtime provenance (QEMU version,
+cache/SMP/memory, mode/kernel, state/share/network/audio blocks), checks,
+lock/pin and related fields), requires a current-schema result's
+`run_dir` to match the directory it was loaded from, and includes
+verdict/rc consistency: PASS/DRY-RUN require rc 0, BLOCKED requires rc 77 and
+blockers, FAIL requires a nonzero rc.
+`check-run --all` scans every run result and reports `valid`, `legacy`,
+`invalid`, result-less dirs (`missing`) and benchmark-only dirs
+(`bench_only`), exiting 1 only when a current-schema result is
+invalid/unreadable. `list --json` includes `schema_state`/`schema_ok`/
+`schema_problems`, and `list --schema ok|legacy|invalid|missing` filters runs
+by state; current-schema invalid results get a `!schema` marker in text
+output, while older schema versions are reported as `legacy`. `doctor`
+reports the same bulk `result_schema` health plus `bench_schema` health for
+every `runs/bench-*/bench.json`.
 
 State reuse:
 
@@ -128,7 +157,7 @@ Optional share/display/input/network/audio:
 ```sh
 --share DIR --display vnc --vnc-display :7 --network --audio
 --usb-host 058f:6366
-python3 -B launch.py input --qmp <run>/qmp.sock --click 640,360
+python3 -B launch.py input --qmp <run>/qmp.sock --click 640,360   # X,Y integers
 python3 -B launch.py input --qmp <run>/qmp.sock --key ret
 ```
 
@@ -146,7 +175,8 @@ python3 -B launch.py run --kernel compat --audio \
 ```
 
 `--audio` adds `intel-hda` + `hda-duplex` with a null host backend; no host
-sound server is needed. The vendor rootfs default `dmix` slave is absent, so
+sound server is needed. An opt-in VM test asserts the HDA card is visible and
+that a one-second 48 kHz stereo `hw:0,0` playback completes. The vendor rootfs default `dmix` slave is absent, so
 use `-D hw:0,0` (or configure a simple PCM) for a test tone.
 
 ## Persistent VM daemon
@@ -157,6 +187,8 @@ Boot once and iterate without cold boots:
 python3 -B launch.py daemon start --kernel compat --state states/daemon \
   --label daily
 python3 -B launch.py daemon status
+python3 -B launch.py daemon list          # all daemon dirs + liveness
+python3 -B launch.py daemon restart
 python3 -B launch.py daemon exec --cmd 'uname -r; ls /media/host'
 python3 -B launch.py daemon screenshot --output /tmp/daemon.png
 python3 -B launch.py daemon console --lines 80
@@ -165,11 +197,90 @@ python3 -B launch.py daemon stop
 ```
 
 The daemon keeps the QEMU process, serial reader, QMP socket and state lock
-alive; `exec`/`screenshot` use a control socket in `runs/daemon/`. State
+alive; `exec`/`screenshot` use a control socket in `runs/daemon/`.
+`daemon start` rejects zero/negative `--command-log-max`,
+`--screenshot-keep` and `--exec-output-max` before boot. `daemon exec` caps
+returned output at `--exec-output-max` bytes (default 1 MiB), keeping the tail
+and printing a truncation warning; the command log stores exactly the capped
+text and rotates at `--command-log-max`. `daemon screenshot` keeps at most
+`--screenshot-keep N` (default 10) newest
+`screenshot-*.png` captures in the daemon directory; older captures are
+pruned and reported in the response `pruned` list. `daemon list --root runs
+[--json] [--state ready|stale|...]` reports every daemon directory with its
+recorded state, daemon/QEMU PID liveness, kernel/state config and artifact
+counters (`command_log_bytes`, `screenshot_count`) and stored caps
+(`command_log_max`, `screenshot_keep`, `exec_output_max`) without contacting
+the sockets; a ready/starting record whose daemon process is gone
+is marked `STALE` (JSON `stale: true`), and `--fail-stale` makes the
+command exit 1 when any entry is stale (useful in scripts/doctor-like checks).
+`daemon status` includes the active `command_log_max`, `screenshot_keep` and
+`exec_output_max` caps; artifact counters are recomputed from the daemon
+directory on each call, and a restart starts them at zero. `daemon restart` validates the stored config (kernel/display/device/cache,
+compat-only options, positive timeouts/limits, available pin CPU) before
+stopping the daemon, so an incompatible config does not kill a healthy
+daemon. It then stops and starts again from the stored `config.json` (kernel, state, devices, cache, lock,
+`pin-cpu`, `command-log-max`, `exec-output-max` and `screenshot-keep`
+settings); those caps and the pin still apply after restart. Add `--reset` to
+discard persistent state overlays; it requires a daemon started with
+`--state`. A failed
+`daemon start` includes the last serial lines and QEMU return code in the
+status/error shown by the CLI. Unknown control actions and malformed JSON
+requests return an error without disturbing the daemon. State
 overlays survive `stop` and are reused by the next `daemon start`; the
 default daemon directory is `runs/daemon` (`--daemon-dir` overrides it).
 Stop flushes the guest with `sync` before killing QEMU. A stale/dead daemon
-is reported by `status` instead of silently reusing it.
+is reported by `status` instead of silently reusing it. An opt-in integration
+test (`IONIQ_RUN_VM_TESTS=1`) writes a marker through one daemon, stops it,
+restarts with the same `--state`, and verifies the marker survives. Another
+opt-in test checks `daemon-commands.log`, `daemon console` serial output,
+`daemon console` reads only the tail bytes needed for `--lines` (not the
+whole serial log). `daemon status` (`reachable`, `qemu_alive`, `serial_bytes`,
+`command_log_bytes`, `screenshot_count`, held lock) and guest exit-code
+propagation through `exec`. A third test captures a daemon
+screenshot, validates PNG dimensions/size/metadata, confirms the daemon-dir
+capture was unlinked after the CLI copy, and stops the daemon. Another test
+unlinks the daemon QMP socket, requires the screenshot command to fail with a
+QMP diagnostic and no artifact, then stops the daemon and checks QEMU is gone.
+Another starts a daemon, kills its QEMU, requires the status/daemon death to
+be detected, then starts a fresh daemon in the same directory and exercises
+an `exec` before stopping it. A SIGKILL of the daemon itself must reap QEMU
+through the parent-death signal; status becomes unreachable and a fresh start
+in the same directory succeeds. The persistent-state variant writes a marker,
+SIGKILLs the daemon, restarts on the same `--state`, and verifies the marker
+and state-lock release. A command that exceeds `daemon exec --timeout` must
+return the timeout diagnostic while the daemon remains ready for a subsequent
+exec. The `--reset` variant writes a marker, stops, restarts with `--reset`,
+and verifies the marker is gone. A lock-contention test holds `state.lock`
+externally: `daemon start` must fail with "state is already in use", leave no
+QEMU, then succeed cleanly after the lock is released. Stop during a long
+in-flight exec returns promptly (bounded guest-lock wait), kills QEMU and
+leaves status stopped. An opt-in test starts a compat daemon and exercises
+both QMP key (`a`) and absolute tablet click input without disturbing the
+guest; a right-click variant covers the alternate pointer button. A duplicate `daemon start` must fail with "daemon already running"
+without disturbing the active daemon. A direct screenshot request with an
+output path outside the daemon directory is rejected and leaves the VM
+healthy; a symlink inside the directory that resolves outside is rejected
+too. Two simultaneous `exec` requests are serialized by the guest lock;
+both return their own output with no cross-talk. Out-of-bounds clicks and
+invalid QMP qcodes fail with diagnostics and leave the daemon healthy.
+Corrupting or deleting `status.json` does not crash the daemon: status
+reports unreachable/missing state, exec still works, stop rewrites `stopped`,
+and a restart succeeds. Stopping twice is idempotent; after stop, status reports
+`stopped`/unreachable and exec/screenshot fail fast without artifacts. A
+screenshot copy to an unwritable/missing destination or a read-only directory
+fails with a clear error, removes the daemon-dir capture, and leaves the
+daemon healthy; a subsequent stop/restart in the same directory succeeds. Deleting `serial.log`
+makes `daemon console` fail with "serial log missing" while exec/status
+remain usable. Deleting `config.json` does not block stop; restart recreates
+it and exec works. A corrupt/unwritable command log no longer discards a
+successful exec result; the response records `log_error`. The command log is
+capped by `daemon start --command-log-max` (default 1 MiB) and rotates once to
+`daemon-commands.log.1`. A persistent overlay whose backing does not match the expected
+image is rejected as a "backing mismatch" before QEMU starts. A corrupted
+overlay fails cleanly without QEMU, and `--reset` rebuilds it for a clean
+start/exec/stop. A stale control socket is detected in about
+0.5 s: status reports `reachable:false`, `exec` fails with a control-socket
+diagnostic, and a clean restart succeeds after the stale daemon exits.
 
 `--cache` selects the non-persistent qcow2 mode (`writeback` default;
 `directsync` is pathological on this host). Persistent state always forces
@@ -178,6 +289,66 @@ threads to an allowed host CPU for experiments (`run` and `daemon start`);
 it is not a default because the measured ~1.5% gain at n=3 is too small to
 justify one. Avoid CPU 0 for isolation experiments and expect `--smp >1` to
 slow down when all vCPUs share one host CPU.
+
+Scenarios with `requires_mode`, `requires_share` or
+`requires_visible_frame` are wired automatically: pass a matching `--kernel`,
+`--share`, and `--qmp-screenshot` is added for visible-frame scenarios.
+
+For repeatable numbers, use the benchmark driver:
+
+```sh
+python3 -B bench.py --scenario boot --repeats 3 [--kernel vendor|compat] \
+  [--cache writeback] [--pin-cpu N] [--smp N] [--memory MiB]
+python3 -B bench.py --scenario boot --repeats 3 --matrix --matrix-cpu 0
+```
+
+A child row is recorded as `FAIL` if its result says PASS but the process rc
+is nonzero, or if the child `result.json` fails the result schema (the first
+five problems are retained as `schema_problems`). It holds the global boot lock, runs children with `--no-lock`, writes
+`runs/bench-<id>/bench.json` with mean/median/min/max and keeps each child
+log, and exits nonzero if any run does not PASS. `--warmup N` runs N
+unrecorded boots per scenario/variant first; warmups are retained in
+`bench.json` and must PASS. `bench.json` also records `source` (`git_head`
+and `dirty`) for provenance. Validate one document with
+`launch.py check-bench <bench-dir|bench.json>` or all of them with
+`check-bench --all` (JSON report, exit 0/1). Schema validation requires every row/warmup to
+name a benchmarked scenario, a declared cache/pin variant, and an iteration
+within `repeats`/`warmup`, with unique variant/row/warmup keys (duplicates
+are rejected). The opt-in VM suite runs a real warmup+measured
+pair and asserts warmup/row PASS, source revision and metrics; it also runs a
+compat-kernel benchmark and validates its row/metrics. `--matrix` compares
+`writeback`/`writethrough` by default; `--matrix-cache` and `--matrix-cpu`
+select other combinations, and the unpinned baseline is always included.
+Matrix rows and summary keys are grouped by scenario, cache and pin.
+`--matrix-cpu` values are checked against the process affinity mask before
+the boot lock is taken, and duplicate cache/pin values are collapsed. The
+opt-in VM suite runs a real four-cell `writeback`/`writethrough` ×
+unpinned/pinned matrix and asserts variants, row count, summary keys and
+per-cell boot/readiness/scenario metrics.
+
+Compare two runs with a relative mean threshold (default 5%):
+
+```sh
+python3 -B bench.py --compare runs/bench-<base> runs/bench-<new> --threshold 0.05
+```
+
+The opt-in VM suite (`IONIQ_RUN_VM_TESTS=1`) runs two real boot benchmarks,
+checks a self-comparison is `SAME`/rc=0, a permissive real comparison is rc=0,
+and a mean-doubled candidate is `REGRESSED`/rc=1.
+
+`compare` also reports `source_match`/`source_warning` from the recorded
+`git_head`; add `--require-source-match` to fail a cross-revision comparison.
+`shape_match`/`shape_warning` compare `repeats`, `warmup`, `scenarios` and
+`variants` order-insensitively; `--require-same-shape` fails a cross-shape
+comparison.
+It prints per-key `SAME`/`IMPROVED`/`REGRESSED`/`MISSING` rows and exits 1 for
+a regression or a missing key; malformed benchmark documents are
+rejected with exit 2 and per-document problems. New `bench.json` files carry
+`schema_version: 1` and are validated before comparison and after writing.
+`bench.json` records `metrics` for
+`boot`, `readiness` and `scenario`; select one with `--metric boot|readiness|
+scenario` (default boot). A single-run comparison is noise; use `--repeats`
+for decisions.
 
 ## CAN/micom smoke
 
@@ -189,8 +360,9 @@ python3 -B launch.py run --profile research --scenario can-smoke \
 Starts the system bus and the synthetic `tweaks-micom-can-sim`, then calls
 `SetCANFixedMicomRecv` (canid 06 3f, start 26, size 2, data 2) and
 `SetCANMicomRecv` (06 3f). Pass requires READY, both CALL/ACK markers and
-method returns. It is an interface/contract test, not real CAN timing or
-vehicle-state fidelity.
+method returns, and requires an unknown CAN method (`Bogus`) to fail with a
+D-Bus `UnknownMethod` error. It is an interface/contract test, not real CAN
+timing or vehicle-state fidelity.
 
 ## Vehicle-state model (lab-defined)
 
@@ -211,8 +383,11 @@ and decodes two lab-defined canids into a deterministic state:
 The lab-only `org.scourge.vehicle.State` interface at `/Vehicle` exposes
 `GetState`/`Reset`; the last `SetCANMicomRecv` payload is retained as
 `bulk=<hex>`. The probe asserts decoded values, one clamp marker per
-out-of-range write, bulk retention, reset defaults and a hostile
-`startbit=INT_MAX`/boundary range guard (ignored and logged, never written).
+out-of-range write, bulk retention, reset defaults, a hostile
+`startbit=INT_MAX`/boundary range guard (ignored and logged, never written)
+fail-closed rejection of an unknown D-Bus method (`UnknownMethod`), and the
+16-distinct-canid retention limit (the overflow write is logged and dropped
+without mutating decoded state).
 Rebuild the payload with `sh build_research_tools.sh` after changing the
 simulator. The frame
 mapping is lab-defined: it is not a vendor DBC and does not claim stock
@@ -228,10 +403,27 @@ python3 -B launch.py visual compare <run-id> qmp-screenshot.png ui-smoke \
 python3 -B launch.py visual list
 ```
 
-Baselines live in `baselines/` (gitignored); `compare` writes a diff PNG and
+Baselines live in `baselines/` (gitignored); names must be plain filenames
+(path separators/traversal are rejected), and `compare` validates the
+threshold (0..1) and per-channel tolerance (0..255), writes a diff PNG and
 reports changed pixels/ratio. A deliberate UI change is rebaselined by
 running the `baseline` command against the reviewed frame. Baselines are
-workspace-local, so each agent can choose the frames it guards.
+workspace-local, so each agent can choose the frames it guards. The opt-in
+VM suite (`IONIQ_RUN_VM_TESTS=1`) includes an end-to-end test that captures a
+real `ui-smoke` QMP frame, baselines it, compares it (zero changed pixels),
+then perturbs a copy and requires the diff to fail.
+
+## Dry run
+
+```sh
+python3 -B launch.py run --dry-run --scenario boot
+```
+
+Builds the run metadata, overlays and `command.json`, prints the full QEMU
+argv, and exits with verdict `DRY-RUN` without taking the boot lock or
+starting QEMU. With `--state`, it builds the persistent overlays, releases
+the state lock and permits a subsequent real run. Dry runs bypass the global
+boot lock, so they never queue behind a live VM.
 
 ## Parallel runs and suites
 
@@ -257,7 +449,9 @@ python3 -B launch.py run --cmd '...' --no-lock   # controlled opt-out only
 `result.json` records the lock (`held`, `path`, `pid`, `waited_seconds`);
 inside a regression suite the child runs record `held: false` because the
 suite holds the lock, and `summary.json` records both `locked: true` and the
-`suite_lock` evidence. Daemon status records the lock it holds.
+`suite_lock` evidence, plus per-run `guest_rc`, `error`, bounded
+`failures`/`failure_count` and `checks` for triage without the child log.
+Daemon status records the lock it holds.
 A blocked second run exits with a clear `another VM boot holds ...` error.
 
 ## Virgl experiment
@@ -342,7 +536,9 @@ python3 -B launch.py recovery-power-loss \
 
 Phase 1 writes a marker, syncs it, signals `POWER_LOSS_READY`, then starts a
 write loop; the host kills QEMU. Phase 2 boots the same state and must print
-`POWER_LOSS_RECOVERED`, proving the ext4 journal recovered the marker. This is
+`POWER_LOSS_RECOVERED`, proving the ext4 journal recovered the marker. The
+opt-in VM suite runs this helper end to end and asserts both phases plus the
+`power_loss` marker/killed evidence. This is
 one crash-consistency slice, not update-engine crash safety.
 
 ## Vendor systemd partial boot (Mode V)
@@ -396,9 +592,16 @@ equivalence.
 | `compat initramfs missing` | `sh compat/pin-kernel.sh && sh compat/build-initramfs.sh` |
 | `compat kernel pin mismatch` | re-pin intentionally with `compat/pin-kernel.sh`; host kernel changed |
 | `no_running_vm` failure | stop the listed `vm-lab` QEMU PIDs before another managed run |
+| `gdbstub connect failed after N attempts` | the stub never serviced `runs/<id>/gdb.sock`; inspect the QEMU process/serial log and retry |
+| `guest kernel panic while waiting for ...` | boot readiness fails fast; inspect `serial.log` rather than waiting for the run timeout |
+| QMP screendump failure | result is FAIL with `screenshot.qmp_error`; QEMU/overlays are cleaned and the CLI exit code follows the final verdict |
+| `daemon exec`/`screenshot` failure | prints a single `ERROR:` line (no argparse usage dump) and exits 1 |
+| `daemon exec --timeout` invalid | rejected up front (`finite and positive`) before contacting the daemon |
+| `daemon did not become ready` | the spawned daemon is terminated and reaped before the error is raised, so QEMU/lock ownership are not orphaned |
+| failed run bundle seems slow | bundle collection is capped at 45 s total; guest-output and serial tails are written even if the shell is wedged; `--no-failure-bundle` skips collection entirely |
 | flat `entropy-ready` FAIL | known issue; run with `--storage split` or read `known_issue` |
 | `updater-launch` timeout | use `--timeout 540` or `600`; the scenario waits for a log line |
-| `update-graphics` FAIL | known Qt shutdown hang; see `docs/14-vm-lab.md` known issues |
+| `update-graphics` FAIL | known Qt shutdown hang; see the scenario `known_issue` |
 | `wifi-ui` missing imports | expected current evidence (`HMIEVENTS`, `AppHome_Enum`); AppHomeScreen runtime not wired |
 | blank QMP frame | ensure a display device is attached; compat uses `virtio-vga` |
 | GTK window fails headless | use `--display vnc --vnc-display :N`; GTK needs a desktop session |

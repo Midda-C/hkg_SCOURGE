@@ -65,6 +65,41 @@ against the process affinity mask.
 The cold-cache tables above and this warm-cache table are not directly
 comparable; compare rows within a table, not across tables.
 
+## Automated benchmark
+
+`bench.py` regenerates these timings without hand-parsing result files:
+
+```sh
+python3 -B bench.py --scenario boot --repeats 3 --cache writeback
+python3 -B bench.py --scenario boot --repeats 3 --pin-cpu 0
+python3 -B bench.py --scenario boot --repeats 3 --matrix --matrix-cpu 0
+python3 -B bench.py --scenario boot --repeats 3 --kernel compat
+```
+
+It serializes on the global boot lock, writes
+`runs/bench-<id>/bench.json` (`run`, `source`, `mean`, `median`, `min`, `max`),
+retains each child log, and exits nonzero if any run fails. `--warmup N`
+discards N unrecorded boots per scenario/variant first; warmup verdicts are
+retained and must PASS. Compare a baseline and a
+candidate with:
+
+```sh
+python3 -B bench.py --compare runs/bench-<base>/bench.json \
+  runs/bench-<new>/bench.json --threshold 0.05
+```
+
+The comparison marks relative mean growth as `REGRESSED` and exits 1, and
+rejects malformed benchmark documents with exit 2. The opt-in VM suite also
+runs two real boot benchmarks and exercises self/permissive/forced-regression
+comparisons end to end. New `bench.json` files
+carry `schema_version: 1` and are schema-validated. `bench.json` also records
+`metrics` for boot, readiness and scenario time;
+pass `--metric readiness` or `--metric scenario` to compare those. `--matrix` compares cache
+modes and optional pinned CPUs; its `summary` keys are grouped by scenario,
+cache and pin. A four-cell matrix smoke (one run each) passed at
+5.223/5.404/5.465/5.376 s; that is a smoke result, not a performance
+conclusion — use `--repeats` for decisions.
+
 ## Decision
 
 Keep `-smp 1`, `-m 4096`, `noapic` and `cache=writeback` as safe defaults.

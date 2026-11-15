@@ -10,6 +10,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import Mock, patch
 
@@ -17,7 +18,7 @@ VM = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(VM))
 
 import launch
-from harness.config import load_profile, load_scenario, scenario_command
+from harness.config import SCENARIO_NAMES, load_profile, load_scenario, scenario_command
 from harness.images import cleanup_overlays, create_overlays, drive_path, reserve_outputs, validate_output
 from harness.protocol import command_frame, command_output, completion_pattern
 from harness.results import evaluate, phase_summary
@@ -320,6 +321,70 @@ class LauncherTests(TemporaryTest):
         sock.recv.return_value = b''
         with self.assertRaises(EOFError):
             launch.RSP(sock).cmd('?')
+
+    def test_scenario_probes_resolve_in_public_mirror(self):
+        for name in SCENARIO_NAMES:
+            scenario = load_scenario(name)
+            probe = (scenario.get('known_issue') or {}).get('probe')
+            if not probe:
+                continue
+            if probe == 'RUNBOOK.md':
+                candidates = [VM / 'docs' / 'RUNBOOK.md', VM / 'RUNBOOK.md']
+                self.assertTrue(any(path.is_file() for path in candidates),
+                                f'{name}: RUNBOOK.md missing in both layouts')
+                continue
+            if probe.startswith('probes/') and probe.endswith('.md'):
+                self.fail(f'{name}: probe note {probe} is excluded by the public sync')
+            target = VM / probe
+            self.assertTrue(target.is_file(), f'{name}: missing probe {probe}')
+
+    def test_run_help_exposes_dry_run(self) -> None:
+        completed = subprocess.run(
+            [sys.executable, "-B", str(VM / "launch.py"), "run", "--help"],
+            capture_output=True, text=True, check=True)
+        self.assertIn("--dry-run", completed.stdout)
+
+    def test_dry_run_guards(self) -> None:
+        with self.assertRaisesRegex(ValueError, "cannot be interactive"):
+            launch.run("true", True, 5, profile_name="research", dry_run=True)
+        with self.assertRaisesRegex(ValueError, "cannot capture screenshots"):
+            launch.run(None, False, 5, profile_name="conformance",
+                       scenario_name="boot", dry_run=True, screenshot=True)
+
+    @unittest.skipUnless((VM / "rootfs.img").is_file()
+                         and (VM / "bzImage").is_file(),
+                         "VM images unavailable (public mirror)")
+    def test_dry_run_builds_command_without_qemu(self) -> None:
+        completed = subprocess.run(
+            [sys.executable, "-B", str(VM / "launch.py"), "run",
+             "--dry-run", "--no-lock", "--scenario", "boot", "--timeout", "30"],
+            cwd=VM, capture_output=True, text=True, timeout=60)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("dry-run", completed.stdout)
+        run_dir = next(Path(line[5:].strip()) for line in completed.stdout.splitlines()
+                       if line.startswith("run: "))
+        result = json.loads((run_dir / "result.json").read_text())
+        self.assertEqual(result["verdict"], "DRY-RUN")
+        self.assertTrue(result["dry_run"])
+        self.assertIsNone(result.get("qemu_pid"))
+        self.assertTrue((run_dir / "command.json").is_file())
+
+    def test_boot_panic_fails_fast(self):
+        read_fd, write_fd = os.pipe()
+        stream = os.fdopen(read_fd, "rb", buffering=0)
+        proc = Mock()
+        proc.stdout = stream
+        ser = launch.Serial(proc)
+        try:
+            os.write(write_fd, b"Kernel panic - not syncing: test\n")
+            started = time.monotonic()
+            with self.assertRaisesRegex(RuntimeError, "guest kernel panic"):
+                ser.read_until(b"NEVER", 5, fatal=True)
+            self.assertLess(time.monotonic() - started, 2)
+        finally:
+            os.close(write_fd)
+            ser.close()
+            stream.close()
 
 
 if __name__ == '__main__':
