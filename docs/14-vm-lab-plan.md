@@ -1001,6 +1001,12 @@ items beyond that.
   `OEM Type:`, systemd and `Reached target Multi-User System`; only
   `micommanager` and `nua.service` remain failed. Lab fixture, not stock
   boot. 3 new tests; 447 tests (73 skipped); doctor green.
+- **2026-11-15 — P2-7 negative media preflight**: `update-preflight-negative`
+  sets `UPDATE_PREFLIGHT_NEGATIVE=1`, mounts the disposable USB overlay
+  read-write, proves a wrong declared size, a `..` package path and a
+  corrupted manifest hash are rejected, restores the files and re-verifies.
+  Real run PASS with nine checks in about six seconds; 3 new tests. 450 tests
+  (73 skipped); doctor green.
 - **2026-11-15 — NAS import verified**: 9.4 GB preservation copy complete;
   all archives, partitions, runtime files and the navi2 archive match.
   `meta/SOURCE.txt` was finalized after the original manifest, so its one

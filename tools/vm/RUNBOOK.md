@@ -686,6 +686,19 @@ A real run with `update-k.img` passes all five checks in about six seconds.
 This is a preflight only; it does not verify the encrypted envelope or run the
 engine.
 
+The negative variant proves the guest checks fail closed:
+
+```sh
+python3 -B launch.py run --profile research \
+  --scenario update-preflight-negative --usb update-k.img --timeout 240
+```
+
+It sets `UPDATE_PREFLIGHT_NEGATIVE=1`, mounts the **disposable qcow2 overlay**
+read-write, then proves a wrong declared size, a `..` package path and a
+corrupted manifest hash are each rejected. It restores both files, re-verifies
+the baseline and requires nine checks. The base stick is untouched; the
+overlay is discarded after the run.
+
 ## DM/RDM tree validation and diff
 
 ```sh

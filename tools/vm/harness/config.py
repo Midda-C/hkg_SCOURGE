@@ -20,7 +20,7 @@ SCENARIO_NAMES = ('boot', 'usb-discovery', 'dbus-ready', 'dmclient-events',
                   'recovery-power-loss', 'vendor-systemd',
                   'vendor-systemd-dbus', 'vendor-esinit',
                   'vendor-esinit-fixture', 'update-preflight',
-                  'recovery-repeat-update')
+                  'update-preflight-negative', 'recovery-repeat-update')
 
 
 def load_profile(name: str) -> dict:
@@ -98,6 +98,9 @@ echo 'HARNESS_CHECK recovery-no-space PASS'
         return (VM / 'probes' / 'recovery-repeat-update.sh').read_text()
     if name == 'update-preflight':
         return (VM / 'probes' / 'update-preflight.sh').read_text()
+    if name == 'update-preflight-negative':
+        return ('export UPDATE_PREFLIGHT_NEGATIVE=1\n'
+                + (VM / 'probes' / 'update-preflight.sh').read_text())
     if name == 'vendor-esinit-fixture':
         return (VM / 'probes' / 'vendor-esinit-fixture.sh').read_text()
     if name == 'recovery-usb-removal':

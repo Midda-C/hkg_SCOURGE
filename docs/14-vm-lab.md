@@ -65,6 +65,9 @@ VM-validated (vendor kernel):
 - update-media preflight (`update-preflight`): read-only Mode V mount,
   package-map grammar/sizes, manifest hashes and opaque-payload checks without
   launching the updater
+- negative update preflight (`update-preflight-negative`): a disposable
+  read-write overlay proves size/path/manifest corruption is rejected and the
+  media is restored; the base stick is never modified
 - DM/RDM tree validation and diff (`check-dm-tree`): FUMO state, account and
   auth structure, DTD/entity rejection and credential-redacted leaf diffs
 - vendor systemd partial boot (`vendor-systemd`): real systemd reaches

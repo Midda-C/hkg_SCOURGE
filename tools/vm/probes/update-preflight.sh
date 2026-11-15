@@ -2,9 +2,11 @@
 # SPDX-FileCopyrightText: 2026 The SCOURGE Project contributors
 # SPDX-License-Identifier: AGPL-3.0-only
 
-# Read-only update-media preflight in the vendor rootfs. Validates the real
-# package map, manifest and payload header without launching AppUpgrade,
-# decrypting the package or staging an update.
+# Update-media preflight in the vendor rootfs. The default mode mounts the
+# stick read-only. UPDATE_PREFLIGHT_NEGATIVE uses the disposable overlay in
+# read-write mode, corrupts the package map/manifest, proves the checks reject
+# it, then restores the files. It never launches AppUpgrade, decrypts the
+# package or stages an update.
 set -u
 export PATH=/bin:/sbin:/usr/bin:/usr/sbin
 
@@ -18,10 +20,12 @@ modprobe usb-storage 2>/dev/null || true
 modprobe sd_mod 2>/dev/null || true
 sleep 2
 mkdir -p /media/usb
+MOUNT_MODE=ro
+[ "${UPDATE_PREFLIGHT_NEGATIVE:-0}" = "1" ] && MOUNT_MODE=rw
 MEDIA=
 for dev in /dev/sd?; do
     [ -b "$dev" ] || continue
-    mount -o ro "$dev" /media/usb 2>/dev/null || continue
+    mount -o "$MOUNT_MODE" "$dev" /media/usb 2>/dev/null || continue
     if [ -f /media/usb/IONIQ5_EU.ver ] \
         && [ -f /media/usb/MANIFEST.sha256 ] \
         && [ -f /media/usb/.lge.upgrade.xml ]; then
@@ -43,54 +47,61 @@ FIRST=$(od -An -tx1 -N1 .lge.upgrade.xml | tr -d ' \n')
 grep -q "IONIQ5_EU.ver" MANIFEST.sha256 || fail 'preflight-manifest-ver'
 echo 'HARNESS_CHECK preflight-media PASS'
 
-tr -d '\r' < IONIQ5_EU.ver > /tmp/preflight.ver || fail 'preflight-ver-copy'
-HEADER=$(head -n 1 /tmp/preflight.ver)
-case "$HEADER" in
-    +\|*) ;;
-    *) fail 'preflight-ver-header' ;;
-esac
-[ "$(printf '%s' "$HEADER" | awk -F'|' '{print NF}')" = 7 ] || fail 'preflight-ver-header-fields'
-PRODUCT=$(printf '%s' "$HEADER" | awk -F'|' '{print $5}')
-[ -n "$PRODUCT" ] || fail 'preflight-ver-product'
-if ! tail -n +2 /tmp/preflight.ver | awk -F'|' 'NF != 6 {exit 1}'; then
-    fail 'preflight-ver-entry-fields'
-fi
+validate_ver() {
+    local file=$1
+    local header product entries present path filename ident check size flag
+    local rel full actual
+    header=$(head -n 1 "$file") || return 1
+    case "$header" in
+        +\|*) ;;
+        *) return 1 ;;
+    esac
+    [ "$(printf '%s' "$header" | awk -F'|' '{print NF}')" = 7 ] || return 1
+    product=$(printf '%s' "$header" | awk -F'|' '{print $5}')
+    [ -n "$product" ] || return 1
+    if ! tail -n +2 "$file" | awk -F'|' 'NF != 6 {exit 1}'; then
+        return 1
+    fi
+    tail -n +2 "$file" > /tmp/preflight.entries || return 1
+    entries=0
+    present=0
+    while IFS='|' read -r path filename ident check size flag; do
+        [ -n "$path" ] || return 1
+        case "$path" in
+            *..*|/*) return 1 ;;
+            "$product"|"$product"\\*) ;;
+            *) return 1 ;;
+        esac
+        case "$filename" in
+            ''|.|..|*/*|*\\*) return 1 ;;
+        esac
+        case "$size" in
+            ''|*[!0-9]*) return 1 ;;
+        esac
+        entries=$((entries + 1))
+        rel=${path#"$product"}
+        rel=${rel#\\}
+        rel=${rel//\\//}
+        if [ -n "$rel" ]; then
+            full="$rel/$filename"
+        else
+            full="$filename"
+        fi
+        if [ -f "$full" ]; then
+            actual=$(wc -c < "$full" | tr -d ' ')
+            [ "$actual" = "$size" ] || return 1
+            present=$((present + 1))
+        fi
+    done < /tmp/preflight.entries
+    [ "$entries" -gt 0 ] || return 1
+    [ "$present" -gt 0 ] || return 1
+    return 0
+}
 
-tail -n +2 /tmp/preflight.ver > /tmp/preflight.entries
-ENTRIES=0
-PRESENT=0
-while IFS='|' read -r path filename ident check size flag; do
-    [ -n "$path" ] || fail 'preflight-ver-empty-path'
-    case "$path" in
-        *..*|/*) fail "preflight-ver-unsafe-path $path" ;;
-        "$PRODUCT"|"$PRODUCT"\\*) ;;
-        *) fail "preflight-ver-product-mismatch $path" ;;
-    esac
-    case "$filename" in
-        ''|.|..|*/*|*\\*) fail "preflight-ver-unsafe-name $filename" ;;
-    esac
-    case "$size" in
-        ''|*[!0-9]*) fail "preflight-ver-size $filename" ;;
-    esac
-    ENTRIES=$((ENTRIES + 1))
-    rel=${path#"$PRODUCT"}
-    rel=${rel#\\}
-    rel=${rel//\\//}
-    if [ -n "$rel" ]; then
-        full="$rel/$filename"
-    else
-        full="$filename"
-    fi
-    if [ -f "$full" ]; then
-        actual=$(wc -c < "$full" | tr -d ' ')
-        [ "$actual" = "$size" ] \
-            || fail "preflight-ver-size-mismatch $full declared=$size actual=$actual"
-        PRESENT=$((PRESENT + 1))
-    fi
-done < /tmp/preflight.entries
-[ "$ENTRIES" -gt 0 ] || fail 'preflight-ver-no-entries'
-[ "$PRESENT" -gt 0 ] || fail 'preflight-ver-no-present-files'
+tr -d '\r' < IONIQ5_EU.ver > /tmp/preflight.ver || fail 'preflight-ver-copy'
+validate_ver /tmp/preflight.ver || fail 'preflight-ver'
 echo 'HARNESS_CHECK preflight-ver PASS'
+
 
 tr -d '\r' < MANIFEST.sha256 > /tmp/preflight.manifest || fail 'preflight-manifest-copy'
 if ! awk 'NF != 2 || length($1) != 64 || $1 !~ /^[0-9a-f]+$/ {exit 1}' \
@@ -118,4 +129,43 @@ if ps -ef | grep -E 'AppUpgrade|dmengine' | grep -v grep >/tmp/preflight-process
     fail 'preflight-updater-running'
 fi
 [ ! -e /tmp/AppUpgrade ] || fail 'preflight-updater-staged'
+
+if [ "${UPDATE_PREFLIGHT_NEGATIVE:-0}" = "1" ]; then
+    cp IONIQ5_EU.ver /tmp/negative-ver.bak || fail 'negative-backup-ver'
+    cp MANIFEST.sha256 /tmp/negative-manifest.bak || fail 'negative-backup-manifest'
+
+    awk -F'|' 'BEGIN{OFS="|"} /mango-rootfs/ {$5=$5+1} {print}' \
+        /tmp/negative-ver.bak > /tmp/negative-size.ver
+    if validate_ver /tmp/negative-size.ver; then
+        fail 'negative-size-not-detected'
+    fi
+    echo 'HARNESS_CHECK negative-size-detected PASS'
+
+    { cat /tmp/negative-ver.bak; \
+      echo 'IONIQ5_EU\..\evil|payload|1|1|1|1'; } > /tmp/negative-path.ver
+    if validate_ver /tmp/negative-path.ver; then
+        fail 'negative-path-not-detected'
+    fi
+    echo 'HARNESS_CHECK negative-path-detected PASS'
+
+    awk '{ if (NR==1) { h=$1; c=substr(h,1,1); r=(c=="0"?"1":"0");
+                        $1=r substr(h,2) } print }' \
+        /tmp/negative-manifest.bak > /tmp/negative-manifest.sha256
+    if /bin/busybox sha256sum -c /tmp/negative-manifest.sha256 \
+        >/tmp/negative-manifest.log 2>&1; then
+        fail 'negative-manifest-not-detected'
+    fi
+    echo 'HARNESS_CHECK negative-manifest-detected PASS'
+
+    cp /tmp/negative-ver.bak IONIQ5_EU.ver || fail 'negative-restore-ver'
+    cp /tmp/negative-manifest.bak MANIFEST.sha256 || fail 'negative-restore-manifest'
+    sync
+    if ! /bin/busybox sha256sum -c MANIFEST.sha256 >/tmp/negative-restore.log 2>&1; then
+        tail -20 /tmp/negative-restore.log
+        fail 'negative-restore-hash'
+    fi
+    validate_ver /tmp/preflight.ver || fail 'negative-restore-size'
+    echo 'HARNESS_CHECK negative-restored PASS'
+fi
+
 echo 'HARNESS_CHECK preflight-no-exec PASS'
