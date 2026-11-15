@@ -64,7 +64,8 @@ from harness.visual import compare as visual_compare
 from harness.visual import list_baselines
 from harness.capture import check_capture
 from harness.dm_queue import (OEM_COMMAND_TYPE, OEM_EVENT_TYPE, QueueError,
-                              decode_message, encode_event, encode_command)
+                              decode_message, encode_event, encode_command,
+                              parse_strace)
 from harness.dm_tree import check_dm_tree, diff_trees
 from harness.fumo import run_exchange, run_script
 from harness.mof import MofError, build_notification, decode_notification
@@ -1714,7 +1715,7 @@ def main() -> int:
     mof.add_argument('--host', default='127.0.0.1:8002')
     dmq = sub.add_parser(
         'dmengine-queue', help='encode/decode vendor dmengine OEM queue messages')
-    dmq.add_argument('queue_action', choices=('decode', 'encode'))
+    dmq.add_argument('queue_action', choices=('decode', 'encode', 'trace'))
     dmq.add_argument('--mtype', type=lambda value: int(value, 0),
                      default=OEM_COMMAND_TYPE)
     dmq.add_argument('--hex', default=None)
@@ -1722,6 +1723,7 @@ def main() -> int:
     dmq.add_argument('--field1', type=int, default=0)
     dmq.add_argument('--field2', type=int, default=0)
     dmq.add_argument('--text', default='')
+    dmq.add_argument('--file', type=Path, default=None)
     check_scenario = sub.add_parser('check-scenario',
                                     help='validate scenario JSON contracts')
     check_scenario.add_argument('scenario', nargs='?',
@@ -2257,7 +2259,13 @@ def main() -> int:
         return 0 if report['ok'] else 1
     if args.action == 'dmengine-queue':
         try:
-            if args.queue_action == 'decode':
+            if args.queue_action == 'trace':
+                if args.file is None:
+                    ap.error('dmengine-queue trace requires --file')
+                messages = parse_strace(args.file.read_text(errors='replace'))
+                report = {'ok': True, 'count': len(messages),
+                          'messages': messages}
+            elif args.queue_action == 'decode':
                 if not args.hex:
                     ap.error('dmengine-queue decode requires --hex')
                 data = bytes.fromhex(args.hex)

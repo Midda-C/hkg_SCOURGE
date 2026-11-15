@@ -11,6 +11,7 @@ the AppDMClient command semantics.
 """
 from __future__ import annotations
 
+import re
 import struct
 
 QUEUE_KEY = 0xD54
@@ -72,6 +73,58 @@ def encode_command(code: int, field1: int = 0, field2: int = 0,
 def encode_event(code: int, field1: int = 0, field2: int = 0,
                  text: str = '') -> tuple[int, bytes]:
     return OEM_EVENT_TYPE, encode_payload(code, field1, field2, text)
+
+
+_STRACE = re.compile(
+    r'(?m)^\s*(?P<pid>\d+)\s+(?P<call>msgsnd|msgrcv)\('
+    r'(?P<qid>\d+),.*?\{\s*(?P<mtype>\d+),\s*"'
+    r'(?P<data>(?:\\x[0-9a-fA-F]{2}|\\.|[^"\\])*)"', re.S)
+
+
+def _unescape(value: str) -> bytes:
+    out = bytearray()
+    index = 0
+    while index < len(value):
+        if value.startswith('\\x', index) and index + 3 < len(value):
+            out.append(int(value[index + 2:index + 4], 16))
+            index += 4
+        elif value[index] == '\\' and index + 1 < len(value):
+            out.append({'n': 10, 't': 9, 'r': 13, '\\': 92, '"': 34}
+                       .get(value[index + 1], ord(value[index + 1])))
+            index += 2
+        else:
+            out.append(ord(value[index]))
+            index += 1
+    return bytes(out)
+
+
+def parse_strace(text: str) -> list[dict]:
+    """Parse complete msgsnd/msgrcv message lines from an strace -xx log."""
+    messages = []
+    for match in _STRACE.finditer(text):
+        data = _unescape(match.group('data'))
+        mtype = int(match.group('mtype'))
+        if mtype not in (OEM_COMMAND_TYPE, OEM_EVENT_TYPE):
+            continue
+        message = {'pid': int(match.group('pid')),
+                   'call': match.group('call'),
+                   'queue': int(match.group('qid')),
+                   'mtype': mtype,
+                   'kind': ('command' if mtype == OEM_COMMAND_TYPE
+                            else 'event'),
+                   'raw_len': len(data),
+                   'complete': len(data) == DATA_SIZE}
+        if len(data) >= 24:
+            message.update({'code': struct.unpack_from('<i', data, 0)[0],
+                            'field1': struct.unpack_from('<q', data, 8)[0],
+                            'field2': struct.unpack_from('<q', data, 16)[0]})
+            raw = data[TEXT_OFFSET:]
+            end = raw.find(b'\0')
+            if end < 0:
+                end = len(raw)
+            message['text'] = raw[:end].decode('utf-8', errors='replace')
+        messages.append(message)
+    return messages
 
 
 def decode_message(mtype: int, data: bytes) -> dict:

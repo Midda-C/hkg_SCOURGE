@@ -1042,6 +1042,12 @@ items beyond that.
   at 32. Added `dmengine-queue` encode/decode. 5 new tests; 496 tests (75
   skipped); doctor green. AppDMClient's startFumoUpdate command values remain
   the session gate.
+- **2026-11-15 — P2-7 queue trace decoder**: `dmengine-queue trace --file`
+  parses `msgsnd`/`msgrcv` lines from strace logs (including partial 300-byte
+  captures). A phase4/updater-launch trace showed AppDMClient consuming
+  dmengine events on key 0xd54 (and its own key 0xe9b) but sending no type
+  0x36 command, so the missing AppDMClient event source is confirmed. 3 new
+  tests; 499 tests (75 skipped); doctor green.
 - **2026-11-15 — NAS import verified**: 9.4 GB preservation copy complete;
   all archives, partitions, runtime files and the navi2 archive match.
   `meta/SOURCE.txt` was finalized after the original manifest, so its one

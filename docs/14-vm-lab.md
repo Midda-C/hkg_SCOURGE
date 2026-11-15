@@ -81,8 +81,9 @@ VM-validated (vendor kernel):
   DMCDEVINFO SysV segment, tree/config rewrite, FUMO/SCOMO plugin init and
   device-info acceptance; no DM session or production address
 - dmengine OEM queue codec (`dmengine-queue`): encode/decode the 1048-byte
-  SysV command/event message (key 0xd54, mtype 0x36/0x48); the AppDMClient
-  callback semantics remain the session gate
+  SysV command/event message (key 0xd54, mtype 0x36/0x48) and parse
+  `strace -xx` queue logs; the AppDMClient event source remains the session
+  gate
 - MOF notification codec (`mof-notify`): decode/encode the
   `msgtype=4&cor=...` device/version notification, with host redaction;
   supplies the `recvDM_01` input but not the OEM session callback

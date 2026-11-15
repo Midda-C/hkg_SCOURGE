@@ -751,6 +751,7 @@ The captured notification decodes with msgtype 4, a 17-character VIN,
 python3 -B launch.py dmengine-queue encode --code 66 --field1 7 \
   --text 'msgtype=4&cor=LAB' [--mtype 0x36]
 python3 -B launch.py dmengine-queue decode --mtype 0x36 --hex <payload>
+python3 -B launch.py dmengine-queue trace --file /tmp/dm.strace
 ```
 
 Codec for the vendor dmengine <-> OEM handler SysV queue recovered from a
@@ -762,10 +763,16 @@ traced run:
 - 1048-byte payload: int32 code at offset 0, int64 fields at 8 and 16, UTF-8
   text at 32
 
-The codec only encodes/decodes messages; it does not perform queue I/O. The
-traced dmengine emitted events 93, 92 and 66 (notification) and blocked waiting
-for a type-0x36 command. The missing callback is AppDMClient's
-`startFumoUpdate` command semantics, not the queue layout.
+The codec only encodes/decodes messages; it does not perform queue I/O.
+`trace` parses `msgsnd`/`msgrcv` lines from an `strace -xx` log, including
+partial 300-byte captures.
+
+The traced dmengine emitted events 93, 92 and 66 (notification) and blocked
+waiting for a type-0x36 command. Under the phase4/AppDMClient run, AppDMClient
+consumed dmengine events on key 0xd54 but sent no type-0x36 commands in either
+the `dmclient-events` or `updater-launch` path; AppDMClient also uses its own
+queue key 0xe9b. The missing callback is the AppDMClient event source that
+calls `startFumoUpdate`, not the queue layout.
 
 ## dmengine startup (Mode C)
 

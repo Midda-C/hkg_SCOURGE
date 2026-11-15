@@ -7,12 +7,14 @@ import json
 import struct
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
 from harness.dm_queue import (DATA_SIZE, OEM_COMMAND_TYPE, OEM_EVENT_TYPE,
                               QueueError, decode_message, decode_payload,
-                              encode_command, encode_event, encode_payload)
+                              encode_command, encode_event, encode_payload,
+                              parse_strace)
 
 VM = Path(__file__).resolve().parents[1]
 
@@ -85,6 +87,52 @@ class DmQueueCodecTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 1)
         self.assertFalse(json.loads(completed.stdout)['ok'])
 
+
+class QueueTraceTests(unittest.TestCase):
+    @staticmethod
+    def line(pid: int, call: str, mtype: int, data: bytes) -> str:
+        escaped = ''.join(f'\\x{byte:02x}' for byte in data)
+        return f'{pid}   {call}(32769, {{{mtype}, "{escaped}"}}, 1048, 0) = 0\n'
+
+    def test_parse_command_and_event_lines(self) -> None:
+        _, command = encode_command(66, 7, -9, 'msgtype=4&cor=LAB')
+        _, event = encode_event(93)
+        messages = parse_strace(self.line(820, 'msgsnd', OEM_COMMAND_TYPE, command)
+                                + self.line(991, 'msgrcv', OEM_EVENT_TYPE, event))
+        self.assertEqual(len(messages), 2)
+        self.assertEqual(messages[0]['kind'], 'command')
+        self.assertEqual(messages[0]['code'], 66)
+        self.assertEqual(messages[0]['field1'], 7)
+        self.assertEqual(messages[0]['field2'], -9)
+        self.assertEqual(messages[0]['text'], 'msgtype=4&cor=LAB')
+        self.assertTrue(messages[0]['complete'])
+        self.assertEqual(messages[1]['kind'], 'event')
+        self.assertEqual(messages[1]['code'], 93)
+
+    def test_partial_and_unfinished_lines(self) -> None:
+        _, data = encode_event(95, -4, 0)
+        partial = data[:300]
+        messages = parse_strace(self.line(991, 'msgrcv', OEM_EVENT_TYPE, partial)
+                                + '202   msgrcv(32769,  <unfinished ...>\n')
+        self.assertEqual(len(messages), 1)
+        self.assertFalse(messages[0]['complete'])
+        self.assertEqual(messages[0]['raw_len'], 300)
+        self.assertEqual(messages[0]['code'], 95)
+        self.assertEqual(messages[0]['field1'], -4)
+
+    def test_cli_trace(self) -> None:
+        _, data = encode_event(95)
+        with tempfile.TemporaryDirectory(prefix='vm-dm-trace-') as tmp:
+            path = Path(tmp) / 'dm.strace'
+            path.write_text(self.line(991, 'msgrcv', OEM_EVENT_TYPE, data))
+            completed = subprocess.run(
+                [sys.executable, '-B', str(VM / 'launch.py'),
+                 'dmengine-queue', 'trace', '--file', str(path)],
+                cwd=VM, capture_output=True, text=True, check=False)
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            report = json.loads(completed.stdout)
+            self.assertEqual(report['count'], 1)
+            self.assertEqual(report['messages'][0]['code'], 95)
 
 if __name__ == '__main__':
     unittest.main()
