@@ -1162,6 +1162,34 @@ The mock returns the remaining 120 bytes with `206 Partial Content`; the
 download completes and the install notification is posted. A real run passes
 all seven checks. No install is claimed.
 
+## dmengine FUMO resume across restart (Mode C)
+
+```sh
+python3 -B launch.py run --kernel compat --profile research \
+  --scenario dmengine-fumo-resume-restart --payload payload/tweaks-vm --timeout 360
+```
+
+Two-phase resume. Phase 1 uses the partial-only mock mode (64/184 bytes with
+`Accept-Ranges`/ETag); after the engine writes `dlresume.dat` and the log shows
+the partial object, the probe stops the engine. Phase 2 restarts dmengine with
+a Range-capable mock and `dm_state=1`:
+
+```text
+phase 1: MOCK_DM_PARTIAL method=GET path=/object.bin bytes=64 total=184
+phase 1: /update/fota/dme/dlresume.dat written
+phase 2: MOCK_DM_OBJECT_HEADERS range=Range: bytes=64-
+phase 2: MOCK_DM_RESUME method=GET path=/object.bin offset=64 bytes=120 total=184
+phase 2: MOCK_DM_NOTIFY path=/notify bytes=11 body=900 Success
+phase 2: DM session complete
+phase 2: Set state, 50
+```
+
+The restarted engine truncates its log at startup, so phase-2 assertions use
+the whole truncated log rather than a byte offset. State `50` is the
+post-download value in this run; the check accepts a completed DL/DM session
+plus state `50` and the notification. A real run passes all ten checks. No
+install is claimed.
+
 ## dmengine startup (Mode C)
 
 ```sh

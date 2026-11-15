@@ -1158,6 +1158,15 @@ items beyond that.
   `dmengine-fumo-resume` asserts partial, Range request, completion and
   notification. Real run PASS with seven checks; 3 new tests; 570 tests
   (75 skipped); doctor green.
+- **2026-11-15 — FUMO resume across restart**: phase 1 serves only the
+  64/184 partial object and writes `dlresume.dat`; the engine is stopped.
+  Phase 2 restarts it with a Range-capable mock and `dm_state=1`; the engine
+  sends `Range: bytes=64-`, the mock returns the remaining 120 bytes with 206,
+  and the restarted engine completes the session, logs `Set state, 50` and
+  posts the install notification. The restarted engine truncates its log at
+  startup, so phase-2 checks read the whole log. `dmengine-fumo-resume-restart`
+  asserts the restart state, Range request, completion and notification. Real
+  run PASS with ten checks; 3 new tests; 573 tests (75 skipped); doctor green.
 - **2026-11-15 — FUMO bad-signature boundary**: the mock flips one bit in
   the lab HMAC trailer. The engine still downloads the 184-byte object, posts
   the install notification and advances to state 40. `check-dp --key` rejects

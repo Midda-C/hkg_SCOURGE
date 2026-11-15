@@ -131,6 +131,10 @@ VM-validated (vendor kernel):
 - FUMO resume (`dmengine-fumo-resume`): a 64/184 partial response with
   `Accept-Ranges`/ETag makes the engine retry `Range: bytes=64-`; the mock
   returns the remaining 120 bytes with 206 and the download completes
+- FUMO resume across restart (`dmengine-fumo-resume-restart`): phase 1 writes
+  `dlresume.dat` after a partial 64/184 object; after a dmengine restart the
+  engine sends `Range: bytes=64-` and the Range-capable mock completes the
+  download (state 50, install notification)
 - device-model regression (`device-model`): asserts Q35 host bridge, SDHCI
   root, ICH9 LPC/SATA and no virtio; substrate only, not captured BXT hardware
 - AppDMClient fota callback (`dmclient-fota-events`): `/fotaInterface`
