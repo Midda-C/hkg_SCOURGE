@@ -24,12 +24,12 @@ RESULT_CODE=${FUMO_RESULT:-200}
 INVALID_RESULT=${FUMO_INVALID_RESULT:-0}
 SKIP_RESULT=${FUMO_SKIP_RESULT:-0}
 case "$MODE" in
-    multidp) EXPECTED_OBJECT=291; EXPECTED_COMPONENTS=2 ;;
+    multidp|combinedmulti) EXPECTED_OBJECT=291; EXPECTED_COMPONENTS=2 ;;
     *) EXPECTED_OBJECT=184; EXPECTED_COMPONENTS=1 ;;
 esac
 LOG_LEVEL=notice
 case "$MODE" in
-    update|combined) LOG_LEVEL=debug ;;
+    update|combined|combinedmulti) LOG_LEVEL=debug ;;
 esac
 
 fail() {
@@ -88,7 +88,7 @@ sed -e '/<name>Addr<\/name>/,/<value>/ s#<value>.*</value>#<value>http://127.0.0
     -e '/<name>PkgURL<\/name>/,/<value>/ s#<value>.*</value>#<value>http://127.0.0.1:8002/package.bin</value>#' \
     -e '/<name>MinServerAuth<\/name>/,/<value>/ s#<value>.*</value>#<value>none</value>#' \
     /app/share/dmengine/tree.xml > /tmp/lab-tree.xml || fail 'fumo-tree-edit'
-if [ "$MODE" = combined ]; then
+if [ "$MODE" = combined ] || [ "$MODE" = combinedmulti ]; then
     sed -i '/<name>DownloadAndUpdate<\/name>/,/<\/node>/{
       /<name>PkgURL<\/name>/,/<\/leaf>/{
         /<format>chr<\/format>/a\
@@ -285,7 +285,7 @@ if ! grep -q "MOCK_DM_DOWNLOAD method=GET path=/object.bin bytes=$EXPECTED_OBJEC
 fi
 echo 'HARNESS_CHECK fumo-download PASS'
 
-if [ "$MODE" = multidp ]; then
+if [ "$MODE" = multidp ] || [ "$MODE" = combinedmulti ]; then
     if ! grep -q 'MOCK_DM_MULTIDP method=GET path=/object.bin bytes=291 components=2 updates=3' /tmp/mock-dm.log; then
         grep -a 'MOCK_DM_MULTIDP' /tmp/mock-dm.log 2>/dev/null
         fail 'fumo-multidp'
@@ -358,7 +358,7 @@ if ! grep -q 'Set state, 30' /tmp/vdm-delta.log \
 fi
 echo 'HARNESS_CHECK fumo-state PASS'
 
-if [ "$MODE" = combined ]; then
+if [ "$MODE" = combined ] || [ "$MODE" = combinedmulti ]; then
     combined_wait=0
     while [ "$combined_wait" -lt 45 ]; do
         grep -q 'Set state, 60' /tmp/vdm-delta.log 2>/dev/null && break
@@ -510,7 +510,9 @@ grep -aE 'MOCK_DM_DD|MOCK_DM_DOWNLOAD' /tmp/mock-dm.log 2>/dev/null | head -8
 kill "$DM_PID" "$OEM_PID" "$DLOK_PID" "$RESULT_PID" "$SERVER_PID" 2>/dev/null || true
 sleep 1
 kill -9 "$DM_PID" "$OEM_PID" "$DLOK_PID" "$RESULT_PID" "$SERVER_PID" 2>/dev/null || true
-if [ "$MODE" = multidp ]; then
+if [ "$MODE" = combinedmulti ]; then
+    echo 'HARNESS_CHECK dmengine-fumo-download-update-multi PASS'
+elif [ "$MODE" = multidp ]; then
     echo 'HARNESS_CHECK dmengine-fumo-download-multi PASS'
 elif [ "$MODE" = badsig ]; then
     echo 'HARNESS_CHECK dmengine-fumo-download-badsig PASS'

@@ -504,14 +504,18 @@ int main(int argc, char **argv)
     int port = argc > 1 ? atoi(argv[1]) : 8002;
     const char *log_path = argc > 2 ? argv[2] : "/tmp/mock-dm.log";
     int update_mode = argc > 3 && strcmp(argv[3], "update") == 0;
-    int combined_mode = argc > 3 && strcmp(argv[3], "combined") == 0;
+    int combined_mode = argc > 3
+        && (strcmp(argv[3], "combined") == 0
+            || strcmp(argv[3], "combinedmulti") == 0);
     int missing_mode = argc > 3 && strcmp(argv[3], "missing") == 0;
     int notify_fail_mode = argc > 3 && strcmp(argv[3], "notifyfail") == 0;
     int badsig_mode = argc > 3 && strcmp(argv[3], "badsig") == 0;
     int partial_mode = argc > 3 && strcmp(argv[3], "partial") == 0;
     int resume_mode = argc > 3 && strcmp(argv[3], "resume") == 0;
     int noetag_mode = argc > 3 && strcmp(argv[3], "noetag") == 0;
-    int multidp_mode = argc > 3 && strcmp(argv[3], "multidp") == 0;
+    int multidp_mode = argc > 3
+        && (strcmp(argv[3], "multidp") == 0
+            || strcmp(argv[3], "combinedmulti") == 0);
     int download_mode = argc > 3
         && (strcmp(argv[3], "download") == 0 || update_mode
             || combined_mode || missing_mode || notify_fail_mode

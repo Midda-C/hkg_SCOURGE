@@ -33,7 +33,7 @@ class DmengineFumoDownloadMultiTests(unittest.TestCase):
             load_scenario('dmengine-fumo-download-multi'),
             load_profile('research'), kernel_target='compat')
         for text in ('export FUMO_MODE=multidp',
-                     'multidp) EXPECTED_OBJECT=291',
+                     'multidp|combinedmulti) EXPECTED_OBJECT=291',
                      'MOCK_DM_MULTIDP method=GET path=/object.bin '
                      'bytes=291 components=2 updates=3',
                      'fumo-multidp'):

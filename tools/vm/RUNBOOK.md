@@ -1241,6 +1241,31 @@ lab HMAC trailer. The Python builder, parser and `check-dp --key` validate the
 same layout; a loopback test compares the C fixture byte-for-byte. A real run
 passes all sixteen checks. No install is claimed.
 
+## dmengine FUMO multi-component DownloadAndUpdate (Mode C)
+
+```sh
+python3 -B launch.py run --kernel compat --profile research \
+  --scenario dmengine-fumo-download-update-multi --payload payload/tweaks-vm --timeout 380
+```
+
+Combines the multi-component package with the combined FUMO command. The mock
+sends `Exec ./ManagedObjects/FUMO/DownloadAndUpdate` and serves the 291-byte
+two-component/three-update object:
+
+```text
+MOCK_DM_MULTIDP method=GET path=/object.bin bytes=291 components=2 updates=3
+Got EXEC on "DownloadAndUpdate" node.
+Set state, 30 -> 40 -> 60
+event to OEM handler = [77] ... strData = [/update//lab-fumo]
+VDMC_FUMO_updateReport] result = [200]
+Set state, 90
+DM session complete
+```
+
+The lab OEM result is supplied by the probe; the package is structural, so no
+physical install or firmware-success is claimed. A real run passes all
+twenty-two checks.
+
 ## dmengine startup (Mode C)
 
 ```sh
