@@ -124,6 +124,10 @@ VM-validated (vendor kernel):
 - FUMO update without result (`dmengine-fumo-update-no-result`): after the
   DownloadAndUpdate handoff the OEM sends no result; the engine stays in
   update progressing and never sets state 90 or reports success
+- FUMO bad signature (`dmengine-fumo-download-badsig`): one trailer bit is
+  flipped; the engine still downloads and advances to state 40, while
+  `check-dp --key` rejects the object with a signature mismatch (negative
+  engine-validation boundary)
 - device-model regression (`device-model`): asserts Q35 host bridge, SDHCI
   root, ICH9 LPC/SATA and no virtio; substrate only, not captured BXT hardware
 - AppDMClient fota callback (`dmclient-fota-events`): `/fotaInterface`

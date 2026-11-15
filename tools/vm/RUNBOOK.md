@@ -1117,6 +1117,28 @@ It never logs `VDMC_FUMO_updateReport`, never sets state 90 and issues no
 success report. This shows the engine waits for an OEM result; no physical
 install is claimed. A real run passes all nineteen checks.
 
+## dmengine FUMO bad-signature boundary (Mode C, negative)
+
+```sh
+python3 -B launch.py run --kernel compat --profile research \
+  --scenario dmengine-fumo-download-badsig --payload payload/tweaks-vm --timeout 320
+```
+
+The mock flips one bit in the lab HMAC signature trailer of the 184-byte
+object. The engine does not validate that trailer, so it still downloads the
+object, posts `900 Success` and advances FUMO state 30 -> 40.
+
+The host validator rejects the same object:
+
+```sh
+python3 -B launch.py check-dp <object.bin> --key lab-dp-key
+# signature mismatch
+```
+
+This documents that the lab trailer is an integrity fixture, not an
+engine-enforced vendor signature. No install is claimed. A real run passes all
+sixteen checks.
+
 ## dmengine startup (Mode C)
 
 ```sh

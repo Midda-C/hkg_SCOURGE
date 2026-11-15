@@ -444,9 +444,11 @@ int main(int argc, char **argv)
     int combined_mode = argc > 3 && strcmp(argv[3], "combined") == 0;
     int missing_mode = argc > 3 && strcmp(argv[3], "missing") == 0;
     int notify_fail_mode = argc > 3 && strcmp(argv[3], "notifyfail") == 0;
+    int badsig_mode = argc > 3 && strcmp(argv[3], "badsig") == 0;
     int download_mode = argc > 3
         && (strcmp(argv[3], "download") == 0 || update_mode
-            || combined_mode || missing_mode || notify_fail_mode);
+            || combined_mode || missing_mode || notify_fail_mode
+            || badsig_mode);
     int server = socket(AF_INET, SOCK_STREAM, 0);
     int one = 1;
     struct sockaddr_in addr;
@@ -618,6 +620,8 @@ int main(int argc, char **argv)
             char header[256];
             int header_length;
             int package_length = build_dp_package(package, sizeof(package));
+            if (badsig_mode && package_length > 0)
+                package[package_length - 1] ^= 0x01;
             header_length = snprintf(
                 header, sizeof(header),
                 "HTTP/1.1 200 OK\r\n"
@@ -630,6 +634,9 @@ int main(int argc, char **argv)
             fprintf(log, "MOCK_DM_DOWNLOAD method=GET path=/object.bin "
                          "bytes=%d preamble=RedBendEFDPackage version=4 "
                          "components=1\n", package_length);
+            if (badsig_mode)
+                fprintf(log, "MOCK_DM_BADSIG path=/object.bin bytes=%d\n",
+                        package_length);
             fflush(log);
             close(client);
             free(request);

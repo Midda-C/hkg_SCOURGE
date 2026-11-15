@@ -1151,6 +1151,13 @@ items beyond that.
   proves the C fixture is byte-identical to the Python builder. All FUMO
   scenarios still download it. 3 new tests; 547 tests (75 skipped); doctor
   green.
+- **2026-11-15 — FUMO bad-signature boundary**: the mock flips one bit in
+  the lab HMAC trailer. The engine still downloads the 184-byte object, posts
+  the install notification and advances to state 40. `check-dp --key` rejects
+  the same object with a signature mismatch, proving the trailer is not
+  engine-enforced. `dmengine-fumo-download-badsig` asserts the engine path and
+  the mock marker (negative security boundary). Real run PASS with sixteen
+  checks; 3 new tests; 567 tests (75 skipped); doctor green.
 - **2026-11-15 — FUMO update without result**: the combined flow withholds
   the OEM result after event 77. The engine remains in update progressing
   (`Set state, 60`), never logs `VDMC_FUMO_updateReport`, never sets state 90

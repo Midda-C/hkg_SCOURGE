@@ -281,6 +281,14 @@ if ! grep -q 'MOCK_DM_DOWNLOAD method=GET path=/object.bin bytes=184 preamble=Re
 fi
 echo 'HARNESS_CHECK fumo-download PASS'
 
+if [ "$MODE" = badsig ]; then
+    if ! grep -q 'MOCK_DM_BADSIG path=/object.bin bytes=184' /tmp/mock-dm.log; then
+        grep -a 'MOCK_DM_BADSIG' /tmp/mock-dm.log 2>/dev/null
+        fail 'fumo-badsig'
+    fi
+    echo 'HARNESS_CHECK fumo-badsig PASS'
+fi
+
 if [ "$MODE" = notifyfail ]; then
     notify_wait=0
     while [ "$notify_wait" -lt 30 ]; do
@@ -490,7 +498,9 @@ grep -aE 'MOCK_DM_DD|MOCK_DM_DOWNLOAD' /tmp/mock-dm.log 2>/dev/null | head -8
 kill "$DM_PID" "$OEM_PID" "$DLOK_PID" "$RESULT_PID" "$SERVER_PID" 2>/dev/null || true
 sleep 1
 kill -9 "$DM_PID" "$OEM_PID" "$DLOK_PID" "$RESULT_PID" "$SERVER_PID" 2>/dev/null || true
-if [ "$MODE" = notifyfail ]; then
+if [ "$MODE" = badsig ]; then
+    echo 'HARNESS_CHECK dmengine-fumo-download-badsig PASS'
+elif [ "$MODE" = notifyfail ]; then
     echo 'HARNESS_CHECK dmengine-fumo-notify-failure PASS'
 elif [ "$MODE" = missing ]; then
     echo 'HARNESS_CHECK dmengine-fumo-download-missing PASS'

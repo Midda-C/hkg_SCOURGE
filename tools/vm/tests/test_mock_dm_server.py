@@ -87,5 +87,51 @@ class MockDmServerDpTests(unittest.TestCase):
         self.assertIn('MOCK_DM_DD method=GET path=/package.bin', log)
 
 
+
+@unittest.skipUnless(MOCK_SERVER.is_file(),
+                     'mock-dm-server build artifact is not present')
+class MockDmServerBadSignatureTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.log = Path(self.tmp.name) / 'mock-dm.log'
+        self.port = free_port()
+        self.server = subprocess.Popen(
+            [str(MOCK_SERVER), str(self.port), str(self.log), 'badsig'],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            if self.server.poll() is not None:
+                output = self.server.stdout.read() if self.server.stdout else ''
+                self.fail(f'mock server exited early: {output}')
+            try:
+                with socket.create_connection(('127.0.0.1', self.port), 0.2):
+                    return
+            except OSError:
+                time.sleep(0.05)
+        self.fail('mock server did not start')
+
+    def tearDown(self) -> None:
+        self.server.terminate()
+        try:
+            self.server.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            self.server.kill()
+            self.server.wait(timeout=1)
+        if self.server.stdout:
+            self.server.stdout.close()
+        self.tmp.cleanup()
+
+    def test_bad_signature_rejected_by_validator(self) -> None:
+        with urllib.request.urlopen(
+                f'http://127.0.0.1:{self.port}/object.bin', timeout=3) as response:
+            data = response.read()
+        report = parse_dp(data, b'lab-dp-key')
+        self.assertFalse(report['ok'])
+        self.assertIn('signature mismatch', report['problems'])
+        self.assertTrue(parse_dp(data)['ok'])
+        self.assertIn('MOCK_DM_BADSIG path=/object.bin bytes=184',
+                      self.log.read_text())
+
+
 if __name__ == '__main__':
     unittest.main()
