@@ -1,6 +1,6 @@
 {
   "name": "dmengine-fumo-download",
-  "description": "Mode C FUMO download: after the authenticated SyncML handshake the mock serves an OMA Download Descriptor; the OEM confirmation command code 10 (DMC_REQ_DL_OK) lets the real dmengine fetch the described DP object (108-byte DP with a component entry and string table). The engine logs DL session complete and advances FUMO state 30 -> 40 (and to 50 in this run). The DP is a structural lab fixture and no install or update-success claim is made.",
+  "description": "Mode C FUMO download: after the authenticated SyncML handshake the mock serves an OMA Download Descriptor; the OEM confirmation command code 10 (DMC_REQ_DL_OK) lets the real dmengine fetch the described DP object (132-byte DP with a component/update tables and payload). The engine logs DL session complete and advances FUMO state 30 -> 40 (and to 50 in this run). The DP is a structural lab fixture and no install or update-success claim is made.",
   "requires": [
     "payload"
   ],

@@ -1098,7 +1098,7 @@ items beyond that.
   that mirrors the client's exact WBXML layout is accepted (`Server
   authentication (by client), 401`). The mock then serves an OMA Download
   Descriptor; OEM confirmation code 10 (`DMC_REQ_DL_OK`) lets the engine
-  fetch a 108-byte DP with one component entry and string table. It logs
+  fetch a 132-byte DP with component/update tables and a 16-byte payload. It logs
   `DL session complete` and advances FUMO state 30 -> 40. The DP remains a
   structural fixture (no signature or update payload), so no install or
   update-success claim. Added `harness/dp.py` and `launch.py check-dp` to
@@ -1129,6 +1129,12 @@ items beyond that.
   returns to idle and never enters success state `90`. `dmengine-fumo-update-
   failure` asserts the failure report and absence of success (negative). Real
   run PASS with twenty-one checks; 3 new tests; 544 tests (75 skipped); doctor
+  green.
+- **2026-11-15 — DP update-payload fixture**: `harness/dp.py` now builds and
+  validates update-table entries and payload bounds. The mock serves a
+  132-byte DP with one 16-byte `LABUPDATE-DATA01` payload; a loopback test
+  proves the C fixture is byte-identical to the Python builder. All FUMO
+  scenarios still download it. 3 new tests; 547 tests (75 skipped); doctor
   green.
 - **2026-11-15 — NAS import verified**: 9.4 GB preservation copy complete;
   all archives, partitions, runtime files and the navi2 archive match.

@@ -386,15 +386,17 @@ static void put_u32(unsigned char *out, size_t offset, unsigned int value)
 }
 
 /* Structural RedBend EF DP: 20-byte preamble, version 4, one 28-byte
- * component entry and a NUL-terminated string table. Signatures and update
- * payloads are intentionally absent; this is a lab fixture, not bootable. */
+ * component entry, one update-table entry and a NUL-terminated string table.
+ * Signatures are intentionally absent; this is a lab fixture, not bootable. */
 static int build_dp_package(unsigned char *out, size_t capacity)
 {
     static const char preamble[] = "RedBendEFDPackage";
     const size_t header_length = 52;
     const size_t entry_length = 28;
-    const size_t string_base = header_length + entry_length;
-    const size_t total_length = 108;
+    const size_t update_base = header_length + entry_length;
+    const size_t string_base = update_base + 8;
+    const size_t payload_base = string_base + 28;
+    const size_t total_length = payload_base + 16;
     if (capacity < total_length)
         return 0;
     memset(out, 0, total_length);
@@ -411,12 +413,15 @@ static int build_dp_package(unsigned char *out, size_t capacity)
     put_u32(out, 60, (unsigned int)string_base + 14);  /* version: 1.0 */
     put_u32(out, 64, (unsigned int)string_base + 18);  /* vendor */
     put_u32(out, 68, 0);            /* installer type */
-    put_u32(out, 72, 0);            /* update count */
-    put_u32(out, 76, 0);            /* update table pointer */
+    put_u32(out, 72, 1);            /* update count */
+    put_u32(out, 76, (unsigned int)update_base);       /* update table */
+    put_u32(out, 80, (unsigned int)payload_base);      /* payload offset */
+    put_u32(out, 84, 16);           /* payload size */
     memcpy(out + string_base, "LABCOMP", 8);
     memcpy(out + string_base + 8, "LABID", 6);
     memcpy(out + string_base + 14, "1.0", 4);
     memcpy(out + string_base + 18, "LABVENDOR", 10);
+    memcpy(out + payload_base, "LABUPDATE-DATA01", 16);
     return (int)total_length;
 }
 
@@ -512,7 +517,7 @@ int main(int argc, char **argv)
         }
         prefix[prefix_len] = '\0';
         if (strcmp(method, "GET") == 0 && strcmp(path, "/package.bin") == 0) {
-            unsigned char package[128];
+            unsigned char package[256];
             char dd[768];
             char header[256];
             int header_length;
@@ -551,7 +556,7 @@ int main(int argc, char **argv)
             continue;
         }
         if (strcmp(method, "GET") == 0 && strcmp(path, "/object.bin") == 0) {
-            unsigned char package[128];
+            unsigned char package[256];
             char header[256];
             int header_length;
             int package_length = build_dp_package(package, sizeof(package));

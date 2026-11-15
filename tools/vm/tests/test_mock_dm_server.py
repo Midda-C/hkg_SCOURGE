@@ -11,7 +11,7 @@ import unittest
 import urllib.request
 from pathlib import Path
 
-from harness.dp import DpComponent, build_dp, parse_dp
+from harness.dp import DpComponent, DpUpdate, build_dp, parse_dp
 
 VM = Path(__file__).resolve().parents[1]
 MOCK_SERVER = VM / 'payload/tweaks-vm/mock-dm-server'
@@ -64,8 +64,9 @@ class MockDmServerDpTests(unittest.TestCase):
     def test_served_dp_matches_python_builder(self) -> None:
         data, content_type = self.get('/object.bin')
         self.assertEqual(content_type, 'application/octet-stream')
-        expected = build_dp([DpComponent('LABCOMP', 'LABID', '1.0',
-                                         'LABVENDOR')])
+        expected = build_dp([DpComponent(
+            'LABCOMP', 'LABID', '1.0', 'LABVENDOR',
+            updates=(DpUpdate(b'LABUPDATE-DATA01'),))])
         self.assertEqual(data, expected)
         report = parse_dp(data)
         self.assertTrue(report['ok'], report['problems'])
@@ -75,7 +76,7 @@ class MockDmServerDpTests(unittest.TestCase):
         data, content_type = self.get('/package.bin')
         text = data.decode('ascii')
         self.assertEqual(content_type, 'application/vnd.oma.dd+xml')
-        self.assertIn('<size>108</size>', text)
+        self.assertIn('<size>132</size>', text)
         self.assertIn(
             '<objectURI>http://127.0.0.1:8002/object.bin</objectURI>', text)
         self.assertIn('<installNotifyURI>', text)

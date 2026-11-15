@@ -11,8 +11,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from harness.dp import (DpComponent, DpError, HEADER_SIZE, PREAMBLE, build_dp,
-                        check_dp, parse_dp)
+from harness.dp import (DpComponent, DpError, DpUpdate, HEADER_SIZE,
+                        PREAMBLE, build_dp, check_dp, parse_dp)
 
 
 class DpBuildTests(unittest.TestCase):
@@ -55,7 +55,20 @@ class DpBuildTests(unittest.TestCase):
         self.assertEqual(report['components'], [{
             'name': 'LABCOMP', 'id': 'LABID', 'version': '8.1',
             'vendor': 'LABVENDOR', 'installer_type': 2, 'update_count': 0,
+            'updates': [],
         }])
+
+    def test_update_payload_layout(self) -> None:
+        data = build_dp([DpComponent('LABCOMP', 'LABID', '1.0', 'LABVENDOR',
+                                     updates=(DpUpdate(b'LABUPDATE-DATA01'),))])
+        self.assertEqual(len(data), 132)
+        self.assertEqual(struct.unpack_from('<2I', data, 80), (116, 16))
+        self.assertEqual(data[116:132], b'LABUPDATE-DATA01')
+        report = parse_dp(data)
+        self.assertTrue(report['ok'], report['problems'])
+        self.assertEqual(report['components'][0]['update_count'], 1)
+        self.assertEqual(report['components'][0]['updates'],
+                         [{'offset': 116, 'size': 16}])
 
     def test_rejects_empty_component_list(self) -> None:
         with self.assertRaises(DpError):
@@ -64,6 +77,10 @@ class DpBuildTests(unittest.TestCase):
     def test_rejects_invalid_installer_type(self) -> None:
         with self.assertRaises(DpError):
             build_dp([DpComponent('A', 'B', installer_type=9)])
+
+    def test_rejects_empty_update_payload(self) -> None:
+        with self.assertRaises(DpError):
+            build_dp([DpComponent('A', 'B', updates=(DpUpdate(b''),))])
 
 
 class DpParseTests(unittest.TestCase):
@@ -103,6 +120,12 @@ class DpParseTests(unittest.TestCase):
         data = bytearray(self.data)
         struct.pack_into('<I', data, 52, 4096)
         self.assert_problem(bytes(data), 'name offset')
+
+    def test_rejects_update_payload_outside_container(self) -> None:
+        data = bytearray(build_dp([DpComponent(
+            'LABCOMP', 'LABID', updates=(DpUpdate(b'DATA'),))]))
+        struct.pack_into('<I', data, 84, 4096)  # payload size
+        self.assert_problem(bytes(data), 'update payload is outside')
 
     def test_rejects_unterminated_string(self) -> None:
         data = bytearray(self.data)

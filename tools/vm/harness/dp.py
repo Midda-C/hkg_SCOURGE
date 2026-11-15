@@ -19,9 +19,11 @@ validates the version-4 layout observed in the engine:
 * u32 string-table offset
 
 Each component entry is 28 bytes: four absolute string offsets, the installer
-type, an update count and an update-table offset.  Strings are NUL-terminated
-ASCII.  The builder is deliberately strict: it produces a structural lab
-fixture, not a signed or installable firmware package.
+type, an update count and an update-table offset.  Each update entry is a u32
+payload offset and a u32 payload size; the payload bytes follow the string
+table.  Strings are NUL-terminated ASCII.  The builder is deliberately strict:
+it produces a structural lab fixture, not a signed or installable firmware
+package.
 """
 from __future__ import annotations
 
@@ -43,12 +45,24 @@ class DpError(ValueError):
 
 
 @dataclass(frozen=True)
+class DpUpdate:
+    data: bytes
+
+    def validate(self) -> None:
+        if not self.data:
+            raise DpError('an update payload must not be empty')
+        if len(self.data) > 0xffffffff:
+            raise DpError('an update payload is too large')
+
+
+@dataclass(frozen=True)
 class DpComponent:
     name: str
     component_id: str
     version: str = '1.0'
     vendor: str = 'LAB'
     installer_type: int = 0
+    updates: tuple[DpUpdate, ...] = ()
 
     def validate(self) -> None:
         for label, value in (('name', self.name),
@@ -61,6 +75,8 @@ class DpComponent:
                 raise DpError(f'{label} must not contain NUL')
         if self.installer_type not in INSTALLER_TYPES:
             raise DpError(f'installer_type must be one of {INSTALLER_TYPES}')
+        for update in self.updates:
+            update.validate()
 
 
 def _put_u32(data: bytearray, offset: int, value: int) -> None:
@@ -83,18 +99,32 @@ def build_dp(components: list[DpComponent] | tuple[DpComponent, ...]) -> bytes:
         component.validate()
 
     entry_base = HEADER_SIZE
-    string_base = entry_base + ENTRY_SIZE * len(components)
+    update_base = entry_base + ENTRY_SIZE * len(components)
+    update_count = sum(len(component.updates) for component in components)
+    string_base = update_base + 8 * update_count
     strings = bytearray()
-    entries: list[tuple[int, int, int, int, int]] = []
+    entries: list[tuple[int, int, int, int, int, int, int]] = []
+    update_index = 0
     for component in components:
         offsets = []
         for value in (component.name, component.component_id,
                       component.version, component.vendor):
             offsets.append(string_base + len(strings))
             strings.extend(value.encode('ascii') + b'\0')
-        entries.append((*offsets, component.installer_type))
+        entries.append((*offsets, component.installer_type,
+                        len(component.updates),
+                        update_base + update_index * 8
+                        if component.updates else 0))
+        update_index += len(component.updates)
 
-    total = string_base + len(strings)
+    payload_base = string_base + len(strings)
+    payloads = bytearray()
+    updates: list[tuple[int, int]] = []
+    for component in components:
+        for update in component.updates:
+            updates.append((payload_base + len(payloads), len(update.data)))
+            payloads.extend(update.data)
+    total = payload_base + len(payloads)
     data = bytearray(total)
     data[:len(PREAMBLE)] = PREAMBLE
     _put_u32(data, 20, VERSION)
@@ -106,9 +136,11 @@ def build_dp(components: list[DpComponent] | tuple[DpComponent, ...]) -> bytes:
     _put_u32(data, 44, entry_base)
     _put_u32(data, 48, string_base)
     for index, entry in enumerate(entries):
-        struct.pack_into('<7I', data, entry_base + index * ENTRY_SIZE,
-                         *entry, 0, 0)
-    data[string_base:] = strings
+        struct.pack_into('<7I', data, entry_base + index * ENTRY_SIZE, *entry)
+    for index, (offset, size) in enumerate(updates):
+        struct.pack_into('<2I', data, update_base + index * 8, offset, size)
+    data[string_base:string_base + len(strings)] = strings
+    data[payload_base:] = payloads
     return bytes(data)
 
 
@@ -177,8 +209,17 @@ def parse_dp(data: bytes) -> dict:
             if installer_type not in INSTALLER_TYPES:
                 raise DpError(f'component {index} has invalid installer type '
                               f'{installer_type}')
-            if update_count and update_ptr >= len(data):
+            if update_count and update_ptr + update_count * 8 > len(data):
                 raise DpError(f'component {index} update table is outside the container')
+            updates = []
+            for update_index in range(update_count):
+                entry = update_ptr + update_index * 8
+                offset = _get_u32(data, entry, 'update payload offset')
+                size = _get_u32(data, entry + 4, 'update payload size')
+                if size == 0 or offset + size > len(data):
+                    raise DpError(f'component {index} update payload is outside '
+                                  'the container')
+                updates.append({'offset': offset, 'size': size})
             components.append({
                 'name': name,
                 'id': component_id,
@@ -186,6 +227,7 @@ def parse_dp(data: bytes) -> dict:
                 'vendor': vendor,
                 'installer_type': installer_type,
                 'update_count': update_count,
+                'updates': updates,
             })
     except DpError as exc:
         problems.append(str(exc))

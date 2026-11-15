@@ -903,9 +903,11 @@ MOCK_DM_DOWNLOAD method=GET path=/object.bin bytes=52 preamble=RedBendEFDPackage
 `/package.bin` is an OMA Download Descriptor (`application/vnd.oma.dd+xml`),
 not the object. After the engine parses it, the probe sends the OEM
 confirmation command code 10 (`DMC_REQ_DL_OK`), which lets the engine fetch
-the descriptor's `objectURI`. The mock object is a 108-byte RedBend EF DP:
+the descriptor's `objectURI`. The mock object is a 132-byte RedBend EF DP:
 20-byte `RedBendEFDPackage` preamble, version 4, one 28-byte component entry
-(`LABCOMP`/`LABID`/`1.0`/`LABVENDOR`) and a NUL-terminated string table.
+(`LABCOMP`/`LABID`/`1.0`/`LABVENDOR`), one update-table entry (payload offset
+and size), a NUL-terminated string table and a 16-byte `LABUPDATE-DATA01`
+update payload.
 
 The container can be checked independently:
 
@@ -914,11 +916,12 @@ python3 -B launch.py check-dp <package.dp>
 ```
 
 It validates the preamble, version, declared size, component-table range,
-string offsets, installer type and NUL termination.
+update-table range, payload bounds, string offsets, installer type and NUL
+termination.
 
 The engine logs `DL session complete`, advances FUMO state `30` (downloading)
 to `40` (downloaded), and in this run also to `50` (update progressing). The
-DP is a structural fixture with no component table or signature, so no
+DP is a structural fixture with one update payload but no signature, so no
 install or update-success is claimed. A real run passes all fourteen checks.
 
 ## dmengine FUMO update request (Mode C, negative)
@@ -939,8 +942,8 @@ FUMO_Plugin_onSessionStateChange(DM): Error=[24593]
 DM session aborted, 0x6011
 ```
 
-This is a **negative** install-request test. The 108-byte DP has no signature or
-update payload, so the engine rejects it and never reaches a completed update
+This is a **negative** install-request test. The 132-byte DP has an update
+payload but no signature, so the engine rejects it and never reaches a completed update
 state (`Set state, 60` is absent). The scenario asserts the request, the
 rejection, and no completion; it does not claim an install. It runs dmengine at
 debug log level because the FUMO update target is logged at debug.
