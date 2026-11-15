@@ -395,6 +395,61 @@ static void test_accept_lease_result(void)
     g_client_t1_at_ms = g_client_t2_at_ms = g_client_expiry_at_ms = 0;
 }
 
+static void test_client_status_expiry(void)
+{
+    char status[16384];
+    g_cfg.mode = MODE_CLIENT;
+    g_cfg.wlan_on = true;
+    str_copy(g_cfg.ssid, sizeof(g_cfg.ssid), "FixtureWiFi");
+    memset(&g_dhcp_lease, 0, sizeof(g_dhcp_lease));
+    g_dhcp_lease.valid = true;
+    g_dhcp_lease.route_ok = true;
+    g_dhcp_lease.ip = w2_ip4("10.42.0.10");
+    g_dhcp_lease.gateway = w2_ip4("10.42.0.1");
+    g_dhcp_lease.prefix = 24;
+    g_dhcp_lease.route_metric = 101;
+    g_dhcp_lease.route_proto = WIFI1B_CLIENT_ROUTE_PROTO;
+    str_copy(g_dhcp_lease.iface, sizeof(g_dhcp_lease.iface), "wlan0");
+    g_client_t1_at_ms = now_ms() + 100000;
+    g_client_t2_at_ms = now_ms() + 200000;
+    g_client_expiry_at_ms = now_ms() + 300000;
+    memset(&g_observed, 0, sizeof(g_observed));
+    g_observed.gen = g_apply_gen;
+    g_observed.associated = true;
+    str_copy(g_observed.ip, sizeof(g_observed.ip), "10.42.0.10");
+    str_copy(g_observed.ssid, sizeof(g_observed.ssid), "FixtureWiFi");
+    g_observed_ms = now_ms();
+    build_status(status, sizeof(status));
+    assert(strstr(status, "\"client_ready\":true"));
+    assert(strstr(status, "\"ip\":\"10.42.0.10\""));
+    assert(strstr(status, "\"client_lease_state\":\"bound\""));
+
+    g_dhcp_lease.route_ok = true;
+    g_client_expiry_at_ms = now_ms() + 300000;
+    str_copy(g_observed.ip, sizeof(g_observed.ip), "10.42.0.11");
+    build_status(status, sizeof(status));
+    assert(strstr(status, "\"client_ready\":false"));
+    assert(strstr(status, "\"ip\":\"\""));
+    str_copy(g_observed.ip, sizeof(g_observed.ip), "10.42.0.10");
+
+    g_dhcp_lease.route_ok = false;
+    build_status(status, sizeof(status));
+    assert(strstr(status, "\"client_ready\":false"));
+    assert(strstr(status, "\"ip\":\"\""));
+
+    g_dhcp_lease.route_ok = true;
+    g_client_expiry_at_ms = now_ms() - 1;
+    build_status(status, sizeof(status));
+    assert(strstr(status, "\"client_ready\":false"));
+    assert(strstr(status, "\"ip\":\"\""));
+    assert(strstr(status, "\"client_lease_state\":\"expired\""));
+    assert(strstr(status, "\"client_lease_valid\":false"));
+    memset(&g_dhcp_lease, 0, sizeof(g_dhcp_lease));
+    g_client_t1_at_ms = g_client_t2_at_ms = g_client_expiry_at_ms = 0;
+    g_cfg.mode = MODE_OFF;
+    g_cfg.wlan_on = false;
+}
+
 int main(int argc, char **argv)
 {
     if (argc > 1 && !strcmp(argv[1], "--route-install") && argc > 3) {
@@ -487,6 +542,7 @@ int main(int argc, char **argv)
     test_route_install_cleanup();
     test_raw_parser();
     test_accept_lease_result();
+    test_client_status_expiry();
     puts("PASS: DHCP client identity, timers, raw parsing and owned route policy");
     return 0;
 }

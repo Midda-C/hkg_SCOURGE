@@ -11,6 +11,7 @@ a patched copy under /tmp/opencode; it never executes the OEM binary.
 from __future__ import annotations
 
 import hashlib
+import errno
 import importlib.util
 import os
 from pathlib import Path
@@ -19,6 +20,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+from unittest.mock import patch
 
 # The tests import the builder from the source tree; do not leave bytecode
 # side effects in the repository.
@@ -419,6 +421,62 @@ def test_synthetic_builder() -> None:
         expect_refusal(BUILDER.build_patch, input_path, dangling / "out", locks,
                        allow_test_geometry=True)
         assert not (tmp / "missing-parent").exists()
+
+        # Reject parent components before lexical normalization can erase a
+        # symlink from a path such as link/../input. Neither direction writes.
+        parent_target = tmp / "target" / "dir"
+        parent_target.mkdir(parents=True)
+        (parent_target.parent / input_path.name).write_bytes(original)
+        parent_link = tmp / "parent-link"
+        parent_link.symlink_to(parent_target, target_is_directory=True)
+        assert "parent-directory" in expect_refusal(
+            BUILDER.build_patch, parent_link / ".." / input_path.name,
+            tmp / "parent-input-out", locks, allow_test_geometry=True)
+        assert "parent-directory" in expect_refusal(
+            BUILDER.build_patch, input_path, parent_link / ".." / "out",
+            locks, allow_test_geometry=True)
+        assert not (tmp / "target" / "out").exists()
+
+        # A failed publish must retract only files this invocation created.
+        original_link = os.link
+        original_unlink = Path.unlink
+        for mode in ("second-link", "post-link-unlink", "foreign-replacement"):
+            fault_out = tmp / ("fault-" + mode)
+            fault_output = fault_out / "vbtd-63.spp-rx.patched"
+            fault_manifest = fault_out / "vbtd-63.spp-rx.manifest.json"
+            calls = [0]
+            fired = [False]
+
+            def failing_link(source, destination):
+                calls[0] += 1
+                if calls[0] == 2 and mode != "post-link-unlink":
+                    fired[0] = True
+                    if mode == "foreign-replacement":
+                        fault_output.unlink()
+                        fault_output.write_bytes(b"preserve-foreign-replacement\n")
+                    raise OSError(errno.ENOSPC, "injected second-link failure")
+                return original_link(source, destination)
+
+            def failing_unlink(path, *args, **kwargs):
+                if (mode == "post-link-unlink" and not fired[0] and
+                        path.name.startswith(".vbtd-63.spp-rx.patched.") and
+                        fault_output.exists()):
+                    fired[0] = True
+                    raise OSError(errno.EIO, "injected post-link unlink failure")
+                return original_unlink(path, *args, **kwargs)
+
+            with patch.object(BUILDER.os, "link", failing_link), \
+                    patch.object(Path, "unlink", failing_unlink):
+                message = expect_refusal(BUILDER.build_patch, input_path, fault_out,
+                                         locks, allow_test_geometry=True)
+            assert fired[0] and "cannot publish output" in message
+            assert not fault_manifest.exists()
+            if mode == "foreign-replacement":
+                assert fault_output.read_bytes() == b"preserve-foreign-replacement\n"
+                assert "changed output preserved" in message
+            else:
+                assert not fault_output.exists()
+                assert list(fault_out.iterdir()) == []
 
         # A patched output is not accepted as an input.
         already_out = tmp / "already-out"

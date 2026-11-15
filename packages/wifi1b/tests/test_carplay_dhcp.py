@@ -346,11 +346,24 @@ def test_raw_client(ctest: Path, env: dict, tmp_path: Path) -> None:
         ["unshare", "-n", "sh", "-c", "ip link set lo up; exec sleep 300"],
         stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
     try:
+        own_netns = os.readlink("/proc/self/ns/net")
+        deadline = time.monotonic() + 5
+        while True:
+            if peer.poll() is not None:
+                raise AssertionError(f"peer namespace exited: {peer.stderr.read()}")
+            try:
+                if os.readlink(f"/proc/{peer.pid}/ns/net") != own_netns:
+                    break
+            except OSError:
+                pass
+            if time.monotonic() >= deadline:
+                raise AssertionError("peer network namespace did not appear")
+            time.sleep(0.05)
         run(["ip", "link", "set", "cpeer0", "netns", str(peer.pid)])
         run(["ip", "link", "set", "lo", "up"])
         run(["ip", "link", "set", "wlan0", "up"])
         nsenter(peer.pid, ["ip", "link", "set", "lo", "up"])
-        deadline = time.monotonic() + 3
+        deadline = time.monotonic() + 5
         while True:
             if peer.poll() is not None:
                 raise AssertionError(f"peer namespace exited: {peer.stderr.read()}")
@@ -358,8 +371,11 @@ def test_raw_client(ctest: Path, env: dict, tmp_path: Path) -> None:
                 nsenter(peer.pid, ["ip", "link", "set", "cpeer0", "up"])
                 link = nsenter(peer.pid, ["ip", "link", "show", "cpeer0"]).stdout
                 break
-            except subprocess.CalledProcessError:
+            except subprocess.CalledProcessError as error:
                 if time.monotonic() >= deadline:
+                    print("nsenter failed:", error.stderr)
+                    print("peer poll:", peer.poll(),
+                          "stderr:", peer.stderr.read() if peer.poll() is not None else "")
                     raise
                 time.sleep(0.05)
         peer_mac = next(line.split()[1] for line in link.splitlines()

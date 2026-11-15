@@ -283,6 +283,8 @@ def _map_vaddr(data: bytes, phdrs: list[dict[str, int]], vaddr: int,
 
 
 def _reject_symlink_components(path: Path, what: str) -> None:
+    if ".." in path.parts:
+        raise BuildError(f"{what} path contains a parent-directory component")
     absolute = Path(os.path.abspath(path))
     for component in [absolute, *absolute.parents]:
         if component.is_symlink():
@@ -712,6 +714,22 @@ def _verify_outside_delta(original: bytes, patched: bytes, offset: int,
         raise BuildError("patched output is identical to input")
 
 
+def _cleanup_owned_files(records: list[tuple[Path, int, int]], label: str) -> list[str]:
+    errors = []
+    for path, device, inode in reversed(records):
+        try:
+            current = path.lstat()
+            if (current.st_dev, current.st_ino) != (device, inode):
+                errors.append(f"changed {label} preserved: {path}")
+            else:
+                path.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            errors.append(f"cannot remove owned {label} {path}: {exc}")
+    return errors
+
+
 def build_patch(input_path: Path, out_dir: Path,
                 locks_path: Path = DEFAULT_LOCKS,
                 *, allow_test_geometry: bool = False) -> dict[str, object]:
@@ -870,9 +888,11 @@ def build_patch(input_path: Path, out_dir: Path,
         "link_flags": blob_info["link_flags"],
         "linker_script_sha256": blob_info["linker_script_sha256"],
         "notes": [
-            "Build-only replacement of the exact VBTSppReceivedDataCfm span.",
+            ("Synthetic test fixture; not an OEM artifact."
+             if allow_test_geometry else
+             "Build-only replacement of the exact VBTSppReceivedDataCfm span."),
             "Remaining bytes in the span are NOP-filled.",
-            "The OEM input was read only; it was never executed.",
+            "The input was read only; it was never executed.",
             "Not activated by any installer and not car-validated.",
         ],
     }
@@ -883,12 +903,18 @@ def build_patch(input_path: Path, out_dir: Path,
 
     tmp_output = None
     tmp_manifest = None
+    published: list[tuple[Path, int, int]] = []
+    private_temps: list[tuple[Path, int, int]] = []
+    anchors: list[int] = []
     try:
         fd, tmp_name = tempfile.mkstemp(
             prefix=".vbtd-63.spp-rx.patched.", dir=str(out_dir)
         )
         tmp_output = Path(tmp_name)
         with os.fdopen(fd, "wb") as handle:
+            identity = os.fstat(handle.fileno())
+            private_temps.append((tmp_output, identity.st_dev, identity.st_ino))
+            anchors.append(os.dup(handle.fileno()))
             handle.write(patched_bytes)
             handle.flush()
             os.fsync(handle.fileno())
@@ -902,39 +928,47 @@ def build_patch(input_path: Path, out_dir: Path,
             json.dumps(manifest, indent=2, sort_keys=True) + "\n"
         ).encode("utf-8")
         with os.fdopen(fd, "wb") as handle:
+            identity = os.fstat(handle.fileno())
+            private_temps.append((tmp_manifest, identity.st_dev, identity.st_ino))
+            anchors.append(os.dup(handle.fileno()))
             handle.write(manifest_bytes)
             handle.flush()
             os.fsync(handle.fileno())
         os.chmod(tmp_manifest, 0o644)
 
-        os.link(tmp_output, output_file)
-        tmp_output.unlink()
-        tmp_output = None
-        os.link(tmp_manifest, manifest_file)
-        tmp_manifest.unlink()
-        tmp_manifest = None
-    except OSError as exc:
-        raise BuildError(f"cannot publish output: {exc}") from exc
-    finally:
-        for leftover in (tmp_output, tmp_manifest):
-            if leftover is not None:
-                try:
-                    leftover.unlink()
-                except OSError:
-                    pass
+        # Retain the private temporary links until both files and their
+        # readback succeed; they anchor the identities used for rollback.
+        for temporary, destination in ((tmp_output, output_file),
+                                        (tmp_manifest, manifest_file)):
+            expected = next(record for record in private_temps if record[0] == temporary)
+            identity = temporary.lstat()
+            if ((identity.st_dev, identity.st_ino) != expected[1:] or
+                    not stat.S_ISREG(identity.st_mode)):
+                raise BuildError(f"private temp changed before publication: {temporary}")
+            os.link(temporary, destination)
+            published.append((destination, identity.st_dev, identity.st_ino))
 
-    try:
         readback = output_file.read_bytes()
-        manifest_readback = json.loads(
-            manifest_file.read_text(encoding="utf-8")
-        )
-    except OSError as exc:
-        raise BuildError(f"cannot read back output: {exc}") from exc
-    if sha256_bytes(readback) != output_sha:
-        raise BuildError("output SHA256 readback mismatch")
-    if manifest_readback != manifest:
-        raise BuildError("manifest readback mismatch")
-    _verify_outside_delta(data, readback, function_offset, function_len, blob)
+        manifest_readback = json.loads(manifest_file.read_text(encoding="utf-8"))
+        if sha256_bytes(readback) != output_sha:
+            raise BuildError("output SHA256 readback mismatch")
+        if manifest_readback != manifest:
+            raise BuildError("manifest readback mismatch")
+        _verify_outside_delta(data, readback, function_offset, function_len, blob)
+        cleanup_errors = _cleanup_owned_files(private_temps, "private temp")
+        if cleanup_errors:
+            raise BuildError("private temp cleanup incomplete: " + "; ".join(cleanup_errors))
+    except (OSError, ValueError, BuildError) as exc:
+        cleanup_errors = _cleanup_owned_files(published, "output")
+        cleanup_errors.extend(_cleanup_owned_files(private_temps, "private temp"))
+        detail = "; ".join(cleanup_errors)
+        raise BuildError(f"cannot publish output: {exc}" +
+                         (f"; rollback incomplete: {detail}" if detail else "")) from exc
+    finally:
+        # Keep the created inodes alive through every identity check, even if
+        # a pathname was replaced. No blind pathname deletion occurs here.
+        for anchor in anchors:
+            os.close(anchor)
 
     return {
         "output_file": str(output_file),

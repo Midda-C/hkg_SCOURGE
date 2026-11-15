@@ -3875,15 +3875,23 @@ static bool accept_apply_result(char *buf)
         else if (!strcmp(line, "client_lease_t1_s")) lease_t1 = v;
         else if (!strcmp(line, "client_lease_t2_s")) lease_t2 = v;
         else if (!strcmp(line, "client_lease_route_ok")) lease_route_ok = v == 1;
-        else if (!strcmp(line, "client_route_metric")) lease_metric = (unsigned int)strtoul(eq, NULL, 10);
-        else if (!strcmp(line, "client_route_proto")) lease_proto = (unsigned int)strtoul(eq, NULL, 10);
+        else if (!strcmp(line, "client_route_metric")) {
+            unsigned int tmp;
+            if (w2_route_token_u32(eq, &tmp)) lease_metric = tmp;
+        } else if (!strcmp(line, "client_route_proto")) {
+            unsigned int tmp;
+            if (w2_route_token_u32(eq, &tmp)) lease_proto = tmp;
+        }
     }
     if (lease_updated) {
         struct in_addr ip_addr, server_addr, gateway_addr;
         bool parsed = inet_pton(AF_INET, lease_ip, &ip_addr) == 1 &&
                       inet_pton(AF_INET, lease_gateway, &gateway_addr) == 1 &&
                       (lease_server[0] == '\0' || inet_pton(AF_INET, lease_server, &server_addr) == 1);
-        if (lease_valid && parsed && lease_prefix > 0 && lease_prefix <= 32 &&
+        bool route_meta = !lease_route_ok ||
+                          (lease_metric > 0 && lease_proto > 0);
+        if (lease_valid && parsed && route_meta &&
+            lease_prefix > 0 && lease_prefix <= 32 &&
             lease_s >= 60 && lease_t1 > 0 && lease_t2 > lease_t1 &&
             lease_t2 < lease_s && lease_iface[0] != '\0') {
             int64_t now = now_ms();
@@ -3908,9 +3916,8 @@ static bool accept_apply_result(char *buf)
         } else {
             if (lease_valid)
                 log_msg("dhcp client: ignoring malformed lease readback");
-            g_dhcp_lease.valid = false;
+            memset(&g_dhcp_lease, 0, sizeof(g_dhcp_lease));
             g_dhcp_lease.updated = true;
-            g_dhcp_lease.route_ok = false;
             g_client_t1_at_ms = g_client_t2_at_ms = g_client_expiry_at_ms = 0;
         }
     }
@@ -4047,6 +4054,13 @@ static void start_pending_work(void)
     if (pid < 0) {
         g_apply_failed = true;
         if (g_work_kind == WORK_MODE) g_network_failed = true;
+        if (g_work_kind == WORK_DHCP) {
+            int shift = g_dhcp_retry_failures > 4 ? 4 : g_dhcp_retry_failures;
+            int64_t delay = 5000LL << shift;
+            if (delay > 60000LL) delay = 60000LL;
+            g_dhcp_retry_failures++;
+            g_dhcp_next_try_ms = now_ms() + delay;
+        }
         set_msg("apply: fork failed");
         return;
     }
@@ -4158,9 +4172,13 @@ static void dhcp_lease_tick(void)
                                            g_client_expiry_at_ms);
     if (action == DHCP_TICK_NONE) return;
     if (action == DHCP_TICK_ACQUIRE) {
-        /* A full acquire needs an association; the existing watchdog handles
-         * a dead link and avoids a worker storm while the mode apply runs. */
-        if (!client_associated()) return;
+        /* A full acquire needs an association. Use the cached probe result
+         * so the HTTP/main loop never runs wpa_cli here. */
+        bool associated = g_observed_ms > 0 &&
+                          now - g_observed_ms < 15000 &&
+                          g_observed.gen == g_apply_gen &&
+                          g_observed.associated;
+        if (!associated) return;
         if (now - g_last_mode_ms < 5000) return;
         g_dhcp_work_step = W2_DHCP_ACQUIRE;
     } else if (action == DHCP_TICK_REBIND) {
@@ -4347,7 +4365,8 @@ static void build_status(char *out, size_t n)
     if (g_dhcp_lease.ip) w2_ip4_str(g_dhcp_lease.ip, client_lease_ip, sizeof(client_lease_ip));
     bool lease_timer_valid = g_cfg.mode == MODE_CLIENT && g_cfg.wlan_on &&
                              g_dhcp_lease.valid && g_client_expiry_at_ms > now;
-    bool client_ready = lease_timer_valid && g_dhcp_lease.route_ok &&
+    bool client_route_ok = lease_timer_valid && g_dhcp_lease.route_ok;
+    bool client_ready = client_route_ok &&
                         o->associated && client_lease_ip[0] &&
                         !strcmp(o->ip, client_lease_ip);
     const char *effective_ip = o->ip;
@@ -4494,7 +4513,7 @@ static void build_status(char *out, size_t n)
              lease_timer_valid ? "true" : "false",
              client_lease_remaining,
              client_lease_state,
-             g_dhcp_lease.route_ok ? "true" : "false",
+             client_route_ok ? "true" : "false",
              g_dhcp_lease.route_metric,
              g_dhcp_lease.route_proto,
              client_gw_e,
