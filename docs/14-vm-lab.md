@@ -86,6 +86,10 @@ VM-validated (vendor kernel):
 - dmengine OEM queue handler (`dmengine-oem-queue`): lab SysV client sends a
   type-0x36 command and receives event 66 after `recvDM_01`; no AppDMClient
   policy or HTTP FUMO update
+- dmengine FUMO HTTP exchange (`dmengine-fumo-http`): OEM command 0/field1=1
+  starts `dmc_startFumoSession`; the engine POSTs WBXML SyncML to a loopback
+  mock endpoint. The mock returns an empty 200, so this is an exchange
+  attempt, not update completion
 - device-model regression (`device-model`): asserts Q35 host bridge, SDHCI
   root, ICH9 LPC/SATA and no virtio; substrate only, not captured BXT hardware
 - AppDMClient fota callback (`dmclient-fota-events`): `/fotaInterface`

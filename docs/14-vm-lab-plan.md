@@ -1071,6 +1071,13 @@ items beyond that.
   alone still yields no HTTP request, so the mock-DM exchange remains open.
   3 new tests; 511 tests (75 skipped); doctor green after rebuilding the
   tools image.
+- **2026-11-15 — P2-7 real FUMO HTTP exchange**: decoded dmengine's OEM
+  receive jump table: command 0/1 (not 0x28/0x29/0x2a) is the session start.
+  `dmengine-fumo-http` triggers code 0/field1=1, brings loopback up and
+  captures a real `POST /dm/message` with 907-byte WBXML SyncML at the
+  loopback mock endpoint. Real run PASS with six checks. The mock returns an
+  empty 200, so update completion is not claimed. 4 new tests; 515 tests
+  (75 skipped); doctor green.
 - **2026-11-15 — NAS import verified**: 9.4 GB preservation copy complete;
   all archives, partitions, runtime files and the navi2 archive match.
   `meta/SOURCE.txt` was finalized after the original manifest, so its one

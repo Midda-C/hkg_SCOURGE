@@ -21,8 +21,9 @@ SCENARIO_NAMES = ('boot', 'usb-discovery', 'dbus-ready', 'dmclient-events',
                   'vendor-systemd-dbus', 'vendor-esinit',
                   'vendor-esinit-fixture', 'update-preflight',
                   'update-preflight-negative', 'dmengine-startup',
-                  'dmengine-oem-queue', 'device-model',
-                  'dmclient-fota-events', 'recovery-repeat-update')
+                  'dmengine-oem-queue', 'dmengine-fumo-http',
+                  'device-model', 'dmclient-fota-events',
+                  'recovery-repeat-update')
 
 
 def load_profile(name: str) -> dict:
@@ -107,6 +108,8 @@ echo 'HARNESS_CHECK recovery-no-space PASS'
         return (VM / 'probes' / 'dmengine-startup.sh').read_text()
     if name == 'dmengine-oem-queue':
         return (VM / 'probes' / 'dmengine-oem-queue.sh').read_text()
+    if name == 'dmengine-fumo-http':
+        return (VM / 'probes' / 'dmengine-fumo-http.sh').read_text()
     if name == 'device-model':
         return (VM / 'probes' / 'device-model.sh').read_text()
     if name == 'vendor-esinit-fixture':
