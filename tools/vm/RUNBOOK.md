@@ -723,6 +723,30 @@ corrupted manifest hash are each rejected. It restores both files, re-verifies
 the baseline and requires nine checks. The base stick is untouched; the
 overlay is discarded after the run.
 
+## dmengine startup (Mode C)
+
+```sh
+python3 -B launch.py run --kernel compat --profile research \
+  --scenario dmengine-startup --payload payload/tweaks-vm --timeout 200
+```
+
+A real-boot startup probe for the vendor `/app/bin/dmengine`. The committed
+`mock-dm-shm` helper creates the 932-byte DMCDEVINFO SysV segment that the
+engine attaches to via its fixed `qipc_sharedmemory_DMCDEVINFO...` ftok path,
+and populates the `VIN:..._AVN` and software-version fields. The probe then
+copies the captured tree/config, rewrites the DM address, account names and
+auth to lab/localhost values, replaces the MOF host, starts a session bus and
+runs dmengine.
+
+The scenario requires FUMO plugin initialization, `DevID len` device-info
+acceptance, SCOMO plugin initialization and no production address in the lab
+inputs or log. A real run passes all six checks.
+
+This covers startup and device-info integration only. `session=fumo` on the
+command line still produced no HTTP request; the next step is the MOF/SyncML
+session message that triggers an exchange. Rebuild the payload with
+`sh build_research_tools.sh`.
+
 ## Offline FUMO exchange model
 
 ```sh

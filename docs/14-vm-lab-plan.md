@@ -1019,6 +1019,12 @@ items beyond that.
   printing URLs or credentials. The captured `/update` passes with version
   `5W.XXX.S5W_L.001.001.260128`, FUMO state 10 and dm_state 0. 10 new tests;
   478 tests (74 skipped); doctor green.
+- **2026-11-15 — P2-7 dmengine startup**: `dmengine-startup` boots Mode C,
+  creates the 932-byte DMCDEVINFO SysV segment with a lab helper, rewrites the
+  captured tree/config to lab/localhost values and runs the real dmengine.
+  Real run PASS: FUMO and SCOMO plugins initialize and `DevID len 24` is
+  accepted; no production address. 3 new tests; 481 tests (74 skipped);
+  doctor green. Session triggering remains the next gate.
 - **2026-11-15 — NAS import verified**: 9.4 GB preservation copy complete;
   all archives, partitions, runtime files and the navi2 archive match.
   `meta/SOURCE.txt` was finalized after the original manifest, so its one

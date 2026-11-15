@@ -76,6 +76,9 @@ VM-validated (vendor kernel):
 - offline FUMO exchange model (`fumo-exchange`): strict Idle/Downloading/
   Downloaded/Updating transitions, package size/hash/version admission, mock
   DM endpoint and injected download/install failures; not dmengine or SyncML
+- dmengine startup (`dmengine-startup`): real vendor DM engine with a lab
+  DMCDEVINFO SysV segment, tree/config rewrite, FUMO/SCOMO plugin init and
+  device-info acceptance; no DM session or production address
 - vendor systemd partial boot (`vendor-systemd`): real systemd reaches
   Multi-User; SMACK units fail, consistent with the missing vendor initramfs (documented)
 - vendor systemd D-Bus service/ordering (`vendor-systemd-dbus`): the research shell
