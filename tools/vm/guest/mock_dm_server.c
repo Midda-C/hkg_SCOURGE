@@ -445,10 +445,12 @@ int main(int argc, char **argv)
     int missing_mode = argc > 3 && strcmp(argv[3], "missing") == 0;
     int notify_fail_mode = argc > 3 && strcmp(argv[3], "notifyfail") == 0;
     int badsig_mode = argc > 3 && strcmp(argv[3], "badsig") == 0;
+    int partial_mode = argc > 3 && strcmp(argv[3], "partial") == 0;
+    int resume_mode = argc > 3 && strcmp(argv[3], "resume") == 0;
     int download_mode = argc > 3
         && (strcmp(argv[3], "download") == 0 || update_mode
             || combined_mode || missing_mode || notify_fail_mode
-            || badsig_mode);
+            || badsig_mode || partial_mode || resume_mode);
     int server = socket(AF_INET, SOCK_STREAM, 0);
     int one = 1;
     struct sockaddr_in addr;
@@ -622,6 +624,63 @@ int main(int argc, char **argv)
             int package_length = build_dp_package(package, sizeof(package));
             if (badsig_mode && package_length > 0)
                 package[package_length - 1] ^= 0x01;
+            if (partial_mode || resume_mode) {
+                char *range_header = strcasestr((char *)request, "Range:");
+                unsigned long range_offset = 0;
+                fprintf(log, "MOCK_DM_OBJECT_HEADERS range=%s\n",
+                        range_header != NULL ? range_header : "none");
+                fflush(log);
+                if (range_header != NULL) {
+                    char *equals = strchr(range_header, '=');
+                    if (equals != NULL)
+                        range_offset = strtoul(equals + 1, NULL, 10);
+                }
+                if (resume_mode && range_header != NULL
+                    && range_offset > 0
+                    && range_offset < (unsigned long)package_length) {
+                    header_length = snprintf(
+                        header, sizeof(header),
+                        "HTTP/1.1 206 Partial Content\r\n"
+                        "Content-Type: application/octet-stream\r\n"
+                        "Content-Range: bytes %lu-%d/%d\r\n"
+                        "ETag: \"lab-dp-184\"\r\n"
+                        "Content-Length: %d\r\n"
+                        "Connection: close\r\n\r\n",
+                        range_offset, package_length - 1, package_length,
+                        package_length - (int)range_offset);
+                    send_all(client, (const unsigned char *)header,
+                             (size_t)header_length);
+                    send_all(client, package + range_offset,
+                             (size_t)(package_length - (int)range_offset));
+                    fprintf(log, "MOCK_DM_RESUME method=GET path=/object.bin "
+                                 "offset=%lu bytes=%d total=%d\n",
+                            range_offset,
+                            package_length - (int)range_offset, package_length);
+                    fflush(log);
+                    close(client);
+                    free(request);
+                    requests++;
+                    continue;
+                }
+                header_length = snprintf(
+                    header, sizeof(header),
+                    "HTTP/1.1 200 OK\r\n"
+                    "Content-Type: application/octet-stream\r\n"
+                    "Accept-Ranges: bytes\r\n"
+                    "ETag: \"lab-dp-184\"\r\n"
+                    "Content-Length: %d\r\n"
+                    "Connection: close\r\n\r\n", package_length);
+                send_all(client, (const unsigned char *)header,
+                         (size_t)header_length);
+                send_all(client, package, 64);
+                fprintf(log, "MOCK_DM_PARTIAL method=GET path=/object.bin "
+                             "bytes=64 total=%d\n", package_length);
+                fflush(log);
+                close(client);
+                free(request);
+                requests++;
+                continue;
+            }
             header_length = snprintf(
                 header, sizeof(header),
                 "HTTP/1.1 200 OK\r\n"

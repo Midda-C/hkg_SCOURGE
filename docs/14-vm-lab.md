@@ -128,6 +128,9 @@ VM-validated (vendor kernel):
   flipped; the engine still downloads and advances to state 40, while
   `check-dp --key` rejects the object with a signature mismatch (negative
   engine-validation boundary)
+- FUMO resume (`dmengine-fumo-resume`): a 64/184 partial response with
+  `Accept-Ranges`/ETag makes the engine retry `Range: bytes=64-`; the mock
+  returns the remaining 120 bytes with 206 and the download completes
 - device-model regression (`device-model`): asserts Q35 host bridge, SDHCI
   root, ICH9 LPC/SATA and no virtio; substrate only, not captured BXT hardware
 - AppDMClient fota callback (`dmclient-fota-events`): `/fotaInterface`

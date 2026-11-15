@@ -1151,6 +1151,13 @@ items beyond that.
   proves the C fixture is byte-identical to the Python builder. All FUMO
   scenarios still download it. 3 new tests; 547 tests (75 skipped); doctor
   green.
+- **2026-11-15 — FUMO resume**: the mock serves a 64/184 partial object with
+  `Accept-Ranges` and an ETag. The engine records offset 64 and retries with
+  `Range: bytes=64-` / `If-Range`; the mock returns the remaining 120 bytes
+  with 206 and the download completes (state 30 -> 40, notification posted).
+  `dmengine-fumo-resume` asserts partial, Range request, completion and
+  notification. Real run PASS with seven checks; 3 new tests; 570 tests
+  (75 skipped); doctor green.
 - **2026-11-15 — FUMO bad-signature boundary**: the mock flips one bit in
   the lab HMAC trailer. The engine still downloads the 184-byte object, posts
   the install notification and advances to state 40. `check-dp --key` rejects

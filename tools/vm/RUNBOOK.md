@@ -1139,6 +1139,29 @@ This documents that the lab trailer is an integrity fixture, not an
 engine-enforced vendor signature. No install is claimed. A real run passes all
 sixteen checks.
 
+## dmengine FUMO resume (Mode C)
+
+```sh
+python3 -B launch.py run --kernel compat --profile research \
+  --scenario dmengine-fumo-resume --payload payload/tweaks-vm --timeout 300
+```
+
+The mock serves only the first 64 of 184 object bytes with `Accept-Ranges` and
+an ETag. The engine records the resume offset and immediately retries:
+
+```text
+MOCK_DM_PARTIAL method=GET path=/object.bin bytes=64 total=184
+MOCK_DM_OBJECT_HEADERS range=Range: bytes=64-
+MOCK_DM_RESUME method=GET path=/object.bin offset=64 bytes=120 total=184
+DL session complete
+Set state, 30
+Set state, 40
+```
+
+The mock returns the remaining 120 bytes with `206 Partial Content`; the
+download completes and the install notification is posted. A real run passes
+all seven checks. No install is claimed.
+
 ## dmengine startup (Mode C)
 
 ```sh
