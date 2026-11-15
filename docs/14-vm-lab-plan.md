@@ -1151,6 +1151,13 @@ items beyond that.
   proves the C fixture is byte-identical to the Python builder. All FUMO
   scenarios still download it. 3 new tests; 547 tests (75 skipped); doctor
   green.
+- **2026-11-15 — FUMO notification failure**: the DP download succeeds but
+  `/notify` returns HTTP 500. The engine retries, logs
+  `DL session aborted, 0x6308` and FUMO result 503 / error 25352, and never
+  reaches state 40/60. `dmengine-fumo-notify-failure` asserts the 500
+  notification attempts, abort/FUMO error and absence of completion (negative).
+  Real run PASS with fifteen checks; 3 new tests; 560 tests (75 skipped);
+  doctor green.
 - **2026-11-15 — FUMO install notification**: the mock handles
   `POST /notify`, logs `MOCK_DM_NOTIFY path=/notify bytes=11 body=900 Success`
   and returns 200. `dmengine-fumo-download` asserts `fumo-notify`; the combined

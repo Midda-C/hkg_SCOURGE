@@ -118,6 +118,9 @@ VM-validated (vendor kernel):
 - FUMO missing object (`dmengine-fumo-download-missing`): the DD parses and
   confirmation is sent, but `/object.bin` returns 404; the engine aborts the
   DL session with `0x6306`, FUMO result 407 / error 25350 (negative)
+- FUMO notification failure (`dmengine-fumo-notify-failure`): the DP download
+  succeeds but `/notify` returns HTTP 500; the engine aborts with `0x6308`,
+  FUMO result 503 / error 25352 and never reaches downloaded/update states
 - device-model regression (`device-model`): asserts Q35 host bridge, SDHCI
   root, ICH9 LPC/SATA and no virtio; substrate only, not captured BXT hardware
 - AppDMClient fota callback (`dmclient-fota-events`): `/fotaInterface`

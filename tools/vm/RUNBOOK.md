@@ -1076,6 +1076,26 @@ FUMO_Plugin_onSessionStateChange(DL) : fumo result : 407, last error : 25350
 The engine retries and reports the failure; no successful object download or
 update is claimed. A real run passes all fourteen checks.
 
+## dmengine FUMO install-notification failure (Mode C, negative)
+
+```sh
+python3 -B launch.py run --kernel compat --profile research \
+  --scenario dmengine-fumo-notify-failure --payload payload/tweaks-vm --timeout 320
+```
+
+The DD/DP download succeeds, but the mock returns HTTP 500 for the
+`installNotifyURI` callback:
+
+```text
+MOCK_DM_NOTIFY_FAIL path=/notify bytes=11 body=900 Success
+DL session aborted, 0x6308
+FUMO_Plugin_onSessionStateChange(DL) : fumo result : 503, last error : 25352
+```
+
+The engine retries the notification, reports the failure and never reaches
+downloaded/update states (`Set state, 40`/`60` are absent). A real run passes
+all fifteen checks.
+
 ## dmengine startup (Mode C)
 
 ```sh

@@ -443,9 +443,10 @@ int main(int argc, char **argv)
     int update_mode = argc > 3 && strcmp(argv[3], "update") == 0;
     int combined_mode = argc > 3 && strcmp(argv[3], "combined") == 0;
     int missing_mode = argc > 3 && strcmp(argv[3], "missing") == 0;
+    int notify_fail_mode = argc > 3 && strcmp(argv[3], "notifyfail") == 0;
     int download_mode = argc > 3
         && (strcmp(argv[3], "download") == 0 || update_mode
-            || combined_mode || missing_mode);
+            || combined_mode || missing_mode || notify_fail_mode);
     int server = socket(AF_INET, SOCK_STREAM, 0);
     int one = 1;
     struct sockaddr_in addr;
@@ -579,9 +580,19 @@ int main(int argc, char **argv)
                 ? notify_length : sizeof(body) - 1;
             memcpy(body, request + body_offset, copy_length);
             body[copy_length] = '\0';
-            send_all(client, (const unsigned char *)ok, sizeof(ok) - 1);
-            fprintf(log, "MOCK_DM_NOTIFY path=/notify bytes=%zu body=%s\n",
-                    notify_length, body);
+            if (notify_fail_mode) {
+                static const char fail[] =
+                    "HTTP/1.1 500 Internal Server Error\r\n"
+                    "Content-Length: 0\r\n"
+                    "Connection: close\r\n\r\n";
+                send_all(client, (const unsigned char *)fail, sizeof(fail) - 1);
+                fprintf(log, "MOCK_DM_NOTIFY_FAIL path=/notify bytes=%zu body=%s\n",
+                        notify_length, body);
+            } else {
+                send_all(client, (const unsigned char *)ok, sizeof(ok) - 1);
+                fprintf(log, "MOCK_DM_NOTIFY path=/notify bytes=%zu body=%s\n",
+                        notify_length, body);
+            }
             fflush(log);
             close(client);
             free(request);

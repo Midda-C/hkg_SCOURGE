@@ -280,6 +280,36 @@ if ! grep -q 'MOCK_DM_DOWNLOAD method=GET path=/object.bin bytes=184 preamble=Re
 fi
 echo 'HARNESS_CHECK fumo-download PASS'
 
+if [ "$MODE" = notifyfail ]; then
+    notify_wait=0
+    while [ "$notify_wait" -lt 30 ]; do
+        grep -q 'MOCK_DM_NOTIFY_FAIL path=/notify' /tmp/mock-dm.log 2>/dev/null && break
+        sleep 1
+        notify_wait=$((notify_wait + 1))
+    done
+    sleep 3
+    tail -c +$((LOG_MARK + 1)) "$LOG" > /tmp/vdm-delta.log 2>/dev/null
+
+    if ! grep -q 'MOCK_DM_NOTIFY_FAIL path=/notify bytes=11 body=900 Success' /tmp/mock-dm.log; then
+        grep -a 'MOCK_DM_NOTIFY' /tmp/mock-dm.log 2>/dev/null
+        fail 'fumo-notify-fail'
+    fi
+    echo 'HARNESS_CHECK fumo-notify-fail PASS'
+
+    if ! grep -q 'DL session aborted, 0x6308' /tmp/vdm-delta.log \
+        || ! grep -q 'fumo result : 503, last error : 25352' /tmp/vdm-delta.log; then
+        grep -aE 'DL session|fumo result|onSessionStateChange|lastError' /tmp/vdm-delta.log | tail -30
+        fail 'fumo-notify-failure-error'
+    fi
+    echo 'HARNESS_CHECK fumo-notify-failure-error PASS'
+
+    if grep -q 'Set state, 40' /tmp/vdm-delta.log \
+        || grep -q 'Set state, 60' /tmp/vdm-delta.log; then
+        grep -aE 'Set state' /tmp/vdm-delta.log | tail -20
+        fail 'fumo-notify-no-completion'
+    fi
+    echo 'HARNESS_CHECK fumo-notify-no-completion PASS'
+else
 notify_wait=0
 while [ "$notify_wait" -lt 30 ]; do
     grep -q 'MOCK_DM_NOTIFY path=/notify' /tmp/mock-dm.log 2>/dev/null && break
@@ -431,6 +461,7 @@ if [ "$MODE" = update ]; then
     echo 'HARNESS_CHECK fumo-update-no-completion PASS'
 fi
 fi
+fi
 
 if grep -q '210.183.168.13' /tmp/vdm-delta.log /tmp/mock-dm.log /tmp/lab-tree.xml /tmp/lab-dm-config.txt; then
     fail 'fumo-production-address'
@@ -447,7 +478,9 @@ grep -aE 'MOCK_DM_DD|MOCK_DM_DOWNLOAD' /tmp/mock-dm.log 2>/dev/null | head -8
 kill "$DM_PID" "$OEM_PID" "$DLOK_PID" "$RESULT_PID" "$SERVER_PID" 2>/dev/null || true
 sleep 1
 kill -9 "$DM_PID" "$OEM_PID" "$DLOK_PID" "$RESULT_PID" "$SERVER_PID" 2>/dev/null || true
-if [ "$MODE" = missing ]; then
+if [ "$MODE" = notifyfail ]; then
+    echo 'HARNESS_CHECK dmengine-fumo-notify-failure PASS'
+elif [ "$MODE" = missing ]; then
     echo 'HARNESS_CHECK dmengine-fumo-download-missing PASS'
 elif [ "$MODE" = combined ]; then
     if [ "$INVALID_RESULT" = 1 ]; then
