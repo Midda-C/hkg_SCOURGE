@@ -73,8 +73,11 @@ VM-validated (vendor kernel):
 - synthetic micom CAN interface smoke (`can-smoke`): READY/CALL/ACK for
   fixed and bulk calls; contract only, not real CAN timing
 - vehicle-state model (`vehicle-state`): lab-defined fixed-frame decode for
-  speed/gear/ignition/battery/doors/climate/outside, clamps, bulk retention
-  and reset; not a vendor DBC or stock vehicle fidelity
+  speed/gear/ignition/battery/doors/climate/outside plus the captured
+  CANService Gen3High layouts (`0x1ab` speed/gear, `0x2fc` battery,
+  `0x2b0` steering) and Gen2 fallbacks (`0x56e`, `0x55a`), clamps, range
+  guards, bulk retention and reset; not a vendor DBC or stock vehicle
+  fidelity
 
 VM-validated (compat kernel):
 

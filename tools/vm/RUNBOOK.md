@@ -366,15 +366,15 @@ method returns, and requires an unknown CAN method (`Bogus`) to fail with a
 D-Bus `UnknownMethod` error. It is an interface/contract test, not real CAN
 timing or vehicle-state fidelity.
 
-## Vehicle-state model (lab-defined)
+## Vehicle-state model (lab-defined plus captured vendor layouts)
 
 ```sh
 python3 -B launch.py run --profile research --scenario vehicle-state \
   --payload payload/tweaks-vm --timeout 180
 ```
 
-The synthetic micom simulator packs fixed-frame writes into per-canid frames
-and decodes two lab-defined canids into a deterministic state:
+The synthetic micom simulator packs fixed-frame writes into per-canid 128-bit
+frames and decodes two lab-defined canids into a deterministic state:
 
 - `0x0100`: speed (0..300, clamped), gear (P/R/N/D), ignition
   (OFF/ACC/ON/START)
@@ -382,17 +382,24 @@ and decodes two lab-defined canids into a deterministic state:
   half-degrees C (16..30, clamped), outside temperature as int8 C (-40..85,
   clamped)
 
+It also decodes the captured CANService layouts into separate vendor fields:
+
+- `0x1ab`: Gen3High 10-bit speed (`(raw + 1) * 0.5` km/h, values above
+  `0x3fe` ignored) and gear from byte 8 bits 6..7
+- `0x2fc`: Gen3High battery temperature, byte 7
+- `0x2b0`: steering, bytes 5..6 big-endian in 0.1-degree units, byte 7 << 2
+- `0x56e` / `0x55a`: Gen2 speed (`0x1ff` sentinel) and battery byte 9
+
 The lab-only `org.scourge.vehicle.State` interface at `/Vehicle` exposes
 `GetState`/`Reset`; the last `SetCANMicomRecv` payload is retained as
-`bulk=<hex>`. The probe asserts decoded values, one clamp marker per
-out-of-range write, bulk retention, reset defaults, a hostile
-`startbit=INT_MAX`/boundary range guard (ignored and logged, never written)
+`bulk=<hex>`. The probe asserts decoded lab and vendor values, one clamp
+marker per out-of-range write, bulk retention, reset defaults, a hostile
+`startbit=INT_MAX`/boundary range guard (ignored and logged, never written),
 fail-closed rejection of an unknown D-Bus method (`UnknownMethod`), and the
 16-distinct-canid retention limit (the overflow write is logged and dropped
 without mutating decoded state).
 Rebuild the payload with `sh build_research_tools.sh` after changing the
-simulator. The frame
-mapping is lab-defined: it is not a vendor DBC and does not claim stock
+simulator. The lab mapping is not a vendor DBC and does not claim stock
 vehicle fidelity.
 
 ## Visual regression

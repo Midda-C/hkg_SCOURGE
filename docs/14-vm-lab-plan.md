@@ -969,6 +969,12 @@ items beyond that.
   instead of the network-backed default and is shared by `run`, `doctor` and
   `daemon start`. Real run PASS; 419 tests (71 skipped); doctor green with
   both the default and a local base.
+- **2026-11-15 — P2-9 captured CAN layouts**: the micom simulator now uses
+  128-bit frames and decodes the captured CANService IDs/layouts:
+  `0x1ab` Gen3High speed/gear, `0x2fc` battery temperature, `0x2b0`
+  steering and Gen2 `0x56e`/`0x55a`. The `vehicle-state` run asserts real
+  values, the `(raw+1) > 0x3fe` refusal and the Gen2 sentinel; 12 checks
+  PASS in a real boot. Lab frames and the no-DBC limitation remain explicit.
 - **2026-11-15 — NAS import verified**: 9.4 GB preservation copy complete;
   all archives, partitions, runtime files and the navi2 archive match.
   `meta/SOURCE.txt` was finalized after the original manifest, so its one
