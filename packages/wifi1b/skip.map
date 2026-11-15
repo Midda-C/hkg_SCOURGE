@@ -1,0 +1,17 @@
+# SPDX-FileCopyrightText: 2026 The SCOURGE Project contributors
+# SPDX-License-Identifier: AGPL-3.0-only
+# Curated installed-state check for combo stage skipping (MODE=all only).
+# Format: <payload path relative to the stage dir>|<absolute destination>
+# The patched shared QML is covered by the recorded final-QML digest.
+payload/bin/wifi1b_daemon|/rw_data/wifi1b/wifi1b_daemon
+payload/bin/wifi1b_qmlpatch|/rw_data/wifi1b/bin/wifi1b_qmlpatch
+payload/bin/dropbearmulti|/rw_data/wifi1b/bin/dropbearmulti
+payload/systemd/wifi1b-daemon.service|/etc/systemd/system/wifi1b-daemon.service
+payload/systemd/60-wifi1b-foreground.conf|/etc/systemd/system/carplay_mdnsd.service.d/60-wifi1b-foreground.conf
+payload/systemd/60-connman-nodevice.conf|/etc/systemd/system/connman.service.d/60-scourge-nodevice.conf
+payload/qml/AppHomeScreen/qml_eco3.0/HomeScreen/Wifi1bPage.qml|/app/share/AppHomeScreen/qml_eco3.0/HomeScreen/Wifi1bPage.qml
+payload/qml/AppHomeScreen/qml_eco3.0/component/Wifi1bTile.qml|/app/share/AppHomeScreen/qml_eco3.0/component/Wifi1bTile.qml
+payload/qml/AppHomeScreen/qml_eco3.0/component/Wifi1bSwitch.qml|/app/share/AppHomeScreen/qml_eco3.0/component/Wifi1bSwitch.qml
+payload/qml/AppHomeScreen/qml_eco3.0/component/Wifi1bButton.qml|/app/share/AppHomeScreen/qml_eco3.0/component/Wifi1bButton.qml
+payload/assets/wifi1b/wifi1b_icon_n.png|/app/share/AppHomeScreen/wifi1b/wifi1b_icon_n.png
+payload/assets/wifi1b/wifi1b_icon_d.png|/app/share/AppHomeScreen/wifi1b/wifi1b_icon_d.png

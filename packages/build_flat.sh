@@ -13,40 +13,92 @@ OUT=$(CDPATH= cd -- "$OUT" && pwd)
 STAGE=$(mktemp -d "${TMPDIR:-/tmp}/scourge-flat.XXXXXX")
 trap 'rm -rf "$STAGE"' EXIT
 mkdir -p "$STAGE/tree"
-sh "$HERE/compose.sh" "$STAGE/tree" battery,wifi,tweaks
+# Standalone V20: Battery + Tweaks/Reboot + Wifi1b only.  No WiFi reinstall and
+# no one-way migration stage; compose marks the bundle combo/standalone.
+SCOURGE_STANDALONE=1 sh "$HERE/compose.sh" "$STAGE/tree" battery,tweaks,wifi1b
+if [ ! -f "$STAGE/tree/combo/standalone" ] ||
+   [ -L "$STAGE/tree/combo/standalone" ] ||
+   ! grep -qx 'standalone=1' "$STAGE/tree/combo/standalone"; then
+    echo "standalone marker missing or unreadable" >&2
+    exit 1
+fi
 if [ -n "${SCOURGE_WIFI_TXT:-}" ]; then
     cp -f "$SCOURGE_WIFI_TXT" "$STAGE/tree/wifi.txt"
     chmod 600 "$STAGE/tree/wifi.txt"
 fi
+if [ -n "${SCOURGE_WIFI1B_TXT:-}" ]; then
+    cp -f "$SCOURGE_WIFI1B_TXT" "$STAGE/tree/iphone_wifi.txt"
+    chmod 600 "$STAGE/tree/iphone_wifi.txt"
+fi
 if [ -n "${SCOURGE_AUTHORIZED_KEYS:-}" ]; then
     cp -f "$SCOURGE_AUTHORIZED_KEYS" "$STAGE/tree/authorized_keys"
 fi
-# Check the exact bytes that will be installed LAST, not an upstream base.
-python3 "$HERE/common/check_layout.py" \
-    "$STAGE/tree/combo/tweaks/payload/qml/AppHomeScreen/qml_eco3.0/HomeScreen/QHMI_HomeScreenMain_Advanced.battery_tile_wifi.qml"
+# Exercise the exact packaged additive patcher on the final canonical base.
+python3 "$HERE/wifi1b/scripts/check_combined.py" "$STAGE/tree/combo" "$STAGE/final.qml"
+# Skip maps must reference manifest-covered payload files and packaged units:
+# a typo would silently weaken the unchanged-stage check on the car.
+python3 "$HERE/common/check_skip_maps.py" "$STAGE/tree/combo"
+python3 "$HERE/common/test_layout_qt.py" \
+    "$STAGE/final.qml"
 (cd "$STAGE/tree" && tar -czf "$STAGE/appcombo.tar.gz" .)
 digest=$(sha256sum "$STAGE/appcombo.tar.gz" | cut -d' ' -f1)
-sed "s/@TARBALL_SHA256@/$digest/g" "$HERE/flat_wrapper.sh" > "$STAGE/run_stuff.sh"
+cleanup_sha=$(sha256sum "$HERE/common/runtime_cleanup.sh" | cut -d' ' -f1)
+cp -f "$HERE/common/runtime_cleanup.sh" "$STAGE/runtime_cleanup.sh"
+sed -e "s/@TARBALL_SHA256@/$digest/g" \
+    -e "s/@RUNTIME_CLEANUP_SHA256@/$cleanup_sha/g" \
+    "$HERE/flat_wrapper.sh" > "$STAGE/run_stuff.sh"
 sh -n "$STAGE/run_stuff.sh"
-cp -f "$STAGE/appcombo.tar.gz" "$STAGE/run_stuff.sh" "$OUT/"
+cp -f "$STAGE/appcombo.tar.gz" "$STAGE/run_stuff.sh" "$STAGE/runtime_cleanup.sh" "$OUT/"
 cat > "$OUT/README.txt" <<'EOF'
-SCOURGE flat combo — Battery, WiFi, Tweaks and Reboot
-OFFLINE-TESTED; on-car validation pending. No firmware/update stick present.
-Copy BOTH run_stuff.sh and appcombo.tar.gz to the stick root; don't extract.
-The wrapper verifies the archive SHA256 before running any stage.
-SENSITIVE: when built with SCOURGE_WIFI_TXT/SCOURGE_AUTHORIZED_KEYS the
-appcombo.tar.gz itself contains those credentials — store and dispose of the
-pair accordingly, and keep it out of any shared location.
+SCOURGE standalone flat combo — Battery, Tweaks/Reboot and Wifi1b
+=================================================================
+This bundle does NOT install the WiFi app, does NOT reinstall WiFi, and has
+NO one-way migration stage. It installs Battery, Tweaks/Reboot and Wifi1b on
+the canonical standalone Battery/Tweaks base. Wifi1b also works beside an
+existing WiFi app; if WiFi is still installed, this bundle leaves it untouched
+and only adds Wifi1b.
+No manual WiFi Off step is needed: the installer preflight stops only its own
+radio daemons before backing up or changing files.
+OFFLINE-TESTED / WORK IN PROGRESS; not car-validated. No firmware/update stick
+present, and no vehicle deployment is authorized by this bundle.
+Copy ALL THREE files to the stick root: run_stuff.sh, appcombo.tar.gz and
+runtime_cleanup.sh. The wrapper verifies the archive SHA256 and the cleanup
+helper SHA256 before running any stage; do not extract the archive.
+Bounded runtime log truncation happens first. Removed-WiFi cleanup is
+evidence-gated: it runs only with readable QML absence evidence, no existing
+or dangling WiFi page/service, no running owned WiFi daemon, and a verified
+private WiFi archive or a prior removal receipt. Otherwise owner credentials
+and backups are preserved and reported.
+SENSITIVE: appcombo.tar.gz contains the compiled Wifi1b payload, which may
+include owner credentials from the private source, plus any
+SCOURGE_WIFI1B_TXT/SCOURGE_WIFI_TXT or SCOURGE_AUTHORIZED_KEYS inputs.
+Treat the set as private, store and dispose of it accordingly, and keep it
+out of any shared location. Optional iphone_wifi.txt (or wifi.txt) and
+authorized_keys at the stick root override packed inputs.
+Wifi1b SSH: user wifi1b, UID 0, key-only, port 2224, bind-all. This is a
+deliberate product default account, not a hidden credential, and it is NOT
+car-validated. Change owner keys deliberately; existing owner keys in
+/rw_data/wifi1b are preserved unless you supply a replacement.
+CarPlay control: the Wifi1b page's CarPlay tab switches between "Wifi1b
+wireless" and "Stock USB". Wifi1b clears the vendor wireless flag whenever
+the AP is not running, so stock USB CarPlay is restored when wireless is
+idle; the switch also stops the AP.
+BlueLink/nav: Wifi1b installs a hash-gated ConnMan drop-in that keeps ConnMan
+off rmnet_usb0 (the primary telematics data route). The modem route and
+stock USB behavior are preserved.
 Icons are best-effort; critical files and readback checks still fail closed.
 Beeps: 1 start, 2 per failed stage, 5 success, 3 finished with failures.
 Read wrapper_result.txt, run_stuff_result.txt and *_result.txt.
-combo.log and *_install.log contain the current run's detailed errors.
-Create MODE containing battery / wifi / tweaks / all / restore to select.
+combo.log and *_install.log contain the current run's errors.
+qml_readback_* contains private before/after QML snapshots for diagnosis.
+runtime_snapshot_*_status.json can be from an older running daemon; it is
+not proof that this installation succeeded. Restore logs are not exported
+during an install run.
+Use the default all install. Restore runs Wifi1b, Tweaks, Battery in reverse
+order and restores each package's pre-install state.
 Changing only MODE does NOT change the failsafe's run_stuff.sh MD5 gate:
 also change a comment in run_stuff.sh when rerunning the same pair.
-Keep owner credentials private. Optional wifi.txt/authorized_keys at the
-stick root override packed inputs. SSH activation remains manual.
 The experimental MDNSD_ROOT_ARM marker is NOT included; leave it disarmed.
 Restore uses saved app backups; do not erase backups after a failed install.
 EOF
-echo "Built $OUT (tarball SHA256=$digest); car validation pending"
+echo "Built $OUT (tarball SHA256=$digest); standalone layout; car validation pending"

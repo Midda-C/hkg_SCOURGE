@@ -1,0 +1,18 @@
+[Unit]
+# SPDX-FileCopyrightText: 2026 The SCOURGE Project contributors
+# SPDX-License-Identifier: AGPL-3.0-only
+Description=Wifi1b manager daemon (static supplicant + DHCP + SSH)
+After=Dbuslaunch.service
+ConditionPathExists=/rw_data/wifi1b/wifi1b_daemon
+
+[Service]
+Type=simple
+UMask=0077
+Environment=PATH=/bin:/sbin:/usr/bin:/usr/sbin
+ExecStart=/bin/sh -c 'exec /rw_data/wifi1b/wifi1b_daemon --port 8093 --status-file /rw_data/wifi1b/status.json >> /rw_data/wifi1b/daemon.log 2>&1'
+Restart=always
+RestartSec=3
+TimeoutStopSec=25
+
+[Install]
+WantedBy=multi-user.target

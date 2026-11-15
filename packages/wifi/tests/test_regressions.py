@@ -13,7 +13,7 @@ with tempfile.TemporaryDirectory(prefix="wifi-regressions-", dir="/tmp/opencode"
     binary = root / "regressions"
     subprocess.run(["gcc", "-O1", "-g", "-Wall", "-Wextra", "-Wno-unused-function",
                     "-Wno-unused-parameter", "-Wno-format-truncation", "-fsanitize=undefined",
-                    f'-DAPP_DIR="{root / "state"}"', str(ROOT / "tests/test_regressions.c"),
+                    f'-DAPP_DIR="{root / "state"}"', f'-DRADIO_OWNER_PATH="{root / "radio"}"', str(ROOT / "tests/test_regressions.c"),
                     "-o", str(binary)], check=True)
     (root / "connmanctl").symlink_to(binary)
     import shutil

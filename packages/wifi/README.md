@@ -197,7 +197,7 @@ priority); `ssid2`/`psk2` … `ssid4`/`psk4` add lower-priority fallbacks
 (e.g. phone hotspot first, home network second).
 
 ```ini
-ssid=iPhone
+ssid=Fixture-Phone
 psk=iphone-hotspot-password
 ssid2=MyHomeWiFi
 psk2=MyHomePassword

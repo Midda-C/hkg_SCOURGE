@@ -1,0 +1,35 @@
+# SPDX-FileCopyrightText: 2026 The SCOURGE Project contributors
+# SPDX-License-Identifier: AGPL-3.0-only
+# Curated installed-state check for combo stage skipping (MODE=all only).
+# Format: <payload path relative to the stage dir>|<absolute destination>
+#   ?prefix  = only check when the destination directory exists
+#   !prefix  = the absolute path must exist
+# The 598 tzdata zoneinfo files are covered by their version marker; they are
+# installed atomically to a new tree and activated by rename.
+payload/bin/tweaks_daemon|/rw_data/tweaks/tweaks_daemon
+payload/bin/tweaks_persist|/rw_data/tweaks/tweaks_persist
+payload/bin/wrandr|/usr/bin/wrandr
+!/usr/bin/wrandr.real
+payload/systemd/tweaks-daemon.service|/etc/systemd/system/tweaks-daemon.service
+payload/assets/tweaks/tweaks_icon_n.png|/app/share/AppHomeScreen/tweaks/tweaks_icon_n.png
+payload/assets/tweaks/tweaks_icon_d.png|/app/share/AppHomeScreen/tweaks/tweaks_icon_d.png
+payload/assets/tweaks/reboot_icon_n.png|/app/share/AppHomeScreen/tweaks/reboot_icon_n.png
+payload/assets/tweaks/reboot_icon_d.png|/app/share/AppHomeScreen/tweaks/reboot_icon_d.png
+payload/qml/AppHomeScreen/qml_eco3.0/HomeScreen/TweaksPage.qml|/app/share/AppHomeScreen/qml_eco3.0/HomeScreen/TweaksPage.qml
+payload/qml/AppHomeScreen/qml_eco3.0/HomeScreen/RebootPage.qml|/app/share/AppHomeScreen/qml_eco3.0/HomeScreen/RebootPage.qml
+payload/qml/AppHomeScreen/qml_eco3.0/component/TweaksTile.qml|/app/share/AppHomeScreen/qml_eco3.0/component/TweaksTile.qml
+payload/qml/AppHomeScreen/qml_eco3.0/component/RebootTile.qml|/app/share/AppHomeScreen/qml_eco3.0/component/RebootTile.qml
+payload/qml/AppHomeScreen/qml_eco3.0/component/TweaksSwitch.qml|/app/share/AppHomeScreen/qml_eco3.0/component/TweaksSwitch.qml
+payload/qml/AppHomeScreen/qml_eco3.0/component/TweaksButton.qml|/app/share/AppHomeScreen/qml_eco3.0/component/TweaksButton.qml
+payload/qml/AppHomeScreen/qml_eco3.0/component/TweaksZonePicker.qml|/app/share/AppHomeScreen/qml_eco3.0/component/TweaksZonePicker.qml
+?payload/qml/AppStandbyClock/qml_eco3.0/main.qml|/app/share/AppStandbyClock/qml_eco3.0/main.qml
+?payload/qml/AppStandbyClock/qml_eco3.0/Screen_AppStandbyClock_Confirm.qml|/app/share/AppStandbyClock/qml_eco3.0/Screen_AppStandbyClock_Confirm.qml
+?payload/qml/AppStandbyClock/qml_eco3.0/Screen_AppStandbyClock_Confirm_Profile.qml|/app/share/AppStandbyClock/qml_eco3.0/Screen_AppStandbyClock_Confirm_Profile.qml
+?payload/qml/AppStandbyClock/new_qml/main.qml|/app/share/AppStandbyClock/new_qml/main.qml
+?payload/qml/AppStandbyClock/new_qml/Screen_AppStandbyClock_Confirm.qml|/app/share/AppStandbyClock/new_qml/Screen_AppStandbyClock_Confirm.qml
+?payload/qml/AppStandbyClock/new_qml/Screen_AppStandbyClock_Confirm_Profile.qml|/app/share/AppStandbyClock/new_qml/Screen_AppStandbyClock_Confirm_Profile.qml
+?payload/qml/AppStandbyClock/qml_genesis/main.qml|/app/share/AppStandbyClock/qml_genesis/main.qml
+?payload/qml/AppStandbyClock/qml_genesis/Screen_AppStandbyClock_Confirm.qml|/app/share/AppStandbyClock/qml_genesis/Screen_AppStandbyClock_Confirm.qml
+?payload/qml/AppStandbyClock/qml_genesis/Screen_AppStandbyClock_Confirm_Profile.qml|/app/share/AppStandbyClock/qml_genesis/Screen_AppStandbyClock_Confirm_Profile.qml
+payload/tzdata/version.txt|/rw_data/tweaks/tzdata_version
+payload/tzdata/zones.txt|/rw_data/tweaks/zones.txt

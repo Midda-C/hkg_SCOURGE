@@ -17,6 +17,9 @@ from __future__ import annotations
 import os
 import re
 import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'common'))
+from qml_layout import normalize
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -294,6 +297,10 @@ def patch_advanced(src: str) -> str:
 """
         last = text.rstrip().rfind("}")
         text = text[:last] + page + text[last:]
+    # Legacy overlay-only Battery variants may contain a page-1-only WiFi
+    # tile. Current tile-layout variants always have all three instances.
+    if all(f'id: wifiTile{p}' in text for p in (1, 2, 3)):
+        text = normalize(text)
     return text
 
 

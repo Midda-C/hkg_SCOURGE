@@ -39,6 +39,13 @@ feedback. Toned-down stock tiles do no-beep-no-click — but they *look* disable
 - [ ] Watch `onDrivingRestrictionChanged` and abort in-progress flows (text entry, toggles) when it flips true
 - [ ] For a global, above-any-app warning use a SystemPopup (deployment-modes.md §E) instead
 
+**Documented exception:** the Tweaks **Reboot** app deliberately does not use
+`drivingRestriction`. It warns that navigation, media and camera views will be
+unavailable for about a minute, but allows the restart while driving or in
+gear so the owner can recover a misbehaving head unit without shutting the car
+down. Do not "fix" this into a parked gate without an explicit product
+decision; the update-process guard is separate and remains.
+
 ---
 
 ## 2. Edit mode (rearrange / home-layout / widget editing)

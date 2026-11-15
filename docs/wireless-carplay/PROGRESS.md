@@ -1,0 +1,197 @@
+# Wireless CarPlay implementation checkpoints
+
+## Resume here
+
+Branch: `wireless-carplay-integration`.
+
+Goal: complete a wireless bootstrap compatible with the pinned LIVI reference,
+while retaining the OEM projection/media engine and unchanged wired CarPlay.
+This is work in progress; **no end-to-end iPhone or vehicle validation yet**.
+
+The original worktree is frozen in the staged baseline tree
+`a1243f0d913f9948320a2612373d6e8e6abb5f4e`, based on `01965fa`.
+Baseline committed as `4279a70` after the independent DeepSeek review passed.
+The two initial blocking findings were corrected; see BASELINE-ISSUES.md for
+pre-existing WIP that still gates release. No implementation files were included
+in that preservation commit.
+
+Owner policy update: one `opencode-go/deepseek-v4.1-flash#max` review per commit;
+remove the previous two-model requirement. GLM was unavailable (provider budget).
+
+## Milestones
+
+| Checkpoint | Work | Status |
+|---|---|---|
+| C0 | Preserve existing WIP; update review policy; dedicated branch | Complete: `4279a70` |
+| C1 | Bounded wire codec, identification and bootstrap state-machine tests | Initial review FAIL; corrections and regression coverage in progress |
+| C2 | AP IPv6/readiness/firewall and current-network snapshot | Pending |
+| C3 | Recover and verify OEM Bluetooth RX/TX/listener and MFi/identity ABI | Static research complete for SPP; live bus/transport proof still pending |
+| C4 | Integrate wireless transport and authenticated bootstrap | Pending |
+| C5 | Connect existing OEM discovery/receiver and lifecycle observations | Pending |
+| C6 | Installer/restore, regression gates, reviewed experimental V20 pair | Pending |
+| C7 | Parked vehicle/iPhone validation, explicitly owner-authorized | Not authorized |
+
+At each checkpoint record: exact commit/tree, commands and results, incomplete
+coverage, and the next action. Never equate a mocked exchange with vehicle
+validation. Update this document before ending a work session.
+
+## Non-negotiable boundaries
+
+- Country GB; preserve owner credentials/keys and station-network priority.
+- Preserve stock USB, modem routing, shared micom helper, Battery, charge door,
+  cluster, Tweaks and approved Reboot behavior.
+- Standalone V20 must not reinstall WiFi or require migration. Retain existing
+  released bundles; do not publish an experimental build as a verified fix.
+- First-action bounded cleanup remains first. Stop owned radios in installers.
+- Firmware-specific binary modifications require exact hash and byte gates.
+- No OEM binaries, copied decompilation, credentials or fetched third-party
+  source in Git. Fetched dependencies live pinned under ignored `third_party/`.
+- No global radio/Bluetooth replacement, guessed ABI, host execution of OEM
+  binaries, unconditional launcher-wide preload or authentication bypass.
+
+## Audit baseline and evidence
+
+Reference LIVI tree: `64a05b68358db52ed887169143afd5944fd6f1f7`.
+Principal reference modules: `iap2-csm`, `iap2-link`, `livi-helper-stack` and
+`livi-wifi`. References supply protocol facts and test expectations, not a
+claim of formal certification. Preserve required attribution if code is reused.
+
+Exact owner-firmware SHA256 identities:
+
+| Artifact | SHA256 |
+|---|---|
+| AppProjection | `8f0096bcc0734d4c9766c15bac54c42f302ed7057182c2573b5ac543913960e3` |
+| iAP2Service-2.0 | `38419131df82ec7e3c3b29a68ecc1a078c7f0b403051f137fe9f46f82b99f26e` |
+| vbtd-63 | `c56b68fdd35b16b95688ab54a48ffb9f18034d925c057e86f8b9fe304f8b26b9` |
+| vbtd-51 | `55e21d077082e97f56fb113a1d3b216c0f2e63aa02fc4cd754a6593bc6cec9e0` |
+| libiAP2AppFramework-2.0.so | `d4d0558c9c53f02ee14024c081ccd83a02ca29404ef400131e2951f68a388120` |
+| libCoreUtils.so | `9104e2c16ee27e647fac090ee7f3aa4cc686b8caaea1dc24763af2950c0ebfae` |
+| libAirPlay.so | `ef9e69e3b3388d4a7a1d185827c710af25b8ee99d406c60c664a9609b00aada0` |
+
+Cached Ghidra addresses are ELF virtual addresses plus `0x100000`. Do not mix
+those coordinates with ELF offsets or ASLR runtime addresses.
+
+### Confirmed static gaps
+
+- Active Wifi1b backend is `wifi1b_backend.inc`, not disabled ConnMan code.
+- vbtd-63 `SetSppListen` (ELF `0x3b5630`) is empty; valid-event
+  `VBTSppReceivedDataCfm` (`0x491c90`) returns without forwarding (assembly).
+  Other possible SPP paths still require investigation.
+- Normal identification (`iAP2Service` ELF `0x207fa`) never selects Bluetooth
+  builder selector 4 or wireless builder selector 9. Dormant Bluetooth builder
+  serializes its MAC through a string helper; verify six-byte wire encoding.
+- Main iAP2 receive dispatcher (`0x13afa`) has no `0x4300/0x4e0d/0x4e0e`
+  branches. Existing StartCarPlay API emits internal IPC `0x2aff`, not proven
+  wireless wire message `0x4301`.
+- AppProjection delegate registered at call `0x11a130`: table at object+`0x30`,
+  callback+`0xf8` remains null. Library handler (`0x15773`) silently skips it.
+- Credential response export (`0x15157`) has a connection-context argument
+  passed by value. AppProjection at `0x110f77..0x110f93` pushes six qwords from
+  the context at object+`0x18` for an existing framework call. Recover complete
+  context semantics before calling any serializer.
+- AP readiness lacks IPv6 checks; address flush is unqualified. Latest station
+  capture does have a link-local address, so absence is not a confirmed cause.
+- Owned IPv6 firewall omits stock UDP 5020 and TCP 6030; IPv4 AP chain currently
+  accepts all traffic on wlan0. Do not accidentally broaden remote control APIs.
+
+### Reuse rather than duplicate
+
+OEM CarPlayAppFramework starts its CarPlayControlClient; libAirPlay browses
+`_carplay-ctrl._tcp` and implements `/ctrl-int/1/connect`, including scoped
+addresses and receiver identity. Verify activation/binding on wlan0 first.
+
+libCoreUtils exports existing MFi certificate/signature providers and pairing
+identity APIs. Its provider uses the existing chip and synchronization. MFi4
+is not automatically mandatory. Never synthesize successful authentication.
+
+### Protocol invariants
+
+- iAP accessory-server UUID ends `caff`; phone-client UUID ends `cafe`.
+- CarPlay service UUID is `ec884348-cd41-40a2-9727-575d50bf1fd3`.
+- `0x5703` security 2 is not the `0x4301` enum: omit security for WPA2 in the
+  latter, and use 3/4 only for negotiated WPA3 transition/only.
+- Identification, discovery and session-start identity fields must agree;
+  Bluetooth MAC, AP MAC and pairing identifier have distinct roles.
+- Session-start uses the network actually on air and a usable scoped endpoint.
+- AP, pairing, authentication, session negotiation and active projection are
+  separate states, with generation-bound teardown/reconnect handling.
+
+## Acceptance gates
+
+1. Wire roundtrips and fixed external expectations; malformed lengths/options,
+   fragmentation, coalescing, checksum, sequence wrap and bounded retries.
+2. Authentication failures, identification rejection, early/out-of-order
+   availability, AP failure/channel fallback, transport loss and cancellation.
+3. Namespace network tests: IPv4/IPv6, link-local retention, firewall packets,
+   DHCP renewal/rebind and owned-state cleanup; no modem/global changes.
+4. Fake OEM ABI tests and hash-gate refusals before any instrumented guest run.
+5. Existing package/Qt/installer/combo tests and preservation/restore checks.
+6. Real parked-iPhone trace: transport → identification → authentication →
+   credentials/start → IP/discovery → pair-verify → SETUP/RECORD → media/input.
+7. Reconnect, long session, ignition restart, USB insertion/removal, calls/Siri,
+   credential redaction and bounded disk/log growth.
+
+## C1 worktree verification
+
+New source modules: `packages/wifi1b/src/carplay/cp_wire.*`, `cp_bootstrap.*`,
+and `cp_link.*`. They are not activated by the installer or existing daemon.
+
+Commands repeated by the main agent:
+
+```
+python3 packages/wifi1b/tests/test_carplay_bootstrap.py
+python3 packages/wifi1b/tests/test_carplay_link.py
+```
+
+Both pass. Bootstrap uses an independent Python wire oracle. Link tests include
+strict normal and ASan/UBSan builds, fixed SYN/ACK vectors, fragmentation,
+backpressure, sequence wrap, retransmission, reset and negotiation limits.
+Agent-reported additional compiler/fuzz checks are useful but not a substitute
+for the required independent review or real transport validation.
+
+Next: independently review these new modules; integrate a serialized caller
+with CSM reassembly, generation invalidation and backpressure. Existing code
+deliberately has no fake production authentication provider.
+
+Initial independent C1 review **FAIL**, tree
+`e7515d46d08892f859167b0f88c2723b519ac40a` (do not commit this tree):
+identification failure could be resurrected; a late malformed rejection left
+authentication inconsistent; a false EAP flag was encoded as present/true;
+leading IPv6 compression could evade link-local validation; unknown optional
+TLVs were rejected; coalesced ACK bursts could exhaust the link output queue;
+and session-id zero caused a sequence gap. Corrections must add regression
+tests, re-run the exact index snapshot and obtain independent PASS. Passing
+the original unit tests was insufficient to establish these semantics.
+
+Additional review follow-ups: explicit live Bluetooth link profile, bounded
+post-offer policy/receiver timeout, accurate session-ID direction claims and
+SYN retransmission ACKs, documented local certificate/frame bounds, explicit
+policy for absent availability, and automatic bootstrap sanitizer coverage.
+
+## Later worktree components (outside the C1 reviewed index)
+
+`cp_spp_socket.*` adds an unactivated, root-only Unix datagram receiver for the
+build-only Bluetooth RX hook. It checks kernel sender credentials, complete
+bounded datagram framing and socket-directory ownership; it does not establish
+Bluetooth connection lifecycle, authentication or projection on its own.
+
+```
+python3 packages/wifi1b/tests/test_carplay_spp_socket.py
+```
+
+Main-agent result: strict production compilation and normal/ASan/UBSan fixture
+tests PASS, including a synthetic event through the real first-party hook to
+the credential-checked receive decoder. Fixtures use the current uid and
+private temporary paths through a
+compile-time-only testing interface. Root-owned production binding and rejection
+of an actual different-uid sender still need privileged guest validation.
+
+Parallel work remains pending review: AP readiness/firewall, hash-gated RX hook,
+OEM MFi adapter/helper, protocol-session wrapper, standalone cleanup/restore and
+OEM receiver integration research. Do not activate or publish these components
+merely because their individual mocked tests pass.
+
+The SPP author completed the build-only hook/builder and exact vbtd-63 pins.
+Author-reported positive build/readback changes only the pinned function span;
+no OEM execution or installer activation. An independent review now covers the
+hook, builder, public datagram contract, root socket receiver and their tests.

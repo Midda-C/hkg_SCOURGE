@@ -21,6 +21,7 @@
  */
 
 #define _GNU_SOURCE
+#include <sys/file.h>
 #include <arpa/inet.h>
 #include <ctype.h>
 #include <dirent.h>
@@ -44,6 +45,7 @@
 #include <sys/xattr.h>
 #include <time.h>
 #include <unistd.h>
+#include "../../common/radio_owner.h"
 
 #ifndef APP_DIR
 #define APP_DIR        "/rw_data/wifi"
@@ -3518,6 +3520,20 @@ static void stop_all(void)
 
 static const char *mode_name(void);
 
+/* Nobody can be using the radio unless it exists and is administratively
+ * up. The old check demanded an AP-absent probe plus a ConnMan power state;
+ * both are unprovable on a downed interface, so a genuine Off could never be
+ * confirmed and the radio reservation stuck forever (observed on-car). */
+static bool iface_confirmed_down(void)
+{
+    if (!iface_present()) return true;
+    char flags[64] = "", *end = NULL;
+    if (read_file("/sys/class/net/wlan0/flags", flags, sizeof(flags)) <= 0)
+        return false;
+    unsigned long value = strtoul(flags, &end, 0);
+    return end != flags && !*trim(end) && !(value & 1);  /* IFF_UP clear */
+}
+
 /* Runs in the apply child.  All slow network work lives here so the HTTP
  * loop and status polling stay responsive.  The child never writes the
  * config: it reports observed adjustments (band fallback, chosen SSH port)
@@ -3525,16 +3541,22 @@ static const char *mode_name(void);
  * or stale child cannot save a config it did not apply. */
 static bool apply_mode_work(bool pair)
 {
+    bool active = g_cfg.wlan_on && g_cfg.mode != MODE_OFF;
+    int ownership = radio_begin("wifi_daemon", active);
+    if (ownership <= 0) {
+        set_msg("%s", ownership == 0 ? "WLAN off; radio left untouched" :
+                "Radio busy/reserved; turn the owning WiFi app Off first");
+        return ownership == 0;
+    }
     if (!g_cfg.wlan_on || g_cfg.mode == MODE_OFF) {
         stop_oem_wifi();
         stop_all();
         bt_pair_stop();
         ap_probe_t p;
         ap_probe(&p);
-        bool off = !wpa_process_alive() && !ssh_running() && p.state == AP_ABSENT &&
-                   (!iface_present() || wifi_power_state() == 0);
+        bool off = !wpa_process_alive() && !ssh_running() && iface_confirmed_down();
         set_msg("%s", off ? "WLAN off" : "WLAN-off cleanup could not be confirmed; recovery will retry");
-        return off;
+        return off && radio_release();
     }
 
     if (g_cfg.mode == MODE_CLIENT) {
@@ -3732,7 +3754,11 @@ static void start_pending_work(void)
         if (test_work) ok = test_work(g_work_kind, g_current_pair);
         else
 #endif
-        if (g_work_kind == WORK_MODE) ok = apply_mode_work(g_current_pair);
+        if (g_work_kind != WORK_MODE && g_work_kind != WORK_DUMP &&
+            radio_begin("wifi_daemon", g_work_kind == WORK_SCAN || (g_cfg.wlan_on && g_cfg.mode != MODE_OFF)) != 1) {
+            set_msg("Radio busy/reserved; turn the owning WiFi app Off first");
+        }
+        else if (g_work_kind == WORK_MODE) ok = apply_mode_work(g_current_pair);
         else if (g_work_kind == WORK_SSH) {
             if (g_pairing_stop_requested) bt_pair_stop();
             ssh_stop();
@@ -3837,7 +3863,11 @@ static void watchdog(void)
 
     if (g_apply_pid > 0 || g_work_pending) return;
     if (!g_cfg.wlan_on || g_cfg.mode == MODE_OFF) {
-        if ((oem_respawned || wpa_process_alive() || g_observed.ap.role == 1 || g_observed.ssh_ours) &&
+        /* A retained reservation with configured Off is stale (the release
+         * only happens on verified cleanup): keep retrying until it clears,
+         * even when nothing else is observed to be alive. */
+        if ((oem_respawned || wpa_process_alive() || g_observed.ap.role == 1 ||
+             g_observed.ssh_ours || radio_owner_is("wifi_daemon")) &&
             now - g_last_mode_ms > (g_network_failed ? 60000 : 15000)) apply_mode(false);
         return;
     }
@@ -4020,6 +4050,8 @@ static void build_status(char *out, size_t n)
     char imp_e[512], cps_e[256], cpsk_e[256], bt_e[128], id_e[128];
     char client_e[256], pair_e[512], nets_e[640];
     char nets_raw[512];
+    char radio_owner[32];
+    if (!radio_record_name(radio_owner, sizeof(radio_owner))) radio_owner[0] = 0;
     json_escape(ssid_e, sizeof(ssid_e), o->ssid);
     json_escape(ip_e, sizeof(ip_e), o->ip);
     json_escape(ap_e, sizeof(ap_e), o->ap_ssid);
@@ -4032,7 +4064,7 @@ static void build_status(char *out, size_t n)
     json_escape(client_e, sizeof(client_e), g_cfg.ssid);
     json_escape(pair_e, sizeof(pair_e), g_pair_msg);
     /* Priority-ordered client network list for the UI, e.g.
-     * "iPhone|House LANnister" (never the passphrases). */
+     * "PhoneFixture|HomeFixture" (never the passphrases). */
     {
         size_t at = 0;
         for (int i = 0; i < WIFI_NETS_MAX; i++) {
@@ -4061,6 +4093,7 @@ static void build_status(char *out, size_t n)
              "\"wlan_on\":%s,"
              "\"driver\":%s,"
              "\"iface\":\"wlan0\","
+             "\"radio_owner\":\"%s\","
              "\"ip\":\"%s\","
              "\"ssid\":\"%s\","
              "\"signal\":%d,"
@@ -4104,6 +4137,7 @@ static void build_status(char *out, size_t n)
              g_home_monitor ? "true" : "false",
              g_cfg.wlan_on ? "true" : "false",
              o->driver ? "true" : "false",
+             radio_owner[0] ? radio_owner : "",
              ip_e, ssid_e, o->signal,
              o->ap_on ? "true" : "false", o->ap.role == 1 ? "true" : "false",
              o->ap.state, fresh ? o->ap.tether : -1, ap_e, o->clients,
@@ -4145,6 +4179,10 @@ static void write_status(void);
 
 static void scan_networks(char *out, size_t n)
 {
+    if (radio_begin("wifi_daemon", true) != 1) {
+        snprintf(out, n, "{\"ok\":false,\"error\":\"Radio reserved by the other WiFi app; turn it Off first\"}\n");
+        return;
+    }
     /* Validate before canceling: a scan request while the CarPlay AP is up
      * must not kill the running apply as a side effect.  Scanning must also
      * not change the configured mode; if the stack was off, bring it up for
@@ -4170,9 +4208,9 @@ static void scan_networks(char *out, size_t n)
     write_status();
     if (!ensure_wifi_ready()) {
         if (was_off) {
-            stop_all();
             g_cfg.wlan_on = false;
             g_cfg.mode = MODE_OFF;
+            apply_mode_work(false);
         }
         char msg_e[512];
         json_escape(msg_e, sizeof(msg_e), g_last_msg);
@@ -4277,9 +4315,9 @@ static void scan_networks(char *out, size_t n)
         set_msg("scan: no networks found");
     if (was_off) {
         /* Restore the configured off state; the scan was temporary. */
-        stop_all();
         g_cfg.wlan_on = false;
         g_cfg.mode = MODE_OFF;
+        apply_mode_work(false);
     }
     write_status();
 }
@@ -4951,6 +4989,13 @@ int main(int argc, char **argv)
         unlink(BT_STATE);
     }
     config_load();
+    /* Shared wlan0 contract: our peer is Wifi1b. Must run before any worker. */
+    radio_configure("wifi1b_daemon", "/rw_data/wifi1b/status.json");
+    int instance_fd = -1;
+    if (!one_shot) {
+        instance_fd = radio_instance_lock(APP_DIR "/daemon.lock");
+        if (instance_fd < 0) { fprintf(stderr, "WiFi daemon already running or lock unavailable\n"); return 1; }
+    }
     if (g_config_migrated && !pure_query)
         config_save();
     if (!pure_query) {
@@ -5008,6 +5053,7 @@ int main(int argc, char **argv)
             return ok ? 0 : 1;
         }
         if (!strcmp(one_shot, "ssh") && one_ssh) {
+            if (radio_begin("wifi_daemon", g_cfg.wlan_on && g_cfg.mode != MODE_OFF) != 1) return 1;
             g_cfg.ssh_enabled = !strcmp(one_ssh, "on");
             ssh_stop();
             if (g_cfg.ssh_enabled) ssh_start();
@@ -5137,7 +5183,8 @@ int main(int argc, char **argv)
     if (cleanup == 0) {
         setpgid(0, 0); g_in_child = true; g_stop = 0;
         close_child_fds(-1);
-        stop_all(); bt_pair_stop();
+        g_cfg.wlan_on = false; g_cfg.mode = MODE_OFF;
+        apply_mode_work(false);
         _exit(0);
     }
     if (cleanup > 0) {

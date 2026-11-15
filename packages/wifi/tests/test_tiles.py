@@ -37,9 +37,9 @@ def main() -> int:
     require("id: batteryPage" in combined, "Battery page is missing from the combined base")
     require("firstEmptySlot(1)" in combined, "WiFi should follow Hello when Battery is a page")
     require("firstEmptySlot(0)" in combined, "Hello should be first custom tile")
-    require("slot !== null && slot.page === 0" in combined, "page 1 slot check missing")
-    require("slot !== null && slot.page === 1" in combined, "page 2 slot check missing")
-    require("slot !== null && slot.page === 2" in combined, "page 3 slot check missing")
+    require("slot !== null && slot !== undefined && slot.page === 0" in combined, "page 1 slot check missing")
+    require("slot !== null && slot !== undefined && slot.page === 1" in combined, "page 2 slot check missing")
+    require("slot !== null && slot !== undefined && slot.page === 2" in combined, "page 3 slot check missing")
     require("totalPageCount: totalPagesNormalMode + 2" in combined,
             "WiFi must not add a whole page (Battery page count is +2)")
     require("color: \"#FFFFFF\"" not in combined, "no hardcoded white text in generated QML")

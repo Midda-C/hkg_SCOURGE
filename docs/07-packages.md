@@ -28,7 +28,9 @@ packages under active development, not finished products.**
 | WiFi | WLAN client + AP modes on the onboard Broadcom radio; USB detection scans real mount points (no fstype whitelist — the car's exFAT reports as `texfat`, docs/02); ConnMan agent-flow client connect; command forms verified against the shipped binaries | WIP — VM-validated on the vendor kernel/Qt; on-car retest pending |
 | WiFi | SSH server (static dropbear, `car`/`electric`, port 2222) + `wifi.txt`/`authorized_keys` import; daemon/dropbear carry the SMACK floor label | WIP — VM-validated; on-car retest pending |
 | WiFi | Wireless CarPlay AP (ConnMan tether with `--appinfo 1` + CarPlay IE + iAP2/mdns); Home/Star closes the overlay via the session-bus `home_seq` watcher | VM-validated up to the radio; needs on-car iPhone validation |
-| All | Install/restore/diag through the failsafe, base detection, coexistence | Proven pattern (combo v4 flow: install order battery → wifi → tweaks, reverse restore) |
+| Wifi1b | Standalone or side-by-side CarPlay AP/client app: static `wpa_supplicant`, own DHCP server/client, key-only dropbear on 2224, separate `/rw_data/wifi1b`, service and HTTP :8093; additive `Wifi1bPage`/`Wifi1bTile` on the canonical Battery/Tweaks/Reboot base | WIP — offline-tested; no car/iPhone validation |
+| Wifi1b | Wireless CarPlay research (C1–C3): bounded wire codec, bootstrap state machine, SPP RX hook and native/OEM auth probes | WIP — unit-tested source only; not activated by the installer, live ABI pending |
+| All | Install/restore/diag through the failsafe, base detection, coexistence | Proven pattern (combo v4 flow: install order battery → wifi → tweaks, reverse restore; Wifi1b standalone is battery → tweaks → wifi1b) |
 
 Per-package detail: `packages/<pkg>/README.md` + `SPEC.md` + `docs/`.
 

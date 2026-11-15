@@ -353,10 +353,12 @@ int main(int argc, char **argv)
     success_request = 0; ap_active = false;
     assert(fw_open(2224)); fw_close(2224); carplay_fw_open(); carplay_fw_close();
     g_cfg.mode = MODE_OFF; g_cfg.wlan_on = false;
+    assert(radio_begin("wifi_daemon", true) == 1); /* teardown only our reservation */
     assert(!apply_mode_work(false)); /* mocked radio still alive: do not claim Off */
     test_owned_wpa = 0; powered = false;
+    test_iface = 0; /* absent interface verifies down: Off must release the radio */
     assert(apply_mode_work(false));
-    test_owned_wpa = 1; powered = true;
+    test_owned_wpa = 1; test_iface = 1; powered = true;
     test_ap_states();
 
     agent_state_t agent = {0};

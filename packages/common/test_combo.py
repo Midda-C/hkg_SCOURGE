@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
 # SPDX-FileCopyrightText: 2026 The SCOURGE Project contributors
 # SPDX-License-Identifier: AGPL-3.0-only
-"""Real composer/wrapper, stub app stages; never execute vehicle installers."""
+"""Real composer/wrapper, stub app stages; never execute vehicle installers.
+
+Also exercises the unchanged-stage skip: a rebuilt bundle must leave packages
+whose packaged bytes and installed files/services/UI are all unchanged alone,
+and must reinstall the moment anything really differs.
+"""
 import hashlib
 import os
 from pathlib import Path
@@ -9,8 +14,18 @@ import shutil
 import subprocess
 import tarfile
 import tempfile
+from qml_layout import HELPERS
 
 PACKAGES = Path(__file__).resolve().parents[1]
+UNITS = ("battery-daemon.service", "wifi-daemon.service",
+         "tweaks-daemon.service", "wifi1b-daemon.service")
+QML = ("HomeScreen/QHMI_HomeScreenMain_Advanced.qml",
+       "HomeScreen/QHMI_HomeScreenMain_Wide.qml",
+       "HomeScreen/Screen_HomeScreen_AllMenus.qml",
+       "HomeScreen/Screen_HomeScreen_Submenu_Setup.qml",
+       "component/QCustomizedMenuListAllowEmpty.qml",
+       "component/common/Q_ThemeImage.qml")
+
 with tempfile.TemporaryDirectory(prefix="combo-regression-", dir="/tmp/opencode") as d:
     root = Path(d)
     packages = root / "packages"
@@ -18,6 +33,8 @@ with tempfile.TemporaryDirectory(prefix="combo-regression-", dir="/tmp/opencode"
     shutil.copyfile(PACKAGES / "compose.sh", packages / "compose.sh")
     (packages / "common").mkdir()
     shutil.copyfile(PACKAGES / "common/check_layout.py", packages / "common/check_layout.py")
+    shutil.copyfile(PACKAGES / "common/install_io.sh", packages / "common/install_io.sh")
+    shutil.copyfile(PACKAGES / "common/runtime_cleanup.sh", packages / "common/runtime_cleanup.sh")
     bin_dir = root / "bin"
     bin_dir.mkdir()
     for name in ("sleep", "chsmack", "chown", "sync"):
@@ -27,28 +44,47 @@ with tempfile.TemporaryDirectory(prefix="combo-regression-", dir="/tmp/opencode"
     beep = bin_dir / "dbus-send"
     beep.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$BEEPS"\nexit 0\n')
     beep.chmod(0o755)
+    active_units = root / "active-units"
+    active_units.write_text("".join(u + "\n" for u in UNITS))
+    systemctl = bin_dir / "systemctl"
+    systemctl.write_text('''#!/bin/sh
+unit=""
+for a in "$@"; do case "$a" in --*) ;; *) unit=$a ;; esac; done
+grep -qx "$unit" "$ACTIVE_UNITS" 2>/dev/null && exit 0
+exit 3
+''')
+    systemctl.chmod(0o755)
     (root / "runtime/combo/bin").mkdir(parents=True)
     (root / "runtime/combo/bin/dbus-send").symlink_to(beep)
+
+    # Shared home-screen QML fixture (the skip check hashes exactly these).
+    qml_dir = root / "qml"
+    for name in QML:
+        target = qml_dir / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(f"// fixture {name}\n")
+    ledger = root / "ledger"
+
     # Construct minimal fixture payloads with production manifest verification.
-    for name in ("battery", "wifi", "tweaks"):
+    for name in ("battery", "wifi", "tweaks", "wifi1b"):
         out = packages / name / "out/usb"
         (out / "payload").mkdir(parents=True)
         (out / "backup").mkdir()
         (out / "payload/marker").write_text(name)
+        (packages / name / "skip.map").write_text(
+            f"payload/marker|{root / 'installed' / name / 'file'}\n")
+        (packages / name / "skip.services").write_text(f"{name}-daemon.service\n")
         if name == "tweaks":
             qml = out / "payload/qml/AppHomeScreen/qml_eco3.0/HomeScreen/QHMI_HomeScreenMain_Advanced.battery_tile_wifi.qml"
             qml.parent.mkdir(parents=True)
-            # The composer gate requires the reactive V2 layout; this
-            # fixture mirrors the packed Tweaks artifact.
-            text = ("// SCOURGE_LAYOUT_V2\n"
-                    "property bool customLayoutReady: false\n")
+            text = HELPERS
             for page in (1, 2, 3):
                 text += "QMenuPageNoDrag{ }\n"
                 for index, tile in enumerate(("battery", "wifi", "tweaks", "reboot")):
                     text += f'''{tile.capitalize()}Tile {{
  id: {tile}Tile{page}
- property var slot: root.firstEmptySlot({index})
- visible: slot !== null && slot !== undefined && slot.page === {page - 1}
+  property var slot: root.firstEmptySlot({index})
+  visible: slot !== null && slot !== undefined && slot.page === {page - 1}
  x: slot.index
  y: slot.index
  width: k_itemWidth
@@ -56,11 +92,24 @@ with tempfile.TemporaryDirectory(prefix="combo-regression-", dir="/tmp/opencode"
 }}
 '''
             qml.write_text(text)
-        for script, mode in (("run_stuff.sh", "install"), ("run_stuff_restore.sh", "restore")):
-            (out / script).write_text(f'''#!/bin/sh
-echo '{name}:{mode}' >> "$ORDER"
-if [ '{name}:{mode}' = wifi:install ]; then
+        dest = root / "installed" / name / "file"
+        script = f'''#!/bin/sh
+echo '{name}:MODE' >> "$ORDER"
+if [ '{name}:MODE' = 'wifi:install' ]; then
     test -f "$USB_DIR/wifi.txt" || exit 7
+fi
+if [ '{name}' = wifi ] && [ MODE = install ]; then
+    f="$TEST_QML_DIR/HomeScreen/QHMI_HomeScreenMain_Advanced.qml"
+    rev="WIFI_REV_$(cat "$USB_DIR/payload/marker")"
+    grep -q "$rev" "$f" 2>/dev/null || echo "// $rev" >> "$f"
+fi
+if [ '{name}' = tweaks ] && [ MODE = install ]; then
+    f="$TEST_QML_DIR/HomeScreen/Screen_HomeScreen_AllMenus.qml"
+    grep -q 'TWEAKS_MARK' "$f" 2>/dev/null || echo "// TWEAKS_MARK" >> "$f"
+fi
+if [ MODE = install ]; then
+    mkdir -p "{dest.parent}"
+    cp -f "$USB_DIR/payload/marker" "{dest}"
 fi
 status=OK
 [ "${{FAIL_STAGE:-}}" != '{name}' ] || status=FAIL
@@ -68,16 +117,36 @@ status=OK
 [ -z "${{FAIL_EARLY:-}}" ] || exit 9
 printf 'STUB_{name}\\nstatus=%s\\n' "$status" > "$USB_DIR/run_stuff_result.txt"
 exit 0
-''')
+'''
+        for target, mode in (("run_stuff.sh", "install"), ("run_stuff_restore.sh", "restore")):
+            (out / target).write_text(script.replace("MODE", mode))
         (out / "manifest.md5").write_text("".join(
             f"{hashlib.md5(p.read_bytes()).hexdigest()}  {p.relative_to(out)}\n"
             for p in sorted((out / "payload").rglob("*")) if p.is_file()))
     tree = root / "tree"
     tree.mkdir()
+    (root / "proc").mkdir()
+    (root / "run/wifi1b").mkdir(parents=True)
+    (root / "run/wifi").mkdir(parents=True)
+    (root / "etc/systemd/system").mkdir(parents=True)
     env = dict(os.environ, SCOURGE_SKIP_BUILD="1", COMBO_RW_DIR=str(root / "runtime/combo"),
                COMBO_RUNTIME_ROOT=str(root / "runtime"), COMBO_PATH=str(bin_dir) + ":/usr/bin:/bin",
-               BEEPS=str(root / "beeps"), ORDER=str(root / "order"))
-    subprocess.run(["sh", str(packages / "compose.sh"), str(tree), "tweaks,wifi,battery"], env=env, check=True, capture_output=True)
+               BEEPS=str(root / "beeps"), ORDER=str(root / "order"),
+               ACTIVE_UNITS=str(active_units), TEST_QML_DIR=str(qml_dir),
+               COMBO_QML_DIR=str(qml_dir), COMBO_LEDGER_DIR=str(ledger),
+               COMBO_RUN_DIR=str(root / "run"),
+               WIFI1B_SERVICE=str(root / "etc/systemd/system/wifi1b-daemon.service"),
+               WIFI_SERVICE=str(root / "etc/systemd/system/wifi-daemon.service"),
+               CLEANUP_WIFI_SERVICE=str(root / "etc/systemd/system/wifi-daemon.service"),
+               CLEANUP_PROC_ROOT=str(root / "proc"),
+               md5sum=shutil.which("md5sum") or "md5sum")
+    subprocess.run(["sh", str(packages / "compose.sh"), str(tree), "wifi1b,tweaks,wifi,battery"], env=env, check=True, capture_output=True)
+    assert 'STOPS_WIFI="1"' in (tree / "run_stuff.sh").read_text()
+    # A battery,tweaks-only bundle must leave a working WiFi app alone.
+    tree_bt = root / "tree-bt"
+    tree_bt.mkdir()
+    subprocess.run(["sh", str(packages / "compose.sh"), str(tree_bt), "battery,tweaks"], env=env, check=True, capture_output=True)
+    assert 'STOPS_WIFI="0"' in (tree_bt / "run_stuff.sh").read_text()
     (tree / "wifi.txt").write_text("ssid=Fixture\npsk=fixture-key\n")
     stick = root / "stick"
     stick.mkdir()
@@ -86,38 +155,151 @@ exit 0
         for path in tree.iterdir():
             tar.add(path, arcname="./" + path.name)
     digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+    cleanup_source = packages / "common/runtime_cleanup.sh"
+    shutil.copyfile(cleanup_source, stick / "runtime_cleanup.sh")
+    cleanup_sha = hashlib.sha256((stick / "runtime_cleanup.sh").read_bytes()).hexdigest()
     wrapper = stick / "run_stuff.sh"
-    wrapper.write_text((PACKAGES / "flat_wrapper.sh").read_text().replace("@TARBALL_SHA256@", digest))
+    wrapper.write_text((PACKAGES / "flat_wrapper.sh").read_text()
+                       .replace("@TARBALL_SHA256@", digest)
+                       .replace("@RUNTIME_CLEANUP_SHA256@", cleanup_sha))
     env["USB_DIR"] = str(stick)
-    subprocess.run(["sh", str(wrapper)], env=env, check=True, capture_output=True)
-    assert (root / "order").read_text().splitlines() == ["battery:install", "wifi:install", "tweaks:install"]
-    for name in ("battery", "wifi", "tweaks"):
-        assert f"STUB_{name}" in (stick / f"{name}_result.txt").read_text()
+    (root / 'runtime/battery').mkdir()
+    (root / 'runtime/battery/result.txt').write_text('status=FAIL\nerror=historical\n')
+    (root / 'runtime/battery/restore.log').write_text('historical restore\n')
+    (root / 'runtime/battery/status.json').write_text('{"ok":true}\n')
+
+    def run(extra=None):
+        beeps_path = root / "beeps"
+        before = len(beeps_path.read_text().splitlines()) if beeps_path.exists() else 0
+        result = subprocess.run(["sh", str(wrapper)], env=dict(env, **(extra or {})),
+                                capture_output=True, text=True)
+        after = beeps_path.read_text().splitlines() if beeps_path.exists() else []
+        assert len(after) - before == 6, (len(after) - before, extra)
+        return result
+
+    def order():
+        return (root / "order").read_text().splitlines()
+
+    def stage_status(name):
+        return (stick / f"{name}_result.txt").read_text()
+
+    # 1. First run: every stage installs.
+    assert run().returncode == 0
+    assert order() == ["battery:install", "wifi:install", "tweaks:install", "wifi1b:install"]
+    for name in ("battery", "wifi", "tweaks", "wifi1b"):
+        assert f"STUB_{name}" in stage_status(name)
     assert (stick / "combo.log").exists()
     assert "status=OK" in (stick / "wrapper_result.txt").read_text()
-    calls = (root / "beeps").read_text().splitlines()
-    assert len(calls) == 6, calls
-    assert all("array:byte:0x00" in c and "--reply-timeout=1000" in c and "--print-reply" in c for c in calls)
-    # Restore selects the real reverse-order dispatcher, not an absent script.
+    assert 'status=OK' in (stick / 'battery_result.txt').read_text(), 'historical runtime result overwrote current result'
+    assert not (stick / 'battery_restore.log').exists()
+    assert not (stick / 'battery_status.json').exists()
+    # status.json carries cleartext psk/carplay_psk fields; it must never be
+    # exported to the stick, even as a runtime snapshot.
+    assert not (stick / 'runtime_snapshot_battery_status.json').exists()
+    assert 'status=OK' in (stick / 'wifi1b_result.txt').read_text()
+
+    # 2. Identical bundle re-run: every stage is skipped, nothing is rewritten.
+    marker_md5 = hashlib.md5((root / "installed/wifi/file").read_bytes()).hexdigest()
+    qml_before = {n: (qml_dir / n).read_bytes() for n in QML}
+    assert run().returncode == 0
+    assert order() == ["battery:install", "wifi:install", "tweaks:install", "wifi1b:install"]
+    for name in ("battery", "wifi", "tweaks", "wifi1b"):
+        assert "status=SKIPPED" in stage_status(name), (name, stage_status(name))
+    assert "status=OK" in (stick / "wrapper_result.txt").read_text()
+    assert {n: (qml_dir / n).read_bytes() for n in QML} == qml_before
+    assert 'stage_wifi1b=status=SKIPPED' in (stick / 'run_stuff_result.txt').read_text()
+
+    # 3. One corrupted installed file: only that stage reinstalls.
+    (root / "installed/battery/file").write_text("corrupted")
+    assert run().returncode == 0
+    assert order()[-1] == "battery:install"
+    assert "status=OK" in stage_status("battery")
+    assert "status=SKIPPED" in stage_status("wifi")
+    assert hashlib.md5((root / "installed/wifi/file").read_bytes()).hexdigest() == marker_md5
+
+    # 4. A changed WiFi payload: battery stays skipped, the QML layers after
+    #    the change are rebuilt (the shared QML changed).
+    (packages / "wifi/out/usb/payload/marker").write_text("wifi2")
+    (packages / "wifi/out/usb/manifest.md5").write_text("".join(
+        f"{hashlib.md5(p.read_bytes()).hexdigest()}  {p.relative_to(packages / 'wifi/out/usb')}\n"
+        for p in sorted((packages / "wifi/out/usb/payload").rglob("*")) if p.is_file()))
+    # Rebuild the stick archive from the same tree (the changed payload is the
+    # package source; the combo tree is staged again by the composer).
+    subprocess.run(["sh", str(packages / "compose.sh"), str(tree), "wifi1b,tweaks,wifi,battery"],
+                   env=env, check=True, capture_output=True)
+    with tarfile.open(archive, "w:gz") as tar:
+        for path in tree.iterdir():
+            tar.add(path, arcname="./" + path.name)
+    digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+    wrapper.write_text((PACKAGES / "flat_wrapper.sh").read_text()
+                       .replace("@TARBALL_SHA256@", digest)
+                       .replace("@RUNTIME_CLEANUP_SHA256@",
+                                hashlib.sha256((stick / "runtime_cleanup.sh").read_bytes()).hexdigest()))
+    assert run().returncode == 0
+    tail = order()[-3:]
+    assert tail[0].startswith("wifi:install"), tail
+    assert [n for n in tail[1:]] == ["tweaks:install", "wifi1b:install"], tail
+    assert order().count("battery:install") == 2, order()
+
+    # 5. A stopped service forces that stage to reinstall; the rest skip.
+    lines = [u for u in active_units.read_text().splitlines() if u != "tweaks-daemon.service"]
+    active_units.write_text("".join(u + "\n" for u in lines))
+    before = len(order())
+    assert run().returncode == 0
+    tail = order()[before:]
+    assert tail == ["tweaks:install"], tail
+    assert "status=OK" in stage_status("tweaks")
+    assert "status=SKIPPED" in stage_status("wifi1b")
+    active_units.write_text("".join(u + "\n" for u in UNITS))
+
+    # 6. Restore clears the install ledger and runs in reverse order.
     (root / "order").write_text("")
     (stick / "RESTORE").touch()
-    subprocess.run(["sh", str(wrapper)], env=env, check=True, capture_output=True)
-    assert (root / "order").read_text().splitlines() == ["tweaks:restore", "wifi:restore", "battery:restore"]
+    assert run().returncode == 0
+    assert order() == ["wifi1b:restore", "tweaks:restore", "wifi:restore", "battery:restore"]
+    assert not ledger.exists(), "restore must invalidate the install ledger"
     (stick / "RESTORE").unlink()
-    # rc=0 plus status=FAIL must not be called success.
-    failed = subprocess.run(["sh", str(wrapper)], env=dict(env, FAIL_STAGE="wifi"), capture_output=True)
+
+    # 7. After restore the same bundle must reinstall everything.
+    (root / "order").write_text("")
+    assert run().returncode == 0
+    assert order() == ["battery:install", "wifi:install", "tweaks:install", "wifi1b:install"]
+
+    # A failed restore stage must not block the remaining apps.
+    (root / "order").write_text("")
+    (stick / "RESTORE").touch()
+    failed_restore = run({"FAIL_STAGE": "wifi"})
+    assert failed_restore.returncode != 0
+    assert order() == ["wifi1b:restore", "tweaks:restore", "wifi:restore", "battery:restore"]
+    (stick / "RESTORE").unlink()
+
+    # rc=0 plus status=FAIL must not be called success, and skipping must not
+    # mask a stage that actually has to run.
+    shutil.rmtree(ledger, ignore_errors=True)
+    failed = run({"FAIL_STAGE": "wifi"})
     assert failed.returncode != 0
     assert "status=FAIL" in (stick / "wrapper_result.txt").read_text()
+    assert (root / 'order').read_text().splitlines()[-1] == 'wifi:install', 'dependent stage ran after failure'
+    # A shared preflight failure must not execute any stage, even a stub.
+    shutil.rmtree(ledger, ignore_errors=True)
+    before_order = (root / 'order').read_bytes()
+    invalid_mounts = root / 'invalid-mounts'
+    invalid_mounts.write_text('/dev/root /other ext4 rw 0 0\n')
+    blocked = subprocess.run(['sh', str(wrapper)], env=dict(env, INSTALL_IO_MOUNTS=str(invalid_mounts)), capture_output=True)
+    assert blocked.returncode != 0 and (root / 'order').read_bytes() == before_order
+    assert 'preflight=status=FAIL error=root_mount_detection' in (stick / 'run_stuff_result.txt').read_text()
     # A stage that dies before writing a result must not leave the previous
     # run's per-stage result looking current on the stick.
-    assert (stick / "wifi_result.txt").exists()
-    dead = subprocess.run(["sh", str(wrapper)], env=dict(env, FAIL_EARLY="wifi"), capture_output=True)
+    shutil.rmtree(ledger, ignore_errors=True)
+    (stick / "wifi_result.txt").write_text('status=OK\n')
+    dead = run({"FAIL_EARLY": "wifi"})
     assert dead.returncode != 0
     assert not (stick / "wifi_result.txt").exists()
     assert "status=missing" in (stick / "run_stuff_result.txt").read_text()
     # rc=0 with status=REBOOT_REQUIRED is a successful stage (the WiFi
     # installer reports it when the UI restart is not verified on the spot).
-    ok = subprocess.run(["sh", str(wrapper)], env=dict(env, REBOOT_STAGE="wifi"), capture_output=True)
+    shutil.rmtree(ledger, ignore_errors=True)
+    ok = run({"REBOOT_STAGE": "wifi"})
     assert ok.returncode == 0
     assert "stage_wifi=status=REBOOT_REQUIRED rc=0" in (stick / "run_stuff_result.txt").read_text()
     assert "status=OK" in (stick / "wrapper_result.txt").read_text()
@@ -126,4 +308,4 @@ exit 0
     archive.write_bytes(archive.read_bytes() + b"corrupt")
     assert subprocess.run(["sh", str(wrapper)], env=env, capture_output=True).returncode != 0
     assert (root / "order").read_bytes() == before
-print("PASS: real combo/wrapper order, credentials, per-stage results, beeps, reverse restore, false-success rejection, stale-result cleanup, REBOOT_REQUIRED, archive binding")
+print("PASS: real combo/wrapper order, credentials, per-stage results, beeps, reverse restore, false-success rejection, stale-result cleanup, REBOOT_REQUIRED, archive binding, unchanged-stage skip and revalidation")

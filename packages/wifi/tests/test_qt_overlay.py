@@ -37,3 +37,9 @@ with tempfile.TemporaryDirectory(prefix="wifi-qt-", dir="/tmp/opencode") as dire
                QML2_IMPORT_PATH=str(temporary / "imports"))
     subprocess.run([str(temporary / "overlay-test"), "-input", str(temporary)],
                    cwd=temporary, env=env, check=True, timeout=30)
+page = (ROOT / "artifacts/qml/AppHomeScreen/qml_eco3.0/HomeScreen/WifiPage.qml").read_text()
+# The owner must be able to read the AP key from the landing Status tab
+# (joining the AP from a laptop is how you reach SSH when the radio is up).
+assert page.count('"Key: "') >= 2, "AP key is not shown on the Status tab"
+assert 'textBold: true' in page.split('text: "Access point"')[1].split('SSH')[0], \
+    "Status-tab key line is not emphasized"

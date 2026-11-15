@@ -2,19 +2,19 @@
 # SPDX-FileCopyrightText: 2026 The SCOURGE Project contributors
 # SPDX-License-Identifier: AGPL-3.0-only
 # TARGET: Ioniq 5 Gen5W_L EU 260128
-# Build-time substitutions bind this loader to one complete tarball.
-# COMBO_FLAT_WRAPPER_REV=10
+# Build-time substitutions bind this loader to one complete tarball and one
+# integrity-checked cleanup helper.
+# COMBO_FLAT_WRAPPER_REV=13
 EXPECTED_SHA256="@TARBALL_SHA256@"
+RUNTIME_CLEANUP_SHA256="@RUNTIME_CLEANUP_SHA256@"
 set -u
 PATH="${COMBO_PATH:-/bin:/sbin:/usr/bin:/usr/sbin}"
 USB_DIR="${USB_DIR:-$(CDPATH= cd -- "$(dirname "$0")" && pwd)}"
 RESULT="$USB_DIR/run_stuff_result.txt"
 LOG="$USB_DIR/appcombo_install.log"
 RW_DIR="${COMBO_RW_DIR:-/rw_data/combo}"
-mkdir -p "$RW_DIR" 2>/dev/null || exit 1
-MODE=all
-if [ -f "$USB_DIR/MODE" ]; then MODE=$(head -n 1 "$USB_DIR/MODE" | tr -d '\r'); fi
-[ ! -f "$USB_DIR/RESTORE" ] || MODE=restore
+RUNTIME_ROOT="${COMBO_RUNTIME_ROOT:-/rw_data}"
+QML_BASE="${COMBO_QML_DIR:-/app/share/AppHomeScreen/qml_eco3.0}"
 WORK=""
 finish() {
     [ -z "$WORK" ] || rm -rf "$WORK"
@@ -49,29 +49,88 @@ fail() {
     sync
     exit 1
 }
-: > "$LOG"
-rm -f "$RESULT" "$USB_DIR/wrapper_result.txt"
+
+# FIRST: verify and load the cleanup helper without writing anything, then
+# reclaim bounded runtime log space before any extraction or runtime write.
+# A full /rw_data makes every later write (including this installer's own
+# state) fail.  Unknown files, symlinks and foreign paths are left alone.
+CLEANUP_LIB="$USB_DIR/runtime_cleanup.sh"
+if [ ! -f "$CLEANUP_LIB" ] || [ -L "$CLEANUP_LIB" ] || [ ! -r "$CLEANUP_LIB" ]; then
+    fail "cleanup helper missing or unreadable; copy runtime_cleanup.sh next to run_stuff.sh"
+fi
+cleanup_actual=$(sha256sum "$CLEANUP_LIB" 2>/dev/null | cut -d' ' -f1)
+if [ -z "$cleanup_actual" ] || [ "$cleanup_actual" != "$RUNTIME_CLEANUP_SHA256" ]; then
+    fail "cleanup helper SHA256 mismatch; copy the matching pair"
+fi
+. "$CLEANUP_LIB"
+RUNTIME_CLEANUP_LOG=""
+cleanup_bounded_logs "$RUNTIME_ROOT" || true
+
+# The tarball is hashed read-only before any recursive deletion.  A corrupt
+# or missing bundle must never delete credentials or backups.
+if [ ! -f "$USB_DIR/appcombo.tar.gz" ] || [ -L "$USB_DIR/appcombo.tar.gz" ]; then
+    fail "missing or unsafe appcombo.tar.gz"
+fi
+actual=$(sha256sum "$USB_DIR/appcombo.tar.gz" | cut -d' ' -f1)
+[ "$actual" = "$EXPECTED_SHA256" ] || fail "tarball SHA256 mismatch; copy the matching pair"
+
+MODE=all
+if [ -f "$USB_DIR/MODE" ]; then MODE=$(head -n 1 "$USB_DIR/MODE" | tr -d '\r'); fi
+[ ! -f "$USB_DIR/RESTORE" ] || MODE=restore
+if [ "$MODE" = all ]; then
+    # Full removed-WiFi cleanup is evidence-gated inside the helper: no
+    # manual WiFi Off step, no deletion on a missing marker/page alone.
+    cleanup_removed_wifi "$RUNTIME_ROOT" "$QML_BASE" "$USB_DIR" \
+        "$USB_DIR/appcombo.tar.gz" "$actual" \
+        "${CLEANUP_WIFI_SERVICE:-/etc/systemd/system/wifi-daemon.service}" || true
+fi
+mkdir -p "$RW_DIR" 2>/dev/null || exit 1
+: > "$LOG" 2>/dev/null
+RUNTIME_CLEANUP_LOG="$LOG"
+[ -z "$RUNTIME_CLEANUP_NOTES" ] || printf 'cleanup: %s\n' "$RUNTIME_CLEANUP_NOTES" >> "$LOG" 2>/dev/null
+
 # A stage that dies before writing its result must not leave the previous
 # run's per-stage result looking current on the stick.
 rm -f "$USB_DIR"/*_result.txt 2>/dev/null || true
-[ -f "$USB_DIR/appcombo.tar.gz" ] || fail "missing appcombo.tar.gz"
-actual=$(sha256sum "$USB_DIR/appcombo.tar.gz" | cut -d' ' -f1)
-[ "$actual" = "$EXPECTED_SHA256" ] || fail "tarball SHA256 mismatch; copy the matching pair"
+for app in battery wifi tweaks wifi1b migrate; do
+    rm -f "$USB_DIR/${app}_install.log" "$USB_DIR/${app}_restore.log" \
+        "$USB_DIR/${app}_status.json" "$USB_DIR/runtime_snapshot_${app}_status.json"
+done
+rm -f "$USB_DIR/combo.log"
 WORK=$(mktemp -d /tmp/appcombo_run.XXXXXX) || fail "cannot create extraction directory"
 tar -xzf "$USB_DIR/appcombo.tar.gz" -C "$WORK" >> "$LOG" 2>&1 || fail "cannot extract tarball"
 [ -f "$WORK/run_stuff.sh" ] || fail "missing inner master"
-for input in wifi.txt authorized_keys MDNSD_ROOT_ARM; do
+for input in wifi.txt iphone_wifi.txt authorized_keys MDNSD_ROOT_ARM; do
     [ ! -f "$USB_DIR/$input" ] || cp -f "$USB_DIR/$input" "$WORK/$input"
 done
-SCOURGE_MODE="$MODE" USB_DIR="$WORK" COMBO_RW_DIR="$RW_DIR" /bin/sh "$WORK/run_stuff.sh" >> "$LOG" 2>&1
+SCOURGE_MODE="$MODE" USB_DIR="$WORK" SCOURGE_STICK_DIR="$USB_DIR" \
+    COMBO_RW_DIR="$RW_DIR" COMBO_RUNTIME_ROOT="$RUNTIME_ROOT" \
+    COMBO_QML_DIR="$QML_BASE" SCOURGE_ARCHIVE="$USB_DIR/appcombo.tar.gz" \
+    SCOURGE_TARBALL_SHA256="$actual" \
+    /bin/sh "$WORK/run_stuff.sh" >> "$LOG" 2>&1
 rc=$?
 for src in "$WORK"/*_result.txt; do
     [ ! -f "$src" ] || cp -f "$src" "$USB_DIR/$(basename "$src")"
 done
-for app in battery wifi tweaks; do
+for app in battery wifi tweaks wifi1b migrate; do
     app_rw="${COMBO_RUNTIME_ROOT:-/rw_data}/$app"
-    for name in install.log restore.log result.txt status.json; do
-        [ ! -f "$app_rw/$name" ] || cp -f "$app_rw/$name" "$USB_DIR/${app}_$name"
+    # Stage result files above are authoritative. Never overwrite them with
+    # possibly historical /rw_data/result.txt after an early stage failure.
+    action=install
+    stage_name=$app
+    if [ "$MODE" = restore ]; then action=restore; stage_name=restore_$app; fi
+    if [ -f "$WORK/${stage_name}_result.txt" ]; then
+        [ ! -f "$app_rw/$action.log" ] || cp -f "$app_rw/$action.log" "$USB_DIR/${app}_$action.log"
+    fi
+    # Do not export status.json: it carries cleartext psk/carplay_psk fields.
+    # The daemon's own log dump writes a redacted copy; the stage result files
+    # above are the authoritative evidence.
+    for phase in before after; do
+        snapshot="$WORK/combo/$app/qml_$phase"
+        if [ -d "$snapshot" ]; then
+            readback="$USB_DIR/qml_readback_$$/$app"
+            mkdir -p "$readback" && cp -R "$snapshot" "$readback/" || true
+        fi
     done
 done
 if [ -f "$RW_DIR/combo.log" ]; then
