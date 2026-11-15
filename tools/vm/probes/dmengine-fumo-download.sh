@@ -15,6 +15,7 @@ set -u
 export PATH=/bin:/sbin:/usr/bin:/usr/sbin
 OEM_PID=
 DLOK_PID=
+RESULT_PID=
 DM_PID=
 SERVER_PID=
 LOG=/log_data/AppUpgrade/fota/vdm.log
@@ -47,7 +48,7 @@ for dev in /dev/sd?; do
     umount /media/payload 2>/dev/null || true
 done
 [ -n "$PAYLOAD" ] || { echo 'HARNESS_BLOCKED dmengine-fumo-download payload missing'; exit 77; }
-trap 'kill "$OEM_PID" "$DLOK_PID" "$DM_PID" "$SERVER_PID" 2>/dev/null || true; cd /; umount "$PAYLOAD" 2>/dev/null || true' EXIT
+trap 'kill "$OEM_PID" "$DLOK_PID" "$RESULT_PID" "$DM_PID" "$SERVER_PID" 2>/dev/null || true; cd /; umount "$PAYLOAD" 2>/dev/null || true' EXIT
 
 cp "$PAYLOAD/mock-dm-server" /tmp/mock-dm || fail 'fumo-server-copy'
 cp "$PAYLOAD/mock-dm-shm" /tmp/mock-dm-shm || fail 'fumo-shm-copy'
@@ -282,6 +283,47 @@ if [ "$MODE" = combined ]; then
         fail 'fumo-update-handoff'
     fi
     echo 'HARNESS_CHECK fumo-update-handoff PASS'
+
+    : > /tmp/mock-oem-result.log
+    /tmp/mock-oem 20 /tmp/mock-oem-result.log 15 200 0 >/tmp/mock-oem-result.out 2>&1 &
+    RESULT_PID=$!
+    result_wait=0
+    while [ "$result_wait" -lt 30 ]; do
+        tail -c +$((LOG_MARK + 1)) "$LOG" > /tmp/vdm-delta.log 2>/dev/null
+        grep -q 'Set state, 90' /tmp/vdm-delta.log 2>/dev/null && break
+        sleep 1
+        result_wait=$((result_wait + 1))
+    done
+    kill "$RESULT_PID" 2>/dev/null
+    wait "$RESULT_PID" 2>/dev/null
+    RESULT_PID=
+    sleep 2
+    tail -c +$((LOG_MARK + 1)) "$LOG" > /tmp/vdm-delta.log 2>/dev/null
+
+    if ! grep -q 'MOCK_OEM_SENT code=20 field1=200' /tmp/mock-oem-result.log 2>/dev/null \
+        || ! grep -qF 'VDMC_FUMO_updateReport] result = [200]' /tmp/vdm-delta.log; then
+        cat /tmp/mock-oem-result.log 2>/dev/null
+        grep -aE 'updateReport|result = \[' /tmp/vdm-delta.log | tail -20
+        fail 'fumo-update-result-sent'
+    fi
+    echo 'HARNESS_CHECK fumo-update-result-sent PASS'
+
+    if ! grep -qF 'VDM_FUMO_triggerReportSession(200)' /tmp/vdm-delta.log \
+        || ! grep -q 'Set state, 90' /tmp/vdm-delta.log; then
+        grep -aE 'triggerReportSession|Set state' /tmp/vdm-delta.log | tail -30
+        fail 'fumo-update-result-accepted'
+    fi
+    if grep -qF 'validateResultCode - invalid result code' /tmp/vdm-delta.log; then
+        grep -aE 'validateResultCode' /tmp/vdm-delta.log | tail -10
+        fail 'fumo-update-result-rejected'
+    fi
+    echo 'HARNESS_CHECK fumo-update-result-accepted PASS'
+
+    if ! grep -q 'DM session complete' /tmp/vdm-delta.log; then
+        grep -aE 'DM session|session aborted' /tmp/vdm-delta.log | tail -20
+        fail 'fumo-update-result-reported'
+    fi
+    echo 'HARNESS_CHECK fumo-update-result-reported PASS'
 fi
 
 if [ "$MODE" = update ]; then
@@ -327,9 +369,9 @@ grep -aE 'dmc_startFumoSession|Triggering DM session|Open connection|Performing 
     /tmp/vdm-delta.log 2>/dev/null | head -20
 echo '=== DD AND PACKAGE GET ==='
 grep -aE 'MOCK_DM_DD|MOCK_DM_DOWNLOAD' /tmp/mock-dm.log 2>/dev/null | head -8
-kill "$DM_PID" "$OEM_PID" "$DLOK_PID" "$SERVER_PID" 2>/dev/null || true
+kill "$DM_PID" "$OEM_PID" "$DLOK_PID" "$RESULT_PID" "$SERVER_PID" 2>/dev/null || true
 sleep 1
-kill -9 "$DM_PID" "$OEM_PID" "$DLOK_PID" "$SERVER_PID" 2>/dev/null || true
+kill -9 "$DM_PID" "$OEM_PID" "$DLOK_PID" "$RESULT_PID" "$SERVER_PID" 2>/dev/null || true
 if [ "$MODE" = combined ]; then
     echo 'HARNESS_CHECK dmengine-fumo-download-update PASS'
 elif [ "$MODE" = update ]; then

@@ -1,6 +1,6 @@
 {
   "name": "dmengine-fumo-download-update",
-  "description": "Mode C combined FUMO command: the mock sends Exec on ./ManagedObjects/FUMO/DownloadAndUpdate. The lab tree supplies its PkgURL, the engine performs the authenticated DD/DP download, logs DL session complete, sets FUMO update-progressing (state 60) and hands event 77 with /update//lab-fumo to the OEM handler. The engine-side update handoff is asserted; no physical install or update-success is claimed.",
+  "description": "Mode C combined FUMO command: the mock sends Exec on ./ManagedObjects/FUMO/DownloadAndUpdate. The engine performs the authenticated DD/DP download, sets update-progressing (state 60) and hands event 77 with /update//lab-fumo to the OEM handler. The lab OEM handler then reports update result 200; the engine triggers the DM report session, sets state 90 and returns to idle. This proves the engine-side update result path with a lab-supplied result, not a physical install.",
   "requires": [
     "payload"
   ],
@@ -22,7 +22,10 @@
     "fumo-update-progressing",
     "fumo-update-handoff",
     "fumo-no-production",
-    "dmengine-fumo-download-update"
+    "dmengine-fumo-download-update",
+    "fumo-update-result-sent",
+    "fumo-update-result-accepted",
+    "fumo-update-result-reported"
   ],
   "blockers": {}
 }

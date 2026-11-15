@@ -972,12 +972,28 @@ Sent event to OEM handler = [77] ... strData = [/update//lab-fumo]
 ```
 
 FUMO state advances `30 -> 40 -> 60` (update progressing). The engine hands
-event `77` with the downloaded package path to the OEM handler; it does not
-run the physical updater itself, so no install or update-success is claimed.
-The scenario runs dmengine at debug log level for the update handoff.
+event `77` with the downloaded package path to the OEM handler.
 
-A real run passes all seventeen checks. `dmengine-fumo-download` and
-`dmengine-fumo-update` remain separate positive/negative scenarios.
+The lab OEM handler then sends queue command `20` with the valid result code
+`200`:
+
+```text
+MOCK_OEM_SENT code=20 field1=200
+VDMC_FUMO_updateReport] result = [200]
+VDM_FUMO_triggerReportSession(200)
+Set state, 90
+Set state, 10
+DM session complete
+```
+
+The engine reports the result through a new DM session and returns to idle.
+Result `200` is lab-supplied; the physical updater is not run, so no real
+install or firmware-success is claimed. (Invalid codes such as `0` or `1200`
+are remapped to `409` by the engine.)
+
+The scenario runs dmengine at debug log level. A real run passes all twenty
+checks. `dmengine-fumo-download` and `dmengine-fumo-update` remain separate
+positive/negative scenarios.
 
 ## dmengine startup (Mode C)
 

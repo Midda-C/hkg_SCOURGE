@@ -23,10 +23,13 @@ class DmengineFumoDownloadUpdateTests(unittest.TestCase):
                           'fumo-server-auth', 'fumo-dd', 'fumo-confirm',
                           'fumo-download', 'fumo-dl-complete', 'fumo-state',
                           'fumo-combined-command', 'fumo-update-progressing',
-                          'fumo-update-handoff', 'fumo-no-production',
+                          'fumo-update-handoff', 'fumo-update-result-sent',
+                          'fumo-update-result-accepted',
+                          'fumo-update-result-reported', 'fumo-no-production',
                           'dmengine-fumo-download-update'})
         self.assertIn('DownloadAndUpdate', scenario['description'])
-        self.assertIn('no physical install', scenario['description'])
+        self.assertIn('update result 200', scenario['description'])
+        self.assertIn('not a physical install', scenario['description'])
 
     def test_command_selects_combined_mode_and_fills_url(self) -> None:
         command = scenario_command(
@@ -38,7 +41,10 @@ class DmengineFumoDownloadUpdateTests(unittest.TestCase):
                      'E_VDM_FUMO_STATE_update_progressing',
                      'event to OEM handler = [77]',
                      'strData = [/update//lab-fumo]',
-                     'fumo-update-handoff'):
+                     'MOCK_OEM_SENT code=20 field1=200',
+                     'VDMC_FUMO_updateReport] result = [200]',
+                     'fumo-update-result-sent',
+                     'fumo-update-result-reported'):
             self.assertIn(text, command)
 
     def test_checks_fail_closed(self) -> None:

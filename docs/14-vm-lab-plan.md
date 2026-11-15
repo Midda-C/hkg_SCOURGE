@@ -1117,9 +1117,12 @@ items beyond that.
   `Exec ./ManagedObjects/FUMO/DownloadAndUpdate`; the engine downloads the
   DD/DP, advances FUMO state 30 -> 40 -> 60 and sends event 77 with
   `/update//lab-fumo` to the OEM handler (`confirmUpdateCB response=0`).
-  The physical updater is not run, so no install/update-success is claimed.
-  Real run PASS with seventeen checks; 3 new tests; 541 tests (75 skipped);
-  doctor green.
+  A lab OEM result command `20`/`200` then drives
+  `VDMC_FUMO_updateReport result=[200]`, `triggerReportSession(200)`, state
+  `90 -> 10` and a completed DM report session. The result is lab-supplied
+  and the physical updater is not run, so no install/update-success is
+  claimed. Real run PASS with twenty checks; 541 tests (75 skipped); doctor
+  green.
 - **2026-11-15 — NAS import verified**: 9.4 GB preservation copy complete;
   all archives, partitions, runtime files and the navi2 archive match.
   `meta/SOURCE.txt` was finalized after the original manifest, so its one
