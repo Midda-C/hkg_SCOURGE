@@ -110,12 +110,12 @@ If a markdown file in this repo is handwritten, I will highlight that. The READM
 
 | Path | What |
 |---|---|
-| `docs/01–13` | The runbooks: TOCTOU explainer, firmware format, stage-1 build, Pi rig, car install, failsafe/packages, post-root updates (WIP), porting, Ghidra re-derivation, troubleshooting, safety/legal, upstream references |
+| `docs/01–16` | The runbooks: TOCTOU explainer, firmware format, stage-1 build, Pi rig, car install, failsafe/packages, post-root updates (WIP), porting, Ghidra re-derivation, troubleshooting, safety/legal, upstream references, VM lab (WIP), the micom command surface, the micom MCU images |
 | `docs/ui/` | The Gen5W UI/UX research: styleguide, deployment modes (A–L), UX behavior patterns, design tokens, component library, glossary, and 15 evidence reports |
 | `scripts/` | The build pipeline (fetch → stage → decrypt → patch → repack → verify → package → image → preflight → Pi deploy) |
 | `payload/` | What gets baked into the rootfs: the failsafe, the six-stub patch tables, the sample run_stuff.sh |
 | `packages/` | Battery, WiFi (+CarPlay+SSH), Tweaks (incl. the Reboot overlay) — sources, patchers, installers — plus `compose.sh` (the combo-stick builder) |
-| `tools/` | First-party firmware-format tools, the update-debug (both_copies) tooling, the optional Ghidra/carve porting aids |
+| `tools/` | First-party firmware-format tools, the update-debug (both_copies) tooling, the optional Ghidra/carve porting aids, and `tools/micom/` (command-table and MCU-image readers) |
 | `verify/` | Offline package verification |
 | `config/` | `firmware_locks.env` (the compatibility pins), `third_party.lock` (fetch pins), paths/key examples |
 
