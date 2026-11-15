@@ -1013,6 +1013,12 @@ items beyond that.
   Canonical exchange ends at Idle with version 8; install failure stays
   Downloaded for retry. Model only, not dmengine/SyncML. 18 new tests; 468
   tests (73 skipped); doctor green.
+- **2026-11-15 — P2-7 update-state audit**: `check-update-state
+  <dir|image>` validates updateVersionInfo/FUMO timing/install params/
+  dm_state/scheduled date and cross-checks the RDM tree FUMO state, without
+  printing URLs or credentials. The captured `/update` passes with version
+  `5W.XXX.S5W_L.001.001.260128`, FUMO state 10 and dm_state 0. 10 new tests;
+  478 tests (74 skipped); doctor green.
 - **2026-11-15 — NAS import verified**: 9.4 GB preservation copy complete;
   all archives, partitions, runtime files and the navi2 archive match.
   `meta/SOURCE.txt` was finalized after the original manifest, so its one

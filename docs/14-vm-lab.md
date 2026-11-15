@@ -62,6 +62,9 @@ VM-validated (vendor kernel):
 - offline update-media validation (`check-update`): package-map grammar,
   manifest coverage and confinement, optional hashes and declared sizes for a
   directory or raw ext4 stick; no decryption or updater execution
+- update-state audit (`check-update-state`): version/FUMO timing/install
+  params/dm_state consistency against the RDM tree, with URLs and credentials
+  kept out of the report
 - update-media preflight (`update-preflight`): read-only Mode V mount,
   package-map grammar/sizes, manifest hashes and opaque-payload checks without
   launching the updater

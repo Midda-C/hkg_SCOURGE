@@ -65,6 +65,7 @@ from harness.visual import list_baselines
 from harness.capture import check_capture
 from harness.dm_tree import check_dm_tree, diff_trees
 from harness.fumo import run_exchange
+from harness.update_state import check_update_state
 from harness.update_media import check_update_media
 from harness.result_schema import (check_all_bench, check_all_bench_dir,
                                    check_all_results, schema_state,
@@ -1693,6 +1694,9 @@ def main() -> int:
     fumo.add_argument('--package-version', default='8')
     fumo.add_argument('--fail', choices=('download', 'install'), default=None)
     fumo.add_argument('--chunk-size', type=int, default=7)
+    check_state = sub.add_parser(
+        'check-update-state', help='audit vendor /update metadata without exposing URLs')
+    check_state.add_argument('path', type=Path)
     check_scenario = sub.add_parser('check-scenario',
                                     help='validate scenario JSON contracts')
     check_scenario.add_argument('scenario', nargs='?',
@@ -2219,6 +2223,10 @@ def main() -> int:
                               package_version=args.package_version,
                               fail_stage=args.fail,
                               chunk_size=args.chunk_size)
+        print(json.dumps(report, indent=2))
+        return 0 if report['ok'] else 1
+    if args.action == 'check-update-state':
+        report = check_update_state(args.path)
         print(json.dumps(report, indent=2))
         return 0 if report['ok'] else 1
     if args.action == 'check-bench':

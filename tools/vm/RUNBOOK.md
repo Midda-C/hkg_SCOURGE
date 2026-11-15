@@ -664,6 +664,30 @@ arbitrary names. Exit 0/1 with a JSON report.
 The real `update-k.img` passes with 35 package entries, 2 manifest targets and
 header `NE_E.EUR.S5W_L.001.001.260128` / `IONIQ5_EU`.
 
+## Update-state audit
+
+```sh
+python3 -B launch.py check-update-state <update-dir|ext4-image>
+```
+
+Audits the vendor `/update` metadata without opening payloads or printing
+signed URLs, server addresses or credentials. It validates:
+
+- `updateVersionInfo` and `scheduledUpdateVersion` version shape
+- `FumoUsbUpdateTimeVersion` timestamp/previous/current fields and agreement
+  with `scheduledUpdateVersion`
+- `fota/install_param.txt` required keys and integer counts
+- `fota/dm_state.txt` as 0/1
+- optional `scheduledUpdateDate` as `YYYY.MM.DD`
+- the RDM tree's FUMO state against `dm_state` (Idle 10 ↔ 0)
+- `.lge.upgrade.xml` presence, non-emptiness and opacity, and a non-empty
+  `package.tar.sign`
+
+The captured `/update` passes with version `5W.XXX.S5W_L.001.001.260128`,
+FUMO current/scheduled `NE_E.EUR...260128`, FUMO state 10, dm_state 0 and a
+next FUMO count of 1. A mismatch is reported as a warning where the vendor
+state cannot prove a hard failure.
+
 ## Update-media preflight (Mode V)
 
 ```sh
