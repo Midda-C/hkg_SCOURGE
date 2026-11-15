@@ -1036,6 +1036,12 @@ items beyond that.
   captured notification decodes to a 17-character VIN and 250226 -> 250604.
   This supplies the `recvDM_01` input; the OEM session callback remains the
   blocker. 5 new tests; 491 tests (75 skipped); doctor green.
+- **2026-11-15 — P2-7 dmengine OEM queue codec**: traced the vendor SysV
+  queue (key `0xd54`): dmengine emits mtype `0x48` events and waits for mtype
+  `0x36` commands; 1048-byte payload with code at 0, fields at 8/16 and text
+  at 32. Added `dmengine-queue` encode/decode. 5 new tests; 496 tests (75
+  skipped); doctor green. AppDMClient's startFumoUpdate command values remain
+  the session gate.
 - **2026-11-15 — NAS import verified**: 9.4 GB preservation copy complete;
   all archives, partitions, runtime files and the navi2 archive match.
   `meta/SOURCE.txt` was finalized after the original manifest, so its one

@@ -63,6 +63,8 @@ from harness.visual import baseline as visual_baseline
 from harness.visual import compare as visual_compare
 from harness.visual import list_baselines
 from harness.capture import check_capture
+from harness.dm_queue import (OEM_COMMAND_TYPE, OEM_EVENT_TYPE, QueueError,
+                              decode_message, encode_event, encode_command)
 from harness.dm_tree import check_dm_tree, diff_trees
 from harness.fumo import run_exchange, run_script
 from harness.mof import MofError, build_notification, decode_notification
@@ -1710,6 +1712,16 @@ def main() -> int:
                      default='NE_E.EUR.S5W_L.001.001.250604')
     mof.add_argument('--update-id', default='54728')
     mof.add_argument('--host', default='127.0.0.1:8002')
+    dmq = sub.add_parser(
+        'dmengine-queue', help='encode/decode vendor dmengine OEM queue messages')
+    dmq.add_argument('queue_action', choices=('decode', 'encode'))
+    dmq.add_argument('--mtype', type=lambda value: int(value, 0),
+                     default=OEM_COMMAND_TYPE)
+    dmq.add_argument('--hex', default=None)
+    dmq.add_argument('--code', type=int, default=1)
+    dmq.add_argument('--field1', type=int, default=0)
+    dmq.add_argument('--field2', type=int, default=0)
+    dmq.add_argument('--text', default='')
     check_scenario = sub.add_parser('check-scenario',
                                     help='validate scenario JSON contracts')
     check_scenario.add_argument('scenario', nargs='?',
@@ -2243,6 +2255,28 @@ def main() -> int:
                                   chunk_size=args.chunk_size)
         print(json.dumps(report, indent=2))
         return 0 if report['ok'] else 1
+    if args.action == 'dmengine-queue':
+        try:
+            if args.queue_action == 'decode':
+                if not args.hex:
+                    ap.error('dmengine-queue decode requires --hex')
+                data = bytes.fromhex(args.hex)
+                report = {'ok': True, **decode_message(args.mtype, data)}
+            else:
+                if args.mtype == OEM_COMMAND_TYPE:
+                    mtype, data = encode_command(args.code, args.field1,
+                                                 args.field2, args.text)
+                elif args.mtype == OEM_EVENT_TYPE:
+                    mtype, data = encode_event(args.code, args.field1,
+                                               args.field2, args.text)
+                else:
+                    raise ValueError(f'unknown mtype: {args.mtype:#x}')
+                report = {'ok': True, 'mtype': mtype, 'hex': data.hex()}
+        except (ValueError, QueueError) as exc:
+            print(json.dumps({'ok': False, 'error': str(exc)}, indent=2))
+            return 1
+        print(json.dumps(report, indent=2))
+        return 0
     if args.action == 'mof-notify':
         try:
             if args.encode:

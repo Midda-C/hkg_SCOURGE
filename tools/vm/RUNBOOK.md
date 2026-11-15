@@ -745,6 +745,28 @@ the engine's FUMO session.
 The captured notification decodes with msgtype 4, a 17-character VIN,
 `NE_E.XXX...250226` -> `NE_E.XXX...250604` and update id 54728.
 
+## dmengine OEM queue codec
+
+```sh
+python3 -B launch.py dmengine-queue encode --code 66 --field1 7 \
+  --text 'msgtype=4&cor=LAB' [--mtype 0x36]
+python3 -B launch.py dmengine-queue decode --mtype 0x36 --hex <payload>
+```
+
+Codec for the vendor dmengine <-> OEM handler SysV queue recovered from a
+traced run:
+
+- queue key `0xd54`
+- command mtype `0x36` (dmengine waits for this from the OEM handler)
+- event mtype `0x48` (dmengine sends this to the OEM handler)
+- 1048-byte payload: int32 code at offset 0, int64 fields at 8 and 16, UTF-8
+  text at 32
+
+The codec only encodes/decodes messages; it does not perform queue I/O. The
+traced dmengine emitted events 93, 92 and 66 (notification) and blocked waiting
+for a type-0x36 command. The missing callback is AppDMClient's
+`startFumoUpdate` command semantics, not the queue layout.
+
 ## dmengine startup (Mode C)
 
 ```sh
