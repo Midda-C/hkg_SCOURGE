@@ -2,16 +2,19 @@
 # SPDX-FileCopyrightText: 2026 The SCOURGE Project contributors
 # SPDX-License-Identifier: AGPL-3.0-only
 
-# Mode C lab FUMO HTTP exchange.
+# Mode C lab FUMO download.
 #
 # Creates the DMCDEVINFO segment and a lab /update state, points the captured
 # tree at a loopback mock DM endpoint, starts the real dmengine and sends the
-# OEM session-start command (code 0, field1=1). The engine must open a real
-# HTTP session and POST WBXML SyncML to the mock endpoint. The mock returns an
-# empty 200, so this proves the client attempt, not a completed update.
+# OEM session-start command (code 0, field1=1). After the SyncML handshake and
+# server authentication the mock serves an OMA Download Descriptor; the OEM
+# confirmation command (code 10, DMC_REQ_DL_OK) lets the engine fetch the
+# described DP object. The DP header is a structural lab fixture: this proves
+# the download path, not an install or update.
 set -u
 export PATH=/bin:/sbin:/usr/bin:/usr/sbin
 OEM_PID=
+DLOK_PID=
 DM_PID=
 SERVER_PID=
 LOG=/log_data/AppUpgrade/fota/vdm.log
@@ -39,7 +42,7 @@ for dev in /dev/sd?; do
     umount /media/payload 2>/dev/null || true
 done
 [ -n "$PAYLOAD" ] || { echo 'HARNESS_BLOCKED dmengine-fumo-download payload missing'; exit 77; }
-trap 'kill "$OEM_PID" "$DM_PID" "$SERVER_PID" 2>/dev/null || true; cd /; umount "$PAYLOAD" 2>/dev/null || true' EXIT
+trap 'kill "$OEM_PID" "$DLOK_PID" "$DM_PID" "$SERVER_PID" 2>/dev/null || true; cd /; umount "$PAYLOAD" 2>/dev/null || true' EXIT
 
 cp "$PAYLOAD/mock-dm-server" /tmp/mock-dm || fail 'fumo-server-copy'
 cp "$PAYLOAD/mock-dm-shm" /tmp/mock-dm-shm || fail 'fumo-shm-copy'
@@ -128,12 +131,12 @@ sleep 5
 echo 'HARNESS_CHECK fumo-ready PASS'
 LOG_MARK=$(wc -c < "$LOG" 2>/dev/null || echo 0)
 
-/tmp/mock-oem 0 /tmp/mock-oem.log 10 1 0 >/tmp/mock-oem.out 2>&1 &
+/tmp/mock-oem 0 /tmp/mock-oem.log 20 1 0 >/tmp/mock-oem.out 2>&1 &
 OEM_PID=$!
 
 request_wait=0
 while [ "$request_wait" -lt 90 ]; do
-    grep -q 'MOCK_DM_DOWNLOAD method=GET path=/package.bin' /tmp/mock-dm.log 2>/dev/null && break
+    grep -q 'MOCK_DM_DD method=GET path=/package.bin' /tmp/mock-dm.log 2>/dev/null && break
     sleep 1
     request_wait=$((request_wait + 1))
 done
@@ -189,11 +192,51 @@ if grep -q 'MOCK_DM_CLIENT_STATUS status=407' /tmp/mock-dm.log; then
 fi
 echo 'HARNESS_CHECK fumo-server-auth PASS'
 
-if ! grep -q 'MOCK_DM_DOWNLOAD method=GET path=/package.bin bytes=4096' /tmp/mock-dm.log; then
+if ! grep -q 'MOCK_DM_DD method=GET path=/package.bin' /tmp/mock-dm.log \
+    || ! grep -q 'object=/object.bin' /tmp/mock-dm.log; then
+    tail -40 /tmp/mock-dm.log
+    fail 'fumo-dd'
+fi
+echo 'HARNESS_CHECK fumo-dd PASS'
+
+: > /tmp/mock-oem-dlok.log
+/tmp/mock-oem 10 /tmp/mock-oem-dlok.log 15 0 0 >/tmp/mock-oem-dlok.out 2>&1 &
+DLOK_PID=$!
+download_wait=0
+while [ "$download_wait" -lt 60 ]; do
+    grep -q 'MOCK_DM_DOWNLOAD method=GET path=/object.bin' /tmp/mock-dm.log 2>/dev/null && break
+    sleep 1
+    download_wait=$((download_wait + 1))
+done
+kill "$DLOK_PID" 2>/dev/null
+wait "$DLOK_PID" 2>/dev/null
+DLOK_PID=
+if ! grep -q 'MOCK_OEM_SENT code=10' /tmp/mock-oem-dlok.log 2>/dev/null; then
+    cat /tmp/mock-oem-dlok.log 2>/dev/null
+    fail 'fumo-confirm'
+fi
+echo 'HARNESS_CHECK fumo-confirm PASS'
+
+if ! grep -q 'MOCK_DM_DOWNLOAD method=GET path=/object.bin bytes=52 preamble=RedBendEFDPackage' /tmp/mock-dm.log; then
     tail -40 /tmp/mock-dm.log
     fail 'fumo-download'
 fi
 echo 'HARNESS_CHECK fumo-download PASS'
+
+sleep 5
+tail -c +$((LOG_MARK + 1)) "$LOG" > /tmp/vdm-delta.log 2>/dev/null
+if ! grep -q 'DL session complete' /tmp/vdm-delta.log; then
+    grep -aE 'DL session|onSessionStateChange|FUMO state|Set state' /tmp/vdm-delta.log | tail -30
+    fail 'fumo-dl-complete'
+fi
+echo 'HARNESS_CHECK fumo-dl-complete PASS'
+
+if ! grep -q 'Set state, 30' /tmp/vdm-delta.log \
+    || ! grep -q 'Set state, 40' /tmp/vdm-delta.log; then
+    grep -aE 'FUMO state|Set state|onCompleted' /tmp/vdm-delta.log | tail -30
+    fail 'fumo-state'
+fi
+echo 'HARNESS_CHECK fumo-state PASS'
 
 if grep -q '210.183.168.13' /tmp/vdm-delta.log /tmp/mock-dm.log /tmp/lab-tree.xml /tmp/lab-dm-config.txt; then
     fail 'fumo-production-address'
@@ -205,9 +248,9 @@ head -8 /tmp/mock-dm.log 2>/dev/null
 echo '=== VDM TRIGGER ==='
 grep -aE 'dmc_startFumoSession|Triggering DM session|Open connection|Performing HTTP POST|onSessionStateChange|DL session' \
     /tmp/vdm-delta.log 2>/dev/null | head -20
-echo '=== PACKAGE GET ==='
-grep -a 'MOCK_DM_DOWNLOAD' /tmp/mock-dm.log 2>/dev/null | head -5
-kill "$DM_PID" "$OEM_PID" "$SERVER_PID" 2>/dev/null || true
+echo '=== DD AND PACKAGE GET ==='
+grep -aE 'MOCK_DM_DD|MOCK_DM_DOWNLOAD' /tmp/mock-dm.log 2>/dev/null | head -8
+kill "$DM_PID" "$OEM_PID" "$DLOK_PID" "$SERVER_PID" 2>/dev/null || true
 sleep 1
-kill -9 "$DM_PID" "$OEM_PID" "$SERVER_PID" 2>/dev/null || true
+kill -9 "$DM_PID" "$OEM_PID" "$DLOK_PID" "$SERVER_PID" 2>/dev/null || true
 echo 'HARNESS_CHECK dmengine-fumo-download PASS'

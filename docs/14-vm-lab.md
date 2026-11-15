@@ -92,9 +92,11 @@ VM-validated (vendor kernel):
   Final. The engine completes the session handshake (state 1, lastError 0)
   without performing an update
 - FUMO package download (`dmengine-fumo-download`): the mock sends a
-  `syncml:auth-md5` server Cred and a FUMO Exec; the engine accepts the auth
-  and performs `GET /package.bin`. The synthetic package is rejected
-  (DL 0x6407), so this is a download, not an install
+  `syncml:auth-md5` server Cred and a FUMO Exec, then an OMA Download
+  Descriptor. OEM confirmation code 10 (`DMC_REQ_DL_OK`) lets the engine
+  fetch the DP object; `DL session complete` and FUMO state 30 -> 40 are
+  asserted. The DP header is a structural fixture, so this is a download,
+  not an install
 - device-model regression (`device-model`): asserts Q35 host bridge, SDHCI
   root, ICH9 LPC/SATA and no virtio; substrate only, not captured BXT hardware
 - AppDMClient fota callback (`dmclient-fota-events`): `/fotaInterface`

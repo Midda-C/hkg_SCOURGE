@@ -1092,15 +1092,16 @@ items beyond that.
   scenario asserted that gate; it is superseded by `dmengine-fumo-download`
   once the server credential was recovered. Real run PASS with eleven checks; 3 new tests; 518 tests
   (75 skipped); doctor green.
-- **2026-11-15 — server auth recovered, real package GET**: the digest is
-  `base64(MD5(MD5("lab:lab-secret") + ":" + "00000000"))`; the nonce is
-  `AAuthData` (`MDAwMDAwMDA=` -> ASCII `00000000`). A server `Cred` that
-  mirrors the client's exact WBXML layout is accepted (`Server authentication
-  (by client), 401`), the FUMO Exec runs and the engine performs a real
-  `GET /package.bin` (4096 bytes). The synthetic package is rejected by the
-  engine (`DL session aborted, 0x6407`; FUMO 409 / error 25607), so no install
-  or update-success claim. Supersedes the negative auth-gate scenario. Real
-  run PASS with ten checks; 518 tests (75 skipped); doctor green.
+- **2026-11-15 — server auth recovered, DD and DP download complete**: the
+  digest is `base64(MD5(MD5("lab:lab-secret") + ":" + "00000000"))`; the
+  nonce is `AAuthData` (`MDAwMDAwMDA=` -> ASCII `00000000`). A server `Cred`
+  that mirrors the client's exact WBXML layout is accepted (`Server
+  authentication (by client), 401`). The mock then serves an OMA Download
+  Descriptor; OEM confirmation code 10 (`DMC_REQ_DL_OK`) lets the engine
+  fetch the 52-byte DP object. It logs `DL session complete` and advances
+  FUMO state 30 -> 40. The DP header is a structural fixture with no component
+  table or signature, so no install or update-success claim. Real run PASS
+  with fourteen checks; 518 tests (75 skipped); doctor green.
 - **2026-11-15 — NAS import verified**: 9.4 GB preservation copy complete;
   all archives, partitions, runtime files and the navi2 archive match.
   `meta/SOURCE.txt` was finalized after the original manifest, so its one

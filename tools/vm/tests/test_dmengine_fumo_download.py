@@ -20,9 +20,11 @@ class DmengineFumoDownloadTests(unittest.TestCase):
         self.assertEqual(set(scenario['checks']),
                          {'fumo-ready', 'fumo-http-post', 'fumo-response',
                           'fumo-syncml', 'fumo-trigger', 'fumo-command',
-                          'fumo-server-auth', 'fumo-download',
+                          'fumo-server-auth', 'fumo-dd', 'fumo-confirm',
+                          'fumo-download', 'fumo-dl-complete', 'fumo-state',
                           'fumo-no-production', 'dmengine-fumo-download'})
-        self.assertIn('GET /package.bin', scenario['description'])
+        self.assertIn('OMA Download Descriptor', scenario['description'])
+        self.assertIn('DMC_REQ_DL_OK', scenario['description'])
         self.assertIn('no install or update-success claim',
                       scenario['description'])
 
@@ -31,9 +33,10 @@ class DmengineFumoDownloadTests(unittest.TestCase):
             load_scenario('dmengine-fumo-download'), load_profile('research'),
             kernel_target='compat')
         for text in ('/tmp/mock-dm 8002 /tmp/mock-dm.log download',
-                     'CLIENT_DIGEST=', 'MOCK_DM_DOWNLOAD method=GET',
-                     'bytes=4096', 'status=407', 'fumo-server-auth',
-                     'fumo-download'):
+                     'CLIENT_DIGEST=', 'MOCK_DM_DD method=GET',
+                     '/tmp/mock-oem 10', 'MOCK_DM_DOWNLOAD method=GET path=/object.bin',
+                     'bytes=52', 'DL session complete', 'Set state, 40',
+                     'fumo-server-auth', 'fumo-download'):
             self.assertIn(text, command)
 
     def test_checks_fail_closed(self) -> None:

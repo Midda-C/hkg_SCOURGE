@@ -11,8 +11,10 @@
  * and IMEI, then returns a minimal WBXML SyncML DM response with Status entries
  * for the captured Alert/Replace commands and a Final element.
  *
- * The response is a lab fixture: it acknowledges the client's initial commands
- * but performs no management operations and makes no update-success claim.
+ * In download mode it also serves an OMA Download Descriptor at
+ * /package.bin and a minimal RedBend EF DP object (preamble, version 4, one
+ * component) at /object.bin. The DP is a structural lab fixture: it has no
+ * component table or signature and is not installable.
  */
 #define _GNU_SOURCE
 #include <arpa/inet.h>
@@ -370,6 +372,35 @@ static void send_all(int fd, const unsigned char *data, size_t length)
     }
 }
 
+static void put_u32(unsigned char *out, size_t offset, unsigned int value)
+{
+    out[offset] = (unsigned char)(value & 0xff);
+    out[offset + 1] = (unsigned char)((value >> 8) & 0xff);
+    out[offset + 2] = (unsigned char)((value >> 16) & 0xff);
+    out[offset + 3] = (unsigned char)((value >> 24) & 0xff);
+}
+
+/* Minimal RedBend EF DP header: 20-byte preamble, version 4, one component.
+ * The component table and signatures are intentionally absent; this is a
+ * structural lab fixture, not a bootable update package. */
+static int build_dp_package(unsigned char *out, size_t capacity)
+{
+    static const char preamble[] = "RedBendEFDPackage";
+    const size_t header_length = 52;
+    if (capacity < header_length)
+        return 0;
+    memset(out, 0, header_length);
+    memcpy(out, preamble, sizeof(preamble) - 1);
+    put_u32(out, 20, 4);            /* DP version */
+    put_u32(out, 24, 1);            /* component count */
+    put_u32(out, 28, (unsigned int)header_length);
+    put_u32(out, 32, 0);            /* delta table pointer */
+    put_u32(out, 36, 0);            /* scripts pointer */
+    put_u32(out, 44, (unsigned int)header_length); /* component table */
+    put_u32(out, 48, (unsigned int)header_length); /* string table */
+    return (int)header_length;
+}
+
 int main(int argc, char **argv)
 {
     int port = argc > 1 ? atoi(argv[1]) : 8002;
@@ -458,24 +489,61 @@ int main(int argc, char **argv)
         }
         prefix[prefix_len] = '\0';
         if (strcmp(method, "GET") == 0 && strcmp(path, "/package.bin") == 0) {
-            unsigned char package[4096];
+            unsigned char package[128];
+            char dd[768];
             char header[256];
             int header_length;
-            for (size_t index = 0; index < sizeof(package); index++)
-                package[index] = (unsigned char)(index & 0xff);
+            int package_length = build_dp_package(package, sizeof(package));
+            int dd_length = snprintf(
+                dd, sizeof(dd),
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                "<media xmlns=\"http://www.openmobilealliance.org/xmlns/dd\" "
+                "UIInfo=\"lab-ui\">"
+                "<ddVersion>1.0</ddVersion>"
+                "<type>application/octet-stream</type>"
+                "<size>%d</size>"
+                "<objectURI>http://127.0.0.1:8002/object.bin</objectURI>"
+                "<installNotifyURI>http://127.0.0.1:8002/notify</installNotifyURI>"
+                "<name>lab-fumo</name><vendor>lab</vendor>"
+                "<description>lab FUMO package</description>"
+                "</media>", package_length);
+            header_length = snprintf(
+                header, sizeof(header),
+                "HTTP/1.1 200 OK\r\n"
+                "Content-Type: application/vnd.oma.dd+xml\r\n"
+                "Content-Length: %d\r\n"
+                "Connection: close\r\n\r\n", dd_length);
+            send_all(client, (const unsigned char *)header,
+                     (size_t)header_length);
+            send_all(client, (const unsigned char *)dd, (size_t)dd_length);
+            fprintf(log, "MOCK_DM_DD method=GET path=/package.bin bytes=%d "
+                         "object=/object.bin object_bytes=%d\n",
+                    dd_length, package_length);
+            fflush(log);
+            close(client);
+            free(request);
+            requests++;
+            fprintf(log, "MOCK_DM_DD_DONE requests=%d\n", requests);
+            fflush(log);
+            continue;
+        }
+        if (strcmp(method, "GET") == 0 && strcmp(path, "/object.bin") == 0) {
+            unsigned char package[128];
+            char header[256];
+            int header_length;
+            int package_length = build_dp_package(package, sizeof(package));
             header_length = snprintf(
                 header, sizeof(header),
                 "HTTP/1.1 200 OK\r\n"
                 "Content-Type: application/octet-stream\r\n"
-                "Content-Length: %zu\r\n"
-                "Connection: close\r\n\r\n", sizeof(package));
+                "Content-Length: %d\r\n"
+                "Connection: close\r\n\r\n", package_length);
             send_all(client, (const unsigned char *)header,
                      (size_t)header_length);
-            send_all(client, package, sizeof(package));
-            fprintf(log, "MOCK_DM_DOWNLOAD method=GET path=/package.bin "
-                         "bytes=%zu sha256_prefix=%02x%02x%02x%02x\n",
-                    sizeof(package), package[0], package[1], package[2],
-                    package[3]);
+            send_all(client, package, (size_t)package_length);
+            fprintf(log, "MOCK_DM_DOWNLOAD method=GET path=/object.bin "
+                         "bytes=%d preamble=RedBendEFDPackage version=4 "
+                         "components=1\n", package_length);
             fflush(log);
             close(client);
             free(request);

@@ -890,25 +890,26 @@ python3 -B launch.py run --kernel compat --profile research \
 
 After the status handshake the mock endpoint sends a FUMO `Exec` command on
 `./ManagedObjects/FUMO/Download` together with a server `Cred`. The engine
-accepts the server authentication (`Server authentication (by client), 401`),
-executes the command and performs a real `GET /package.bin`:
+accepts the server authentication (`Server authentication (by client), 401`)
+and requests the package URL:
 
 ```text
 MOCK_DM_REQUEST method=POST path=/dm/message content_length=907
 MOCK_DM_RESPONSE status=200 syncml=1 session=4D bytes=341 exec=1
-MOCK_DM_REQUEST method=POST path=/dm/message content_length=457
-MOCK_DM_RESPONSE status=200 syncml=1 session=4D bytes=296 exec=0
-MOCK_DM_DOWNLOAD method=GET path=/package.bin bytes=4096 sha256_prefix=00010203
+MOCK_DM_DD method=GET path=/package.bin bytes=402 object=/object.bin object_bytes=52
+MOCK_DM_DOWNLOAD method=GET path=/object.bin bytes=52 preamble=RedBendEFDPackage version=4 components=1
 ```
 
-The lab server credential mirrors the client's exact `Cred` WBXML layout and
-reuses the client digest: the `lab`/`lab-secret` account is shared, and the
-digest is `base64(MD5(MD5("lab:lab-secret") + ":" + "00000000"))`.
+`/package.bin` is an OMA Download Descriptor (`application/vnd.oma.dd+xml`),
+not the object. After the engine parses it, the probe sends the OEM
+confirmation command code 10 (`DMC_REQ_DL_OK`), which lets the engine fetch
+the descriptor's `objectURI`. The mock object is a 52-byte RedBend EF DP
+header: 20-byte `RedBendEFDPackage` preamble, version 4, one component.
 
-The synthetic 4096-byte package is not a valid FUMO payload, so the engine
-aborts the download with `DL session aborted, 0x6407`, FUMO result `409` and
-last error `25607`. This proves the authenticated Exec and package fetch, not
-an install or update. A real run passes all ten checks.
+The engine logs `DL session complete`, advances FUMO state `30` (downloading)
+to `40` (downloaded), and in this run also to `50` (update progressing). The
+DP is a structural fixture with no component table or signature, so no
+install or update-success is claimed. A real run passes all fourteen checks.
 
 ## dmengine startup (Mode C)
 
