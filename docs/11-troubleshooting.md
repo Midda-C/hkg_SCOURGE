@@ -37,12 +37,14 @@ Ioniq 5 Gen5W_L, 260128 (EU) unless noted.
 | HU does not mount the stick | Try bare exFAT on the whole device (no partition table) — that matches the proven TOCTOU image layout. |
 | Boot message unchanged after flash | The displayed `.qm` may be the `new_gui` partition copy (a separate, higher-risk variant, intentionally not built). The failsafe and stubs are unaffected. |
 | Watcher log stops early | The watcher is a `nohup` process: a head-unit reboot kills it. Do not reboot between starting it and the update attempt. |
+| `update_watch.log` is enormous (~100 MB) | Pre-fix watchers appended a full `ps -ef` every 2 s. Current `tools/update-debug/` deployers log transitions only and cap the file at 2 MiB; re-run the deployer to replace the installed watcher. |
 
 ## Packages
 
 | Symptom | Cause / fix |
 |---|---|
 | `run_stuff.sh` does not run | Not at the stick root; wrong filesystem; or the loader already ran this exact content (md5 gate) — change the file to re-run. Check `/rw_data/initial_root.log`. |
+| `/rw_data` fills up (97% seen: 58 wifi + 23 wifi1b snapshots = 152 MB) | The loader's md5 gate lives in `/run` (tmpfs), so every power-on re-runs a left-in stick, and each install used to add a full ~2-3 MB transaction snapshot with no retention. Current installers prune to the restore point plus two newest snapshots (`prune:` line in the install log) before creating a new one, and cap `daemon.log`/`wpa_supplicant.log` at 1 MiB each. Check `du -sk /rw_data/*`: the bulk is stock `navi_data` (~650 MB of RealTimeChargingStation DBs) — do not delete it. Offline-validated; car validation pending. |
 | A daemon/installer "silently" never finds the USB stick | **fstype mismatch:** the car's exFAT is Tuxera `texfat.ko` and `/proc/mounts` reports `texfat`, not `exfat`. Code matching only `vfat\|exfat\|ntfs` rejects the real mount — and the failure is silent on automatic paths. Accept `texfat` (docs/02), or match by content. Both shipped daemons were fixed for this; the package tests now assert it. |
 | A UI button/action does nothing after an install | The running UI is the old in-memory QML until the owning process restarts — the installer's restart step (AppLauncher terminate/launch) must have actually run; check the installer's `restart=` result line before debugging the QML itself. |
 | Installer aborts on a QML hash | Base detection: the car's QML is neither the stock reference nor a known install state. Register the new base (docs/09) or restore stock first. |

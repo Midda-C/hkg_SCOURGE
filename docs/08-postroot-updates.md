@@ -120,6 +120,17 @@ stubs).
 - **`applauncher_sigstub.sh`** — gate 4 alone, with in-session AppLauncher
   respawn + bus-name verification.
 
+The 45-minute (at least) watcher installed by all three deployers logs only
+process transitions, not a full `ps -ef` snapshot per change. It drops its
+own pipeline helpers and kernel threads (PPID 2), and caps
+`/rw_data/update_watch.log` at 2 MiB (`UPDATE_WATCH_MAX_BYTES`), with
+`UPDATE_WATCH_MAX_LINE` for the 200-byte line bound and
+`UPDATE_WATCH_KEEP_BYTES` for the 32 KB tail kept when trimming. The earlier
+build appended a full snapshot on every 2-second transition and reached
+roughly 100 MB in one window, which filled a 1.2 GB `/rw_data` and had to be
+deleted by hand. The bounded watcher is offline-tested only; car validation
+is pending.
+
 ## The confirmed test sequence
 
 1. **Fresh stage-1 build-5 flash** (TOCTOU or already-rooted car with the
