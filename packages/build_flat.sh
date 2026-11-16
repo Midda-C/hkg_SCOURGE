@@ -13,7 +13,7 @@ OUT=$(CDPATH= cd -- "$OUT" && pwd)
 STAGE=$(mktemp -d "${TMPDIR:-/tmp}/scourge-flat.XXXXXX")
 trap 'rm -rf "$STAGE"' EXIT
 mkdir -p "$STAGE/tree"
-# Standalone V22: Battery + Tweaks/Reboot + Wifi1b only.  No WiFi reinstall and
+# Standalone V23: Battery + Tweaks/Reboot + Wifi1b only.  No WiFi reinstall and
 # no one-way migration stage; compose marks the bundle combo/standalone.
 SCOURGE_STANDALONE=1 sh "$HERE/compose.sh" "$STAGE/tree" battery,tweaks,wifi1b
 if [ ! -f "$STAGE/tree/combo/standalone" ] ||
@@ -66,9 +66,9 @@ sh -n "$STAGE/run_stuff.sh"
 cp -f "$STAGE/appcombo.tar.gz" "$STAGE/run_stuff.sh" "$OUT/"
 rm -f "$OUT/runtime_cleanup.sh"
 cat > "$OUT/README.txt" <<'EOF'
-SCOURGE AppComboFlatV22MicomStandalone — Battery, Tweaks/Reboot and Wifi1b
+SCOURGE AppComboFlatV23MicomStandalone — Battery, Tweaks/Reboot and Wifi1b
 =========================================================================
-Version: V22 (BlueLink-safe modem routing + Orange Pi USB-SSH integration)
+Version: V23 (BlueLink-safe modem routing + Orange Pi USB-SSH integration)
 This bundle does NOT install the WiFi app, does NOT reinstall WiFi, and has
 NO one-way migration stage. It installs Battery, Tweaks/Reboot and Wifi1b on
 the canonical standalone Battery/Tweaks base. Wifi1b also works beside an
@@ -76,7 +76,7 @@ existing WiFi app; if WiFi is still installed, this bundle leaves it untouched
 and only adds Wifi1b.
 No manual WiFi Off step is needed: the installer preflight stops only its own
 radio daemons before backing up or changing files.
-V22 networking:
+V23 networking:
 - WiFi client remains active and SSH works, but while the telematics modem
   (rmnet_usb0/rmnet_usb1) has an IPv4 address Wifi1b installs NO WiFi default
   route. WiFi is an SSH-only link in that state, exactly as requested.

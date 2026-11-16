@@ -82,7 +82,7 @@ CarPlay AP defaults:
   static 10.42.0.1/24, own DHCP pool 10.42.0.10-200
   SSH user wifi1b, UID 0, key-only, configured port (default 2224), bind-all
 
-V22 BlueLink-safe client routing:
+V22+ BlueLink-safe client routing:
   While rmnet_usb0/rmnet_usb1 has an IPv4 address, client mode installs no
   WiFi default route. WiFi is SSH-only; the modem default and per-server host
   routes stay authoritative. The V21 `route replace default via wlan0` route
@@ -90,7 +90,7 @@ V22 BlueLink-safe client routing:
   high-metric proto-66 fallback is installed. A 30 s audit reconciles the two.
   Advanced: client_route_policy=fallback in /rw_data/wifi1b/config.conf.
 
-V22 Orange Pi USB-SSH:
+V22+ Orange Pi USB-SSH:
   usb0 is configured as 10.55.0.2/24 with no default route. The generated
   runtime udev rule/helper uses the configured SSH port and remains available
   when WiFi is Off. ConnMan is kept off usb0. A missing Pi is a no-op.
