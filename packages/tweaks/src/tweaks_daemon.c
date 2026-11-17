@@ -290,6 +290,21 @@ static int front_owned(void);
 static void write_status(void);
 static void reboot_tick(void);
 
+#define LOG_MAX_BYTES (1024 * 1024)
+
+/* daemon.log is append-only from this daemon and from the unit's stderr
+ * redirect, so truncate in place: a rename would leave the unit's O_APPEND
+ * descriptor writing to the unlinked inode.  /rw_data is a 1.2 GB partition. */
+static void log_cap(const char *path)
+{
+    struct stat st;
+    if (lstat(path, &st) != 0 || !S_ISREG(st.st_mode) ||
+        st.st_size <= LOG_MAX_BYTES)
+        return;
+    int fd = open(path, O_WRONLY | O_TRUNC | O_CLOEXEC);
+    if (fd >= 0) close(fd);
+}
+
 static void log_msg(const char *fmt, ...)
 {
     char path[MAX_PATH];
@@ -302,6 +317,7 @@ static void log_msg(const char *fmt, ...)
     localtime_r(&now, &tmv);
     strftime(stamp, sizeof(stamp), "%Y-%m-%dT%H:%M:%S", &tmv);
     snprintf(path, sizeof(path), "%s/daemon.log", cfg.rw_dir);
+    log_cap(path);
     f = fopen(path, "a");
     if (!f)
         return;
@@ -2938,6 +2954,13 @@ static void tick(void)
     int night_on;
 
     trace_msg("tick enter");
+
+    /* Cap the unit's stderr-only growth while the daemon is otherwise quiet. */
+    {
+        char cap_path[MAX_PATH];
+        snprintf(cap_path, sizeof(cap_path), "%s/daemon.log", cfg.rw_dir);
+        log_cap(cap_path);
+    }
 
     for (int i = 0; i < 2; i++) {
         int st;

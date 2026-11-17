@@ -665,4 +665,15 @@ PY
 kill "$pidi" 2>/dev/null || true
 wait "$pidi" 2>/dev/null || true
 
+# daemon.log is capped at 1 MiB (the unit redirects stderr into it).
+dd if=/dev/zero of="$TMP/rw/daemon.log" bs=1024 count=1536 2>/dev/null
+"$BIN" --rw-dir "$TMP/rw" --once --no-dbus >/dev/null
+test "$(wc -c < "$TMP/rw/daemon.log")" -lt 1048576
+
+# The cap never follows a symlinked log.
+dd if=/dev/zero of="$TMP/rw/real-log" bs=1024 count=1536 2>/dev/null
+ln -sf "$TMP/rw/real-log" "$TMP/rw/daemon.log"
+"$BIN" --rw-dir "$TMP/rw" --once --no-dbus >/dev/null
+test "$(wc -c < "$TMP/rw/real-log")" -gt 1048576
+
 echo "PASS: daemon smoke test"
