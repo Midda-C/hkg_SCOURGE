@@ -47,6 +47,11 @@ MOF configuration had initialized successfully, so deleting or replacing that
 configuration was not justified. The cache reader's missing-file branch logs
 the absence and continues, giving a narrow recovery path.
 
+`/app/data` is a symlink to `/rw_data/app_data`, so this cache and the regional
+configuration live on the **persistent** partition. That is why a firmware
+reflash did not clear the failure here: the unreadable cache survives the flash
+and the next boot repeats the startup exception.
+
 **Proximate root cause:** unreadable encrypted navigation cache aborts MOF
 initialization. **Unresolved upstream cause:** why that cache no longer decrypted.
 The evidence does not distinguish ciphertext damage from a key/state mismatch.
@@ -95,6 +100,12 @@ corruption time. Size alone does not prove truncation: the expected ciphertext
 length for the historical save was not established. An encrypted file may also
 fail decryption if the applicable key/state changed, with no changed ciphertext.
 
+The same boot's MOF log begins at 11:50:34 and its first error burst is
+11:51–11:54 (42 errors), contemporaneous with that write. The failure is
+therefore consistent with the first provisioning boot on November 10, not with
+the Wifi1b work five days later. The log cannot prove causal direction: its
+payloads are encrypted, so only severity and timestamps are readable.
+
 There is no complete, verified earlier good copy of this exact file in the
 examined evidence, no captured failing `fwrite`/`fflush` result for its save,
 and no contemporaneous November 10 filesystem-capacity snapshot. The examined
@@ -142,8 +153,8 @@ After explicit approval, on the parked owner's vehicle:
 
 | Before | After |
 |---|---|
-| Four MOF threads; startup exception | Workers started: 22 threads initially, 12 later |
-| Request queue 44,352 bytes | Queue drained to zero and stayed empty in follow-up |
+| Four MOF threads; startup exception | Workers started: 22 threads initially, 11 in a later sample |
+| Request queue 44,352 bytes | Queue drained; later samples held only small live messages (80 B) |
 | No external MOF TCP session observed | External established server connections appeared |
 | No demonstrated successful server transactions | Valid token; speed-camera/weather HTTP 200; traffic/diagnostics HTTP 204 |
 
@@ -159,9 +170,17 @@ than treating replayed queue contents as a complete acceptance test.
 Failed TCP/ICMP to public addresses was incorrectly presented as proof of a
 suspended SIM, expired subscription, or modem forwarding failure. Carrier DNS
 worked, but neither that nor public-address timeouts established BlueLink
-endpoint reachability. The actual Hyundai endpoints later answered over the
-same cellular path. A restricted APN is consistent with this; its precise
-policy was not proven.
+endpoint reachability. MOF's own connections later answered over the same
+cellular path.
+
+Endpoint-level TCP reachability is not a valid health check. After the repair,
+every plain TCP/443 connect to `103.187.35.x` still timed out — from the car,
+from a Dutch public host, and from the house Internet. On the probed server,
+`443` and most other ports returned no answer at all, while only `8010`,
+`8011`, `8306`, and `8308` produced an immediate RST. MOF's own flows still
+completed and returned HTTP 200/204. Service-side filtering is the remaining
+locus, not the car: a bare `socat`/`nc` probe to the endpoint proves nothing
+either way.
 
 The earlier source-bound context-2 test also did not prove context-2 egress:
 binding a source address does not replace route selection.
@@ -176,6 +195,26 @@ No such recovery was observed, but the scripts must not be reused as validated
 health checks. A future probe must verify prerequisites, bound the operation,
 check the actual exit code, test a relevant endpoint, and distinguish timeout
 from refusal and command failure.
+
+### Environment ruled out
+
+The incident SIM (`204-04`, Vodafone NL) was roaming: registered on `206-10`
+(Orange Belgium), automatic selection, with only that PLMN visible. These were
+checked and are not the cause:
+
+- APN contexts `hmg.eu` and `hmg.ota.eu` were byte-identical to the factory
+  copy dated 2025-04-29, and the regional MOF configuration had loaded.
+- Provisioning reported full enrollment (`BroadcastCurrentProv=1`,
+  `GetNetworkReject=0`, modem `HMC5WR18`).
+- Both contexts were dual-stack, but the PDP carried no IPv6 settings and the
+  interface had no IPv6 address, so IPv6 was not an alternative path.
+- A full modem power cycle re-registered LTE, returned the same context-1
+  address, and did not change the failure.
+- The head-unit firewall had zero `HARDEN_DROP` counters and both contexts had
+  correct routes.
+
+None of these changed the startup exception; the repair did. Future
+investigations should not re-derive them from scratch.
 
 ### Access failures were mixed with application failures
 
@@ -202,8 +241,8 @@ failure, queue backlog, and their reversal after the targeted repair.
 
 ## Repository follow-up
 
-- Land the existing V22/V23 modem-safe route and USB-SSH changes on `main`,
-  preserving the newer log-retention fixes already there.
+- V22/V23 modem-safe route and USB-SSH changes are landed on `main`
+  (`4d0bfd1`), preserving the newer log-retention fixes.
 - Document the diagnostic layers and the narrow manual repair in the
   [BlueLink guide](architecture-and-diagnostics.md).
 - Do **not** add blanket cache deletion, key regeneration, provisioning reset,
@@ -222,6 +261,13 @@ Matching `MOFManager` SHA256:
 `84e3fd380feda27a6bd9971b2e24589900d1bef9d7729ce591181373b9323872`.
 Static evidence came from the matching captured binary and `libmofgen2`;
 runtime checks used the owner's Pi reverse tunnel and car USB SSH.
+
+`/app/data/Mofgen2/EUROPE/mofgen2.conf` is encrypted. It measured 3416 bytes
+before the repair; the repair restart rewrote it to 3418 bytes, so a byte-level
+comparison of the causal state needs the pre-repair copy, not the current file.
+Other persistent encrypted inputs on this path include
+`/app/data/provisionInformation.dat` (1268 bytes) and
+`/app/data/Mofgen2/mof_proving.bin` (8 bytes).
 
 Relevant retained REA records:
 
