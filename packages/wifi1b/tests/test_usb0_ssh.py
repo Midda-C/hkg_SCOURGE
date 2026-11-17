@@ -45,4 +45,4 @@ with tempfile.TemporaryDirectory(prefix="wifi1b-usb0-", dir="/tmp/opencode") as 
     assert rule.is_file()
     assert 'KERNEL=="usb0"' in rule.read_text()
 
-print("PASS: usb0 SSH is deferred without the Pi and starts/stops with WiFi off")
+print("PASS: USB SSH is ensured in WiFi client mode and when WiFi is off")

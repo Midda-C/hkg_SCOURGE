@@ -37,6 +37,26 @@ int main(void)
     ssh_stop();
     if (owned_dropbear_pid() > 0) return 7;
 
+    /* Regression: in WiFi client mode the WiFi health branches return early
+     * when the association is down; the USB ensure must run before them. */
+    g_cfg.mode = MODE_CLIENT;
+    g_cfg.wlan_on = true;
+    g_cfg.ssh_enabled = true;
+    g_work_kind = WORK_MODE;
+    g_pending_kind = WORK_MODE;
+    g_work_pending = false;
+    g_apply_pid = 0;
+    g_last_watchdog_ms = -60000;
+    g_network_failed = false;
+    g_boot_dumped = true;
+    watchdog();
+    if (g_work_kind != WORK_SSH) return 10;
+    if (g_apply_pid > 0) {
+        waitpid(g_apply_pid, NULL, 0);
+        g_apply_pid = 0;
+    }
+    ssh_stop();
+
     if (!g_cfg.ssh_enabled) return 8;
     g_cfg.ssh_enabled = false;
     if (ssh_start() != false) return 9;

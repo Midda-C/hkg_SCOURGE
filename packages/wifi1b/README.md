@@ -45,7 +45,10 @@ explicit navigation search, and post-repair reboot persistence remain pending.
 - V22+ Orange Pi USB-SSH: the ECM link is `usb0` at `10.55.0.2/24` with no
   default route. The generated udev rule and helper follow the configured
   Wifi1b SSH port, and dropbear stays available over `usb0` when WiFi is Off.
-  ConnMan is kept off `usb0` so it cannot overwrite the static link.
+  The watchdog also ensures the listener whenever `usb0` is present, even
+  while WiFi is unassociated or failed, so startup no longer depends on a
+  manual key import. ConnMan is kept off `usb0` so it cannot overwrite the
+  static link.
 - `client_route_policy=modem_safe` is the default; `fallback` is available in
   `config.conf` for owners who need a WiFi default while the modem is up.
 - The ConnMan drop-in accepts the exact known V21 file for an over-the-top

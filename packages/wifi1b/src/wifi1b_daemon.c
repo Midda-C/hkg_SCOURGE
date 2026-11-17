@@ -4286,6 +4286,15 @@ static void watchdog(void)
 
     if (g_apply_pid > 0 || g_work_pending) return;
 
+    /* The Pi USB link is the out-of-band management path.  Ensure its SSH
+     * listener even while WiFi is unassociated or failed: the WiFi health
+     * branches below return early and would otherwise starve it. */
+    if (g_cfg.ssh_enabled && usb0_present() && !ssh_running()) {
+        log_msg("watchdog: USB SSH down; restarting");
+        request_work(WORK_SSH, false);
+        return;
+    }
+
     if (!g_cfg.wlan_on || g_cfg.mode == MODE_OFF) {
         /* The Pi USB SSH path is expected to outlive WiFi Off.  Dropbear
          * running only for usb0 is not a stale WiFi reservation. */
@@ -4294,8 +4303,6 @@ static void watchdog(void)
              radio_owner_is("wifi1b_daemon")) &&
             now - g_last_mode_ms > 15000)
             apply_mode(false);
-        if (g_cfg.ssh_enabled && usb0_present() && !ssh_running())
-            request_work(WORK_SSH, false);
         return;
     }
 
