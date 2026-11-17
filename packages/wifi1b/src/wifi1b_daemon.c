@@ -78,6 +78,10 @@
 #define SCAN_RESULT    APP_DIR "/scan.json"
 #define BT_STATE       APP_DIR "/bt.state"
 #define SSH_BOUND      APP_DIR "/ssh.bound"
+#define USB0_HELPER    APP_DIR "/bin/opi-usb0-up.sh"
+#ifndef USB0_RULE_PATH
+#define USB0_RULE_PATH "/run/udev/rules.d/99-opi-usb0.rules"
+#endif
 #define AP_STATION_IP  APP_DIR "/ap.station-ip"
 #define HOME_STATE     APP_DIR "/home.json"
 #define SESSION_ENV    "/tmp/session_appmgr.env"
@@ -103,6 +107,10 @@
 #define CAR_SHADOW_LINE WIFI1B_SHADOW_LINE
 
 typedef enum { MODE_OFF = 0, MODE_CLIENT, MODE_CARPLAY } wifi_mode_t;
+typedef enum {
+    CLIENT_ROUTE_MODEM_SAFE = 0,   /* no WiFi default while modem has IPv4 */
+    CLIENT_ROUTE_FALLBACK          /* high-metric WiFi fallback default */
+} client_route_policy_t;
 
 typedef struct {
     wifi_mode_t mode;
@@ -128,6 +136,7 @@ typedef struct {
 
     bool ssh_enabled;
     int  ssh_port;
+    client_route_policy_t client_route_policy;
 
     /* 0 = Wifi1b owns wireless CarPlay, 1 = hand back to stock USB CarPlay. */
     int  carplay_control;
@@ -138,6 +147,7 @@ typedef struct {
 
 static config_t g_cfg;
 static volatile sig_atomic_t g_stop;
+static bool g_shutdown_cleanup;
 static bool g_log_stderr = true;   /* one-shot CLI mode; daemon redirects stderr into the same log file */
 static bool g_pure_query;
 static int g_apply_gen;            /* increments per apply; stale children cannot publish */
@@ -982,6 +992,7 @@ static void config_defaults(void)
     str_copy(g_cfg.cp_ssid, sizeof(g_cfg.cp_ssid), "IONIQ5-CarPlay-B");
     g_cfg.ssh_enabled = false;
     g_cfg.ssh_port = SSH_DEFAULT_PORT;
+    g_cfg.client_route_policy = CLIENT_ROUTE_MODEM_SAFE;
     g_cfg.carplay_control = 0;
 }
 
@@ -1053,6 +1064,9 @@ static void config_load(void)
             g_cfg.ssh_port = atoi(v);
             if (g_cfg.ssh_port < 1 || g_cfg.ssh_port > 65535)
                 g_cfg.ssh_port = SSH_DEFAULT_PORT;
+        } else if (!strcmp(k, "client_route_policy")) {
+            g_cfg.client_route_policy = !strcmp(v, "fallback")
+                ? CLIENT_ROUTE_FALLBACK : CLIENT_ROUTE_MODEM_SAFE;
         } else if (!strcmp(k, "config_version")) {
             has_version = true;
         } else if (!strcmp(k, "imported")) {
@@ -1099,6 +1113,7 @@ static bool config_save(void)
              "carplay_btaddr=%s\n"
              "ssh=%d\n"
              "ssh_port=%d\n"
+             "client_route_policy=%s\n"
              "carplay_control=%s\n"
              "imported=%d\n"
              "imported_from=%s\n",
@@ -1114,6 +1129,8 @@ static bool config_save(void)
              g_cfg.cp_manufacturer, g_cfg.cp_model, g_cfg.cp_name,
              g_cfg.cp_id, g_cfg.cp_btaddr,
              g_cfg.ssh_enabled ? 1 : 0, g_cfg.ssh_port,
+             g_cfg.client_route_policy == CLIENT_ROUTE_FALLBACK
+                 ? "fallback" : "modem_safe",
              g_cfg.carplay_control ? "stock" : "wifi1b",
              g_cfg.imported ? 1 : 0, g_cfg.imported_from);
 
@@ -3526,6 +3543,10 @@ static void ssh_stop(void)
     }
     char tool[256]; fw_tool(tool, sizeof(tool));
     fw_chain_close(tool, "WIFI1B_APP_SSH");
+    usb0_fw_close(0);
+    /* Keep usb0 configured for the Pi, but close its SSH port until the
+     * next ssh_start chooses one. */
+    usb0_rule_write(0);
     g_ssh_active_port = 0;
     g_ssh_fw_open = false;
     g_ssh_port_fallback = false;
@@ -3545,12 +3566,18 @@ static void ssh_fw_tick(void)
     last_ms = now;
     if (g_apply_pid > 0 || g_work_pending) return;
     if (!g_cfg.ssh_enabled || !g_ssh_active_port || !ssh_running()) return;
-    bool ok = fw_open(g_ssh_active_port);
-    if (ok != g_ssh_fw_open) {
-        g_ssh_fw_open = ok;
-        log_msg("SSH: firewall rule %s on port %d",
-                ok ? "restored" : "missing", g_ssh_active_port);
+    if (ssh_wifi_active()) {
+        bool ok = fw_open(g_ssh_active_port);
+        if (ok != g_ssh_fw_open) {
+            g_ssh_fw_open = ok;
+            log_msg("SSH: firewall rule %s on port %d",
+                    ok ? "restored" : "missing", g_ssh_active_port);
+        }
+    } else {
+        g_ssh_fw_open = false;
     }
+    if (usb0_present() && !usb0_fw_open(g_ssh_active_port))
+        log_msg("SSH: usb0 firewall rule missing on port %d", g_ssh_active_port);
 }
 
 /* A full filesystem can leave status.json.tmp.<pid> files behind when the
@@ -3843,6 +3870,8 @@ static bool accept_apply_result(char *buf)
     char lease_iface[16] = "";
     int lease_updated = 0, lease_valid = 0, lease_route_ok = 0;
     int lease_prefix = 0, lease_s = 0, lease_t1 = 0, lease_t2 = 0;
+    int lease_wifi_default = 0, lease_modem_ipv4 = 0, lease_legacy_removed = 0;
+    bool have_wifi_default = false;
     unsigned int lease_metric = 0, lease_proto = 0;
     while ((line = strtok_r(NULL, "\n", &save))) {
         char *eq = strchr(line, '=');
@@ -3878,6 +3907,12 @@ static bool accept_apply_result(char *buf)
         else if (!strcmp(line, "client_lease_t1_s")) lease_t1 = v;
         else if (!strcmp(line, "client_lease_t2_s")) lease_t2 = v;
         else if (!strcmp(line, "client_lease_route_ok")) lease_route_ok = v == 1;
+        else if (!strcmp(line, "client_wifi_default")) {
+            lease_wifi_default = v == 1;
+            have_wifi_default = true;
+        }
+        else if (!strcmp(line, "client_modem_ipv4")) lease_modem_ipv4 = v == 1;
+        else if (!strcmp(line, "client_legacy_route_removed")) lease_legacy_removed = v;
         else if (!strcmp(line, "client_route_metric")) {
             unsigned int tmp;
             if (w2_route_token_u32(eq, &tmp)) lease_metric = tmp;
@@ -3887,12 +3922,17 @@ static bool accept_apply_result(char *buf)
         }
     }
     if (lease_updated) {
-        struct in_addr ip_addr, server_addr, gateway_addr;
+        struct in_addr ip_addr = {0}, server_addr = {0}, gateway_addr = {0};
+        if (!have_wifi_default) lease_wifi_default = lease_route_ok;
+        bool gateway_ok = lease_gateway[0] == '\0' ||
+                          inet_pton(AF_INET, lease_gateway, &gateway_addr) == 1;
         bool parsed = inet_pton(AF_INET, lease_ip, &ip_addr) == 1 &&
-                      inet_pton(AF_INET, lease_gateway, &gateway_addr) == 1 &&
+                      gateway_ok &&
                       (lease_server[0] == '\0' || inet_pton(AF_INET, lease_server, &server_addr) == 1);
         bool route_meta = !lease_route_ok ||
-                          (lease_metric > 0 && lease_proto > 0);
+                          (lease_wifi_default
+                               ? (lease_metric > 0 && lease_proto > 0)
+                               : (lease_metric == 0 && lease_proto == 0));
         if (lease_valid && parsed && route_meta &&
             lease_prefix > 0 && lease_prefix <= 32 &&
             lease_s >= 60 && lease_t1 > 0 && lease_t2 > lease_t1 &&
@@ -3908,8 +3948,11 @@ static bool accept_apply_result(char *buf)
             g_dhcp_lease.lease_s = lease_s;
             g_dhcp_lease.t1_s = lease_t1;
             g_dhcp_lease.t2_s = lease_t2;
+            g_dhcp_lease.wifi_default = lease_wifi_default != 0;
             g_dhcp_lease.route_metric = lease_metric;
             g_dhcp_lease.route_proto = lease_proto;
+            g_client_modem_ipv4 = lease_modem_ipv4 != 0;
+            g_client_legacy_routes_removed = lease_legacy_removed;
             str_copy(g_dhcp_lease.iface, sizeof(g_dhcp_lease.iface), lease_iface);
             g_client_t1_at_ms = now + (int64_t)lease_t1 * 1000;
             g_client_t2_at_ms = now + (int64_t)lease_t2 * 1000;
@@ -4002,7 +4045,7 @@ static void start_pending_work(void)
         else if (g_work_kind == WORK_SSH) {
             if (g_pairing_stop_requested) bt_pair_stop();
             ssh_stop();
-            ok = !g_cfg.ssh_enabled || !g_cfg.wlan_on || g_cfg.mode == MODE_OFF || ssh_start();
+            ok = !g_cfg.ssh_enabled || ssh_start();
         } else if (g_work_kind == WORK_PAIR_STOP) {
             bt_pair_stop();
             ok = g_pair_stop_confirmed;
@@ -4036,7 +4079,9 @@ static void start_pending_work(void)
                  "client_lease_ip=%s\nclient_lease_server=%s\nclient_lease_gateway=%s\n"
                  "client_lease_prefix=%d\nclient_lease_lease_s=%d\n"
                  "client_lease_t1_s=%d\nclient_lease_t2_s=%d\n"
-                 "client_lease_route_ok=%d\nclient_route_metric=%u\n"
+                 "client_lease_route_ok=%d\nclient_wifi_default=%d\n"
+                 "client_modem_ipv4=%d\nclient_legacy_route_removed=%d\n"
+                 "client_route_metric=%u\n"
                  "client_route_proto=%u\nclient_lease_iface=%s\n",
                  g_apply_gen, ok ? 1 : 0, g_last_msg,
                  g_cfg.cp_band, g_cfg.cp_channel, g_cfg.ssh_port,
@@ -4049,7 +4094,11 @@ static void start_pending_work(void)
                  lease_ip, lease_server, lease_gateway,
                  g_dhcp_lease.prefix, g_dhcp_lease.lease_s,
                  g_dhcp_lease.t1_s, g_dhcp_lease.t2_s,
-                 g_dhcp_lease.route_ok ? 1 : 0, g_dhcp_lease.route_metric,
+                 g_dhcp_lease.route_ok ? 1 : 0,
+                 g_dhcp_lease.wifi_default ? 1 : 0,
+                 g_client_modem_ipv4 ? 1 : 0,
+                 g_client_legacy_routes_removed,
+                 g_dhcp_lease.route_metric,
                  g_dhcp_lease.route_proto, g_dhcp_lease.iface);
         if (!g_stop) write_file_atomic(APPLY_RESULT, buf, 0600);
         _exit(0);
@@ -4192,6 +4241,29 @@ static void dhcp_lease_tick(void)
     request_work(WORK_DHCP, false);
 }
 
+/* Route intent drifts when ConnMan brings the modem data call up/down or
+ * another service rewrites the default table.  Reconcile every 30 s without
+ * ever touching a foreign route. */
+static void route_audit_tick(void)
+{
+    static int64_t last_ms;
+    int64_t now = now_ms();
+    if (now - last_ms < 30000) return;
+    last_ms = now;
+    if (g_apply_pid > 0 || g_work_pending) return;
+    if (g_cfg.mode != MODE_CLIENT || !g_cfg.wlan_on || !g_dhcp_lease.valid)
+        return;
+    bool before_default = g_dhcp_lease.wifi_default;
+    unsigned int before_metric = g_dhcp_lease.route_metric;
+    if (!w2_client_route_audit()) {
+        log_msg("route audit: failed; keeping current intent");
+        return;
+    }
+    if (before_default != g_dhcp_lease.wifi_default ||
+        before_metric != g_dhcp_lease.route_metric)
+        write_status();
+}
+
 static void watchdog(void)
 {
     int64_t now = now_ms();
@@ -4215,11 +4287,15 @@ static void watchdog(void)
     if (g_apply_pid > 0 || g_work_pending) return;
 
     if (!g_cfg.wlan_on || g_cfg.mode == MODE_OFF) {
-        /* A retained reservation with configured Off is stale: keep retrying
-         * the verified release even when nothing else is observed alive. */
-        if ((wpa_process_alive() || ssh_running() || radio_owner_is("wifi1b_daemon")) &&
+        /* The Pi USB SSH path is expected to outlive WiFi Off.  Dropbear
+         * running only for usb0 is not a stale WiFi reservation. */
+        bool usb_ssh = g_cfg.ssh_enabled && usb0_present();
+        if ((wpa_process_alive() || (ssh_running() && !usb_ssh) ||
+             radio_owner_is("wifi1b_daemon")) &&
             now - g_last_mode_ms > 15000)
             apply_mode(false);
+        if (g_cfg.ssh_enabled && usb0_present() && !ssh_running())
+            request_work(WORK_SSH, false);
         return;
     }
 
@@ -4260,6 +4336,7 @@ static void watchdog(void)
             apply_mode(false);
             return;
         }
+        route_audit_tick();
     }
     if (g_cfg.ssh_enabled && !ssh_running()) {
         log_msg("watchdog: SSH down; restarting");
@@ -4448,6 +4525,10 @@ static void build_status(char *out, size_t n)
              "\"client_lease_remaining_s\":%d,"
              "\"client_lease_state\":\"%s\","
              "\"client_route_ok\":%s,"
+             "\"client_route_policy\":\"%s\","
+             "\"client_wifi_default\":%s,"
+             "\"client_modem_ipv4\":%s,"
+             "\"client_legacy_route_removed\":%d,"
              "\"client_route_metric\":%u,"
              "\"client_route_proto\":%u,"
              "\"client_gateway\":\"%s\","
@@ -4485,6 +4566,7 @@ static void build_status(char *out, size_t n)
              "\"ssh_port\":%d,"
              "\"ssh_port_fallback\":%s,"
              "\"ssh_fw_open\":%s,"
+             "\"ssh_usb_fw_open\":%s,"
              "\"disk_free_kb\":%lld,"
              "\"disk_low\":%s,"
              "\"dhcp_tx\":%d,\"dhcp_rx_offer\":%d,\"dhcp_rx_ack\":%d,\"dhcp_attempts\":%d,"
@@ -4521,6 +4603,11 @@ static void build_status(char *out, size_t n)
              client_lease_remaining,
              client_lease_state,
              client_route_ok ? "true" : "false",
+             g_cfg.client_route_policy == CLIENT_ROUTE_FALLBACK
+                 ? "fallback" : "modem_safe",
+             g_dhcp_lease.wifi_default ? "true" : "false",
+             g_client_modem_ipv4 ? "true" : "false",
+             g_client_legacy_routes_removed,
              g_dhcp_lease.route_metric,
              g_dhcp_lease.route_proto,
              client_gw_e,
@@ -4549,6 +4636,7 @@ static void build_status(char *out, size_t n)
              active_ssh_port,
              g_ssh_port_fallback ? "true" : "false",
              g_ssh_fw_open ? "true" : "false",
+             (g_usb0_fw_port > 0 && usb0_present()) ? "true" : "false",
              free_kb,
              disk_low ? "true" : "false",
              g_dhcp_tx, g_dhcp_rx_offer, g_dhcp_rx_ack, g_dhcp_attempts,
@@ -5351,9 +5439,97 @@ static void usage(const char *argv0)
     fprintf(stderr,
             "usage: %s [--port 8093] [--status-file PATH]\n"
             "       %s --status|--mode off|client|carplay|--import|--ssh on|off\n"
-            "       %s --ensure-user|--choose-port PORT\n"
-            "       %s --dump-logs\n",
+            "       %s --ensure-user|--choose-port PORT|--ssh-gate\n"
+            "       %s --usb0-rule PORT|--dump-logs\n",
             argv0, argv0, argv0, argv0);
+}
+
+/* The Orange Pi ECM gadget is the out-of-band SSH path.  The helper is
+ * deliberately a generated first-party script so udev and the daemon share
+ * one implementation: static 10.55.0.2/24, no default route, and only the
+ * currently selected SSH port open on usb0. */
+static const char *usb0_helper_text =
+    "#!/bin/sh\n"
+    "# SPDX-FileCopyrightText: 2026 The SCOURGE Project contributors\n"
+    "# SPDX-License-Identifier: AGPL-3.0-only\n"
+    "# Generated by wifi1b_daemon.  No default route: this is a management link.\n"
+    "IFACE=\"${1:-usb0}\"\n"
+    "PORT=\"${2:-0}\"\n"
+    "[ \"$IFACE\" = \"usb0\" ] || exit 2\n"
+    "case \"$PORT\" in ''|*[!0-9]*) exit 2 ;; esac\n"
+    "IFCONFIG=/sbin/ifconfig\n"
+    "[ -x \"$IFCONFIG\" ] || IFCONFIG=ifconfig\n"
+    "\"$IFCONFIG\" \"$IFACE\" " WIFI1B_USB0_IP " netmask " WIFI1B_USB0_NETMASK \
+    " up 2>/dev/null || true\n"
+    "IP=/sbin/ip\n"
+    "[ -x \"$IP\" ] || IP=ip\n"
+    "\"$IP\" -4 route del default dev \"$IFACE\" 2>/dev/null || true\n"
+    "IPT=/usr/sbin/iptables\n"
+    "[ -x \"$IPT\" ] || IPT=/sbin/iptables\n"
+    "[ -x \"$IPT\" ] || IPT=iptables\n"
+    "\"$IPT\" -N WIFI1B_USB0_SSH 2>/dev/null || true\n"
+    "\"$IPT\" -C INPUT -i \"$IFACE\" -j WIFI1B_USB0_SSH 2>/dev/null || \\\n"
+    "    \"$IPT\" -I INPUT -i \"$IFACE\" -j WIFI1B_USB0_SSH 2>/dev/null || true\n"
+    "\"$IPT\" -F WIFI1B_USB0_SSH 2>/dev/null || true\n"
+    "if [ \"$PORT\" -gt 0 ]; then\n"
+    "    \"$IPT\" -A WIFI1B_USB0_SSH -p tcp --dport \"$PORT\" -j ACCEPT 2>/dev/null || true\n"
+    "fi\n"
+    "exit 0\n";
+
+static void usb0_rule_write(int port)
+{
+    static int last_port = -1;
+    if (port < 0 || port > 65535) port = 0;
+    bool helper_ok = file_exists(USB0_HELPER) && file_exists(USB0_RULE_PATH);
+    if (helper_ok && last_port == port) {
+        if (usb0_present()) {
+            /* Re-assert the static address if the interface lost it, and
+             * the firewall rule after a vendor reload. */
+            (void)sh("/bin/sh %s %s %d 2>/dev/null", USB0_HELPER,
+                     WIFI1B_USB0_IFACE, port);
+            if (port > 0) (void)usb0_fw_open(port);
+        }
+        return;
+    }
+
+    mkdir(APP_DIR, 0755);
+    mkdir(APP_DIR "/bin", 0755);
+    if (write_file_atomic(USB0_HELPER, usb0_helper_text, 0755) != 0) {
+        log_msg("usb0: cannot write %s", USB0_HELPER);
+        return;
+    }
+    chmod(USB0_HELPER, 0755);
+#ifndef WIFI_TEST
+    sh("chsmack -a _ %s 2>/dev/null", USB0_HELPER);
+#endif
+
+    char rule[512];
+    snprintf(rule, sizeof(rule),
+             "ACTION==\"add\", SUBSYSTEM==\"net\", KERNEL==\"%s\", "
+             "RUN+=\"/bin/sh %s %s %d\"\n",
+             WIFI1B_USB0_IFACE, USB0_HELPER, WIFI1B_USB0_IFACE, port);
+    char dir[256];
+    snprintf(dir, sizeof(dir), "%s", USB0_RULE_PATH);
+    char *slash = strrchr(dir, '/');
+    if (slash) {
+        *slash = 0;
+        if (*dir) mkdir(dir, 0755);
+    }
+    if (write_file_atomic(USB0_RULE_PATH, rule, 0644) != 0)
+        log_msg("usb0: cannot write %s", USB0_RULE_PATH);
+    chmod(USB0_RULE_PATH, 0644);
+#ifndef WIFI_TEST
+    sh("udevadm control --reload-rules 2>/dev/null");
+
+    if (usb0_present()) {
+        if (sh("/bin/sh %s %s %d 2>/dev/null", USB0_HELPER,
+               WIFI1B_USB0_IFACE, port) != 0)
+            log_msg("usb0: immediate link apply failed");
+        if (port > 0) (void)usb0_fw_open(port);
+    }
+#endif
+    last_port = port;
+    log_msg("usb0: Pi ECM link rule updated (ssh_port=%d)", port);
 }
 
 /* Bring up the USB ECM link to the Pi when it is connected.  The head unit's
@@ -5368,20 +5544,7 @@ static void usbnet_bootstrap(void)
         close(fd);
     }
     (void)system("modprobe usbnet 2>/dev/null; modprobe cdc_ether 2>/dev/null");
-
-    const char *rule =
-        "ACTION==\"add\", SUBSYSTEM==\"net\", KERNEL==\"usb0\", "
-        "RUN+=\"/bin/sh -c 'ifconfig usb0 10.55.0.2 netmask 255.255.255.0 up; "
-        "iptables -C INPUT -i usb0 -p tcp --dport 2222 -j ACCEPT 2>/dev/null || "
-        "iptables -I INPUT -i usb0 -p tcp --dport 2222 -j ACCEPT'\"\n";
-    (void)mkdir("/run/udev/rules.d", 0755);
-    int rf = open("/run/udev/rules.d/99-opi-usb0.rules",
-                  O_WRONLY | O_CREAT | O_TRUNC, 0644);
-    if (rf >= 0) {
-        (void)write(rf, rule, strlen(rule));
-        close(rf);
-    }
-    (void)system("udevadm control --reload-rules 2>/dev/null");
+    usb0_rule_write(g_cfg.ssh_enabled ? g_cfg.ssh_port : 0);
 }
 
 int main(int argc, char **argv)
@@ -5394,6 +5557,7 @@ int main(int argc, char **argv)
     const char *one_ssh = NULL;
     const char *one_file = NULL;
     const char *one_port = NULL;
+    const char *one_usb0_port = NULL;
 
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--port") && i + 1 < argc) port = atoi(argv[++i]);
@@ -5405,6 +5569,8 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--ssh") && i + 1 < argc) { one_shot = "ssh"; one_ssh = argv[++i]; }
         else if (!strcmp(argv[i], "--ensure-user")) one_shot = "ensure-user";
         else if (!strcmp(argv[i], "--choose-port") && i + 1 < argc) { one_shot = "choose-port"; one_port = argv[++i]; }
+        else if (!strcmp(argv[i], "--ssh-gate")) one_shot = "ssh-gate";
+        else if (!strcmp(argv[i], "--usb0-rule") && i + 1 < argc) { one_shot = "usb0-rule"; one_usb0_port = argv[++i]; }
         else if (!strcmp(argv[i], "--dump-logs")) one_shot = "dump-logs";
         else if (!strcmp(argv[i], "--dhcpd")) dhcpd_mode = true;
         else if (!strcmp(argv[i], "--dhcp-client")) one_shot = "dhcp-client";
@@ -5415,7 +5581,6 @@ int main(int argc, char **argv)
         mkdir(APP_DIR, 0755);
         return w2_dhcpd_run() ? 0 : 1;
     }
-    if (!one_shot) usbnet_bootstrap();
 
     /* One-shot CLI mode: no side effects, no daemon state, stderr logging.
      * Pure queries (--status, --choose-port) must not create directories,
@@ -5423,6 +5588,7 @@ int main(int argc, char **argv)
     g_log_stderr = one_shot != NULL;
     bool pure_query = one_shot && (!strcmp(one_shot, "status") ||
                                    !strcmp(one_shot, "choose-port") ||
+                                   !strcmp(one_shot, "ssh-gate") ||
                                    !strcmp(one_shot, "dump-logs"));
     g_pure_query = pure_query;
     /* Queries are read-only: they must not delete even stale .tmp files. */
@@ -5434,6 +5600,9 @@ int main(int argc, char **argv)
         unlink(BT_STATE);
     }
     config_load();
+    /* The Pi link rule needs the configured SSH port, so bootstrap only after
+     * the config is known.  One-shot queries stay side-effect free. */
+    if (!one_shot) usbnet_bootstrap();
     /* Shared wlan0 contract: our peer is the WiFi app. Before any worker. */
     radio_configure("wifi_daemon", "/rw_data/wifi/status.json");
     int instance_fd = -1;
@@ -5508,6 +5677,29 @@ int main(int argc, char **argv)
         if (!strcmp(one_shot, "ensure-user")) {
             bool ok = ensure_car_user();
             printf("{\"ok\":%s}\n", ok ? "true" : "false");
+            return ok ? 0 : 1;
+        }
+        if (!strcmp(one_shot, "ssh-gate")) {
+            printf("{\"ok\":true,\"wifi_active\":%s,\"usb0\":%s,"
+                   "\"available\":%s}\n",
+                   ssh_wifi_active() ? "true" : "false",
+                   usb0_present() ? "true" : "false",
+                   ssh_transport_available() ? "true" : "false");
+            return 0;
+        }
+        if (!strcmp(one_shot, "usb0-rule") && one_usb0_port) {
+            char *end = NULL;
+            long parsed = strtol(one_usb0_port, &end, 10);
+            if (end == one_usb0_port || *end != '\0' ||
+                parsed < 0 || parsed > 65535)
+                return 2;
+            int p = (int)parsed;
+            usb0_rule_write(p);
+            bool ok = file_exists(USB0_HELPER) && file_exists(USB0_RULE_PATH);
+            printf("{\"ok\":%s,\"helper\":\"%s\",\"rule\":\"%s\","
+                   "\"port\":%d,\"usb0\":%s}\n",
+                   ok ? "true" : "false", USB0_HELPER, USB0_RULE_PATH,
+                   p, usb0_present() ? "true" : "false");
             return ok ? 0 : 1;
         }
         if (!strcmp(one_shot, "choose-port") && one_port) {
@@ -5644,6 +5836,7 @@ int main(int argc, char **argv)
     pid_t cleanup = fork();
     if (cleanup == 0) {
         setpgid(0, 0); g_in_child = true; g_stop = 0;
+        g_shutdown_cleanup = true;
         close_child_fds(-1);
         g_cfg.wlan_on = false; g_cfg.mode = MODE_OFF;
         apply_mode_work(false);

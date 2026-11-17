@@ -10,6 +10,16 @@ This integrated version is **offline-tested, not car-validated**. It is work
 in progress: do not present it as a verified fix and do not deploy it to a
 vehicle without explicit owner authorization.
 
+Field evidence (2026-11-17): the V23 car build demonstrated modem-owned default
+routing alongside WiFi client mode and SSH through the Pi/`usb0` on port 2224.
+BlueLink's remaining startup blocker was an unreadable vendor navigation cache,
+not a reason to reset provisioning or keys. See the
+[BlueLink guide](../../docs/bluelink/architecture-and-diagnostics.md) and
+[postmortem](../../docs/bluelink/postmortem-2026-11-mof-cache.md).
+This is partial feature validation, not validation of all modes or of the
+combined tree with subsequent log-retention changes. Inbound remote commands,
+explicit navigation search, and post-repair reboot persistence remain pending.
+
 - Works standalone on the canonical Battery/Tweaks/Reboot base; no WiFi app
   reinstall and no migration stage
 - Also works beside an existing WiFi app and does not modify WiFi's page,
@@ -27,6 +37,19 @@ vehicle without explicit owner authorization.
 - Daemon starts idle; importing credentials never activates anything
 - Restore puts back the original shared QML and the original
   service file/enabled/active state from the install transaction
+- V22+ BlueLink-safe client routing: while `rmnet_usb0`/`rmnet_usb1` has an
+  IPv4 address, no WiFi default route is installed. WiFi remains an SSH-only
+  link; the V21 stale `route replace default via wlan0` is removed on client
+  start. A 30 s audit restores/removes the bounded proto-66 fallback as the
+  modem data state changes; routes on other interfaces are never touched.
+- V22+ Orange Pi USB-SSH: the ECM link is `usb0` at `10.55.0.2/24` with no
+  default route. The generated udev rule and helper follow the configured
+  Wifi1b SSH port, and dropbear stays available over `usb0` when WiFi is Off.
+  ConnMan is kept off `usb0` so it cannot overwrite the static link.
+- `client_route_policy=modem_safe` is the default; `fallback` is available in
+  `config.conf` for owners who need a WiFi default while the modem is up.
+- The ConnMan drop-in accepts the exact known V21 file for an over-the-top
+  upgrade; unknown owner overrides are still refused.
 
 The `wifi1b` account is a deliberate product default with UID 0, not a hidden
 credential. Owner keys already present in `/rw_data/wifi1b` are preserved

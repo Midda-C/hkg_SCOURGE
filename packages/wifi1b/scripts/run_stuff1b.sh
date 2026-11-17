@@ -34,6 +34,10 @@ MDNS_DROPIN="${WIFI1B_MDNS_DROPIN:-/etc/systemd/system/carplay_mdnsd.service.d/6
 CONNMAN_DROPIN="${WIFI1B_CONNMAN_DROPIN:-/etc/systemd/system/connman.service.d/60-scourge-nodevice.conf}"
 CONNMAN_UNIT="${WIFI1B_CONNMAN_UNIT:-/lib/systemd/system/connman.service}"
 CONNMAN_UNIT_MD5=58f77230485566943fc8b7a38175034a
+# V21 shipped the previous comment-only variant of the same interface list.
+# Accept that exact known file for an over-the-top V22 install; anything else
+# is still an unknown owner override and must not be overwritten.
+CONNMAN_DROPIN_LEGACY_MD5=ee5432d1e0bda5a4d1bc4bff65d4f2ed
 wifi1b_import=not-present
 
 ADV="HomeScreen/QHMI_HomeScreenMain_Advanced.qml"
@@ -434,8 +438,12 @@ chmod 644 "$MDNS_DROPIN" 2>/dev/null || true
 # calculation.  The vendor unit is hash-gated; an unknown unit is left alone.
 connman_dropin=skipped
 if [ -f "$CONNMAN_UNIT" ] && [ "$(md5 "$CONNMAN_UNIT")" = "$CONNMAN_UNIT_MD5" ]; then
-    [ ! -e "$CONNMAN_DROPIN" ] || cmp -s "$CONNMAN_DROPIN" "$PAYLOAD/systemd/60-connman-nodevice.conf" || \
-        fail "unknown connman override; refusing overwrite"
+    if [ -e "$CONNMAN_DROPIN" ] && \
+       ! cmp -s "$CONNMAN_DROPIN" "$PAYLOAD/systemd/60-connman-nodevice.conf"; then
+        [ "$(md5 "$CONNMAN_DROPIN")" = "$CONNMAN_DROPIN_LEGACY_MD5" ] || \
+            fail "unknown connman override; refusing overwrite"
+        log "upgrading known V21 connman nodevice override"
+    fi
     io_mkdir "$(dirname "$CONNMAN_DROPIN")" || fail "cannot create connman override directory"
     io_copy "$PAYLOAD/systemd/60-connman-nodevice.conf" "$CONNMAN_DROPIN" || fail "connman override copy failed"
     chmod 644 "$CONNMAN_DROPIN" 2>/dev/null || true

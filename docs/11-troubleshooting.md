@@ -41,6 +41,12 @@ Ioniq 5 Gen5W_L, 260128 (EU) unless noted.
 
 ## Packages
 
+For BlueLink failures with working WiFi/SSH, use the
+[BlueLink architecture and diagnostic guide](bluelink/architecture-and-diagnostics.md).
+The [2026-11 MOF cache postmortem](bluelink/postmortem-2026-11-mof-cache.md)
+documents a car-confirmed startup blocker and a reversible manual repair;
+public-internet probe failures alone do not diagnose a SIM/subscription fault.
+
 | Symptom | Cause / fix |
 |---|---|
 | `run_stuff.sh` does not run | Not at the stick root; wrong filesystem; or the loader already ran this exact content (md5 gate) — change the file to re-run. Check `/rw_data/initial_root.log`. |
