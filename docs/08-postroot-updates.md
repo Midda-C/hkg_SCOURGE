@@ -164,6 +164,50 @@ is pending.
 | VM Test B — engine validation | VM GUI blocker; car is the real test |
 | **Car: full custom update via normal USB** | **PASS (2026-11-15)** |
 
+## Boot-message refresh over SSH (WIP)
+
+A rooted car can take a message-only refresh without a USB update. The
+patched `.qm` files are installed in place; the eleven stubs, the SMACK flag
+and the failsafe are untouched. The patcher and stage generation are
+offline-validated on the stock tree; the installer's verify/install/rollback
+paths are host-tested with a sandboxed mount table and label tools. Neither
+has run on a car yet — the car-validated image remains build 5.
+
+1. Generate the stage with the message-only mode (stock tree or a copy of the
+   car's current `localization/` tree):
+
+   ```sh
+   "$PYTHON" scripts/03_patch_payload.py \
+       --stock-qm-dir work/rootfs/app/share/AppStandbyClock/localization \
+       --messages config/messages.json --out work/bootmsg-qm
+   ( cd work/bootmsg-qm && sha256sum translation_*.qm > MANIFEST.sha256 )
+   ```
+
+2. Copy the stage and the installer to the car over SSH (direct
+   `wifi1b@10.55.0.2:2224`, or through the Pi reverse tunnel):
+
+   ```sh
+   tar -C work/bootmsg-qm -cf - . | ssh <car> '
+       rm -rf /rw_data/scourge/bootmsg.new &&
+       mkdir -p /rw_data/scourge/bootmsg.new &&
+       tar -C /rw_data/scourge/bootmsg.new -xf -'
+   ssh <car> 'cat > /rw_data/scourge/deploy_boot_messages.sh' \
+       < tools/deploy_boot_messages.sh
+   ```
+
+3. Run the installer. It verifies every staged hash and size, remounts `/`
+   read-write only for the copy, backs up the live files under
+   `/rw_data/scourge/bootmsg-backup-*`, installs by atomic rename, syncs,
+   restores the original mount mode, and rolls back on any failure:
+
+   ```sh
+   ssh <car> 'STAGE=/rw_data/scourge/bootmsg.new EXPECTED_COUNT=26 \
+       sh /rw_data/scourge/deploy_boot_messages.sh'
+   ```
+
+4. Reboot the head unit. AppStandbyClock loads the translations at startup,
+   so the screen does not change until then.
+
 ## Recovery, always
 
 - The A/B slot: the update writes the inactive slot; a failed install
