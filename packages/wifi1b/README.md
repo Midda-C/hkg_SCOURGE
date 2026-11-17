@@ -47,8 +47,9 @@ explicit navigation search, and post-repair reboot persistence remain pending.
   Wifi1b SSH port, and dropbear stays available over `usb0` when WiFi is Off.
   The watchdog also ensures the listener whenever `usb0` is present, even
   while WiFi is unassociated or failed, so startup no longer depends on a
-  manual key import. ConnMan is kept off `usb0` so it cannot overwrite the
-  static link.
+  manual key import. The SSH worker does not reserve `wlan0`, so a foreign or
+  OEM radio owner cannot block the USB listener. ConnMan is kept off `usb0`
+  so it cannot overwrite the static link.
 - `client_route_policy=modem_safe` is the default; `fallback` is available in
   `config.conf` for owners who need a WiFi default while the modem is up.
 - The ConnMan drop-in accepts the exact known V21 file for an over-the-top
@@ -79,3 +80,12 @@ Artifacts:
 - `out/usb/` (standalone payload; requires the current canonical
   Battery/Tweaks or Battery/Tweaks/WiFi shared QML)
 - Repository `out/appcombo-flat/` (standalone two-file bundle; preferred)
+
+## Updating a running daemon over SSH
+
+For a daemon-only update, see
+[docs/UPDATE-OVER-SSH.md](docs/UPDATE-OVER-SSH.md). The update is staged under
+`/rw_data/wifi1b` and launched detached with `systemd-run` (or `setsid`), so
+stopping the daemon and dropping the SSH session does not kill the swap. The
+helper verifies the staged binary hash, backs up the live binary, replaces it,
+waits for the listener, and rolls back on failure.

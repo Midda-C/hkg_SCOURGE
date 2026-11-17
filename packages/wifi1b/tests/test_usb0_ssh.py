@@ -45,4 +45,4 @@ with tempfile.TemporaryDirectory(prefix="wifi1b-usb0-", dir="/tmp/opencode") as 
     assert rule.is_file()
     assert 'KERNEL=="usb0"' in rule.read_text()
 
-print("PASS: USB SSH is ensured in WiFi client mode and when WiFi is off")
+print("PASS: USB SSH is ensured in WiFi client mode, under a foreign radio owner, and when WiFi is off")

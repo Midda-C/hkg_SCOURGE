@@ -4037,7 +4037,11 @@ static void start_pending_work(void)
         if (test_work) ok = test_work(g_work_kind, g_current_pair);
         else
 #endif
+        /* SSH start/stop is interface-independent: dropbear, the key files and
+         * the usb0 firewall rule do not mutate wlan0.  A foreign/OEM radio
+         * reservation must not block the out-of-band listener at boot. */
         if (g_work_kind != WORK_MODE && g_work_kind != WORK_DUMP &&
+            g_work_kind != WORK_SSH &&
             radio_begin("wifi1b_daemon", g_work_kind == WORK_SCAN || (g_cfg.wlan_on && g_cfg.mode != MODE_OFF)) != 1) {
             set_msg("Radio busy/reserved; turn the owning WiFi app Off first");
         }

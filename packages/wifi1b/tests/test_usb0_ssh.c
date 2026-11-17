@@ -18,6 +18,28 @@ static int write_marker(const char *path)
     return 0;
 }
 
+static int write_text_file(const char *path, const char *text)
+{
+    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) return -1;
+    size_t len = strlen(text);
+    ssize_t n = write(fd, text, len);
+    close(fd);
+    return n == (ssize_t)len ? 0 : -1;
+}
+
+static void self_comm(char *out, size_t n)
+{
+    out[0] = 0;
+    FILE *f = fopen("/proc/self/comm", "r");
+    if (!f) return;
+    if (fgets(out, (int)n, f)) {
+        char *nl = strchr(out, '\n');
+        if (nl) *nl = 0;
+    }
+    fclose(f);
+}
+
 int main(void)
 {
     config_defaults();
@@ -56,6 +78,31 @@ int main(void)
         g_apply_pid = 0;
     }
     ssh_stop();
+
+    /* Regression: a foreign wlan0 reservation must not block the usb0 SSH
+     * worker.  Dropbear and the USB firewall rule do not touch wlan0. */
+    g_cfg.mode = MODE_CLIENT;
+    g_cfg.wlan_on = true;
+    g_cfg.ssh_enabled = true;
+    g_work_kind = WORK_MODE;
+    g_pending_kind = WORK_MODE;
+    g_work_pending = false;
+    g_apply_pid = 0;
+    g_pairing_stop_requested = false;
+    char comm[32] = {0};
+    self_comm(comm, sizeof(comm));
+    char owner[96];
+    snprintf(owner, sizeof(owner), "%s:%d", comm, (int)getpid());
+    if (write_text_file(RADIO_OWNER_PATH, owner) != 0) return 11;
+    request_work(WORK_SSH, false);
+    for (int i = 0; i < 60 && owned_dropbear_pid() <= 0; i++) usleep(50000);
+    if (owned_dropbear_pid() <= 0) return 12;
+    if (g_apply_pid > 0) {
+        waitpid(g_apply_pid, NULL, 0);
+        g_apply_pid = 0;
+    }
+    ssh_stop();
+    unlink(RADIO_OWNER_PATH);
 
     if (!g_cfg.ssh_enabled) return 8;
     g_cfg.ssh_enabled = false;
