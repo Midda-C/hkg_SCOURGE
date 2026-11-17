@@ -191,3 +191,6 @@ original startup failure too.
 The underlying reason the cache became unreadable (damaged bytes versus a
 key/state mismatch) is unresolved. Quarantining the disposable cache fixes the
 observed startup blocker; it is not proof of that earlier causal history.
+The postmortem's attribution follow-up records a full `/rw_data` snapshot and
+an in-place, unchecked vendor save routine: a credible storage-failure mechanism,
+but not proof that ENOSPC damaged this particular cache.

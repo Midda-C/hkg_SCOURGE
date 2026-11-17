@@ -52,6 +52,84 @@ initialization. **Unresolved upstream cause:** why that cache no longer decrypte
 The evidence does not distinguish ciphertext damage from a key/state mismatch.
 No evidence establishes that SCOURGE created or corrupted it.
 
+## What made the cache unreadable: attribution follow-up
+
+**Conclusion: not proven. Storage exhaustion is a credible contributing
+mechanism, not an established explanation for these exact bytes.** There are
+two separate questions: who wrote the cache, and what conditions made that
+write or its later decryption fail.
+
+### Findings we can defend
+
+- The vendor `MOFHeader::NaviDataSave` routine is a writer of this exact path.
+  Analysis of the matching binary shows it encrypts the serialized navigation
+  data first and opens the destination with `fopen(..., "w")` only after the
+  crypto call succeeds. That mode truncates the existing file in place.
+- It calls `fwrite`, `fflush`, `fsync`, and `fclose` but does **not check their
+  results**. The local routine has no temporary-file/atomic-replace sequence or
+  preservation of the preceding good cache. `fsync` being present is not a
+  checked durability guarantee. The relevant assembly also confirms the ignored
+  return values; this is not merely a decompiler inference.
+- Consequently, ENOSPC, a short/buffered write failure, I/O failure, or power
+  interruption can leave a damaged replacement without a detected save failure.
+  The next boot's reader compounds that risk by allowing a decryption exception
+  from a disposable cache to abort the broader service.
+- The November 15 runtime filesystem snapshot already showed `/rw_data` at
+  **100% with zero available space**. The November 16 log-retention work also
+  documented severe pressure (97%), unbounded custom logs, and accumulated
+  installer snapshots. It is incorrect to date the first known full-filesystem
+  observation only to November 16.
+- SCOURGE's pre-fix logs and repeated-install backups demonstrably contributed
+  storage pressure. `9a55b01` bounds those writers/retention. This is a real
+  project-side defect and is not excused by the vendor's weak failure handling.
+- A bounded audit of tracked first-party scripts/packages/tools/payload and
+  their history found no reference that directly writes `lastnavidata.dat` or
+  resets MOF's crypto keys. That does **not** audit every historical ad-hoc
+  remote command, external tool, or firmware operation.
+
+### Why this is not yet a proven ENOSPC incident
+
+The preserved cache is 77 bytes, with mtime November 10 at 11:54:14. Its ctime
+changed during the approved quarantine on November 17; that ctime is not the
+corruption time. Size alone does not prove truncation: the expected ciphertext
+length for the historical save was not established. An encrypted file may also
+fail decryption if the applicable key/state changed, with no changed ciphertext.
+
+There is no complete, verified earlier good copy of this exact file in the
+examined evidence, no captured failing `fwrite`/`fflush` result for its save,
+and no contemporaneous November 10 filesystem-capacity snapshot. The examined
+local critical archive reported an unexpected EOF; it was not used to assert
+absence, an earlier cache hash, or a complete backup. Other extracted binary
+identities were checked separately. RTC resets and restored timestamps also
+limit timestamp-only attribution.
+
+Thus the defensible chain is:
+
+```text
+Confirmed: custom writers contributed disk pressure; /rw_data was full.
+Confirmed: vendor cache saves truncate in place and ignore persistence errors.
+Hypothesis: those conditions damaged this cache (or related crypto state).
+Confirmed: this cache could not decrypt and blocked MOF startup.
+Confirmed: quarantining it restored successful server transactions.
+```
+
+We should neither claim "we directly corrupted it" nor "Hyundai alone caused
+it." A project-induced full filesystem triggering fragile vendor persistence
+is plausible, but a key/state mismatch or another interrupted write remains
+unexcluded. Proving which requires a verified before/after cache and key-state
+history or a contemporaneous write-error trace, not repeated deletion or a
+destructive disk-fill experiment on the car.
+
+### Prevention versus repair
+
+Preserve the already-landed bounded-log/backup-retention fix when merging this
+work. Do not ship automatic cache removal on a generic BlueLink/network failure.
+Any future firmware-side durability repair would need hash-gated development,
+offline short-write/ENOSPC/power-interruption tests, and independent car
+validation: preserve the preceding good cache, check persistence errors, and
+allow an invalid optional cache to degrade to no saved navigation state rather
+than disable all MOF processing. No such vendor-binary patch is shipped here.
+
 ## Repair and observed result
 
 After explicit approval, on the parked owner's vehicle:
@@ -153,6 +231,8 @@ Relevant retained REA records:
   crypto D-Bus request, failure retries, exception propagation.
 - `ev_06c95bc57712436e88d0188d3cacd5bb6e7d7f9bdfff92ab49505a7344f9963b`:
   regional configuration and CryptoService destination.
+- `ev_fd350e2220eab15c45de0d6cbbea0a9d96394a89eab6d3527b838e6c5e9821e7`:
+  saved-navigation writer; in-place truncation and unchecked persistence calls.
 
 Static analysis explains control flow; it does not by itself establish runtime
 success. The live exact-file failure and post-repair HTTP responses are the
