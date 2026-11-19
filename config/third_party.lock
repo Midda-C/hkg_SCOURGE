@@ -70,3 +70,10 @@ std_gnu.url  = https://static.rust-lang.org/dist/2026-11-12/rust-std-1.100.0-x86
 std_gnu.sha256 = 4591b6486594ded52ecd6135db95bf9355bbd3ca7a380888b141528bbcf9a5d4
 std_musl.url = https://static.rust-lang.org/dist/2026-11-12/rust-std-1.100.0-x86_64-unknown-linux-musl.tar.xz
 std_musl.sha256 = 9d5211bc7b40195f9700a6f9133831832a32f50d0e2a2c0ae8af801e7656de5c
+
+[temurin-jdk25]
+url       = https://github.com/adoptium/temurin25-binaries/releases/download/jdk-25.0.5.1%2B2/OpenJDK25U-jdk_x64_linux_hotspot_25.0.5.1_2.tar.gz
+license   = GPL-2.0-only WITH Classpath-exception-2.0
+version   = 25.0.5.1+2
+sha256    = 760f91b22c3efc9bd1b64ff950598231be82928cc807e30691a0e7a2995a62c0
+used_for  = packages/java jlink headless runtime (fetched at package build; never committed)
