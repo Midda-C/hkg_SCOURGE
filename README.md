@@ -110,7 +110,7 @@ If a markdown file in this repo is handwritten, I will highlight that. The READM
 
 | Path | What |
 |---|---|
-| `docs/01–17` | The runbooks: TOCTOU explainer, firmware format, stage-1 build, Pi rig, car install, failsafe/packages, post-root updates (confirmed), porting, Ghidra re-derivation, troubleshooting, safety/legal, upstream references, VM lab (WIP), the micom command surface, the micom MCU images, and the unsigned normal-USB update confirmation |
+| `docs/01–18` | The runbooks: TOCTOU explainer, firmware format, stage-1 build, Pi rig, car install, failsafe/packages, post-root updates (confirmed), porting, Ghidra re-derivation, troubleshooting, safety/legal, upstream references, VM lab (WIP), MICOM research, unsigned normal-USB update confirmation, and a tentative writable-data reference |
 | `docs/ui/` | The Gen5W UI/UX research: styleguide, deployment modes (A–L), UX behavior patterns, design tokens, component library, glossary, and 15 evidence reports |
 | `scripts/` | The build pipeline (fetch → stage → decrypt → patch → repack → verify → package → image → preflight → Pi deploy) |
 | `payload/` | What gets baked into the rootfs: the failsafe, the eleven-stub patch tables, the sample run_stuff.sh |
