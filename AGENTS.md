@@ -35,7 +35,8 @@ repo.
 4. **A failed gate is a stop, not a workaround.** Hash mismatches,
    unexpected bytes, failed pins — abort and report, do not improvise.
    The one distinction: a `.ver` revision whose header identity and
-   consumed rows verify is an official server repack, not a failed gate.
+   consumed rows verify is a package-map variant (the server's package-id
+   counter moves between repacks), not a failed gate.
    `scripts/01b_audit_inputs.py` reports it as a warning. A row, file or
    ELF that disagrees still stops.
 5. **Match the known-good table.** Builds are deterministic; docs/03's

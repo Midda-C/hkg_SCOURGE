@@ -12,7 +12,9 @@
 #
 # Staged into input/:  mango-rootfs.tar.gz  AppUpgrade.usb  IONIQ5_EU.ver
 #                     .lge.upgrade.xml   [package_stock/  full tree]
-# Every staged file is hash-gated against config/firmware_locks.env.
+# Every staged file is audited against config/firmware_locks.env.
+# --minimal skips the full-tree copy; point STOCK_PACKAGE at the source tree
+# for package/image builds.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 source "$HERE/lib.sh"
@@ -73,7 +75,7 @@ case "$MODE" in
     SRC_DIR="$(find "$INPUT_DIR/extracted" -type d -name 'HU' -printf '%h\n' | head -1)"
     [ -n "$SRC_DIR" ] || { echo "ERROR: could not find a package tree in the zip" >&2; exit 1; }
     ;;
-*) echo "usage: $0 [--download | --from-dir DIR | --from-zip ZIP]" >&2; exit 2 ;;
+*) echo "usage: $0 [--download | --from-dir DIR | --from-zip ZIP] [--minimal]" >&2; exit 2 ;;
 esac
 
 if [ -n "${SRC_DIR:-}" ]; then

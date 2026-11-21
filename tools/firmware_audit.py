@@ -242,14 +242,15 @@ def audit(root, locks: dict[str, str], layout: str = "package",
             else:
                 actual_hash, kind = got["sha256"], "sha256"
             if actual_hash != lock_hash:
-                if not consistent:
+                if label == "xml":
                     fail(f"{label}.lock-hash",
-                         f"{kind} {actual_hash} != pinned {lock_hash}, and "
-                         f"row checks already failed")
+                         f"{kind} {actual_hash} != pinned {lock_hash}; the "
+                         f"signed XML must stay stock (the stage script "
+                         f"hard-stops; do not treat it as a repack)")
                 else:
                     add("warn", f"{label}.lock-hash",
                         f"{kind} {actual_hash} != pinned {lock_hash}; rows are "
-                        f"consistent (official repack) - recording as a variant")
+                        f"consistent (package-map variant) - recording it")
 
     if all_rows:
         consumed = {(row.get("path"), row.get("filename"))

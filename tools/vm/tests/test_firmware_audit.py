@@ -132,6 +132,23 @@ class FirmwareAuditTests(unittest.TestCase):
         text = "\n".join(f["detail"] for f in result["findings"])
         self.assertIn("shorter", text)
 
+    def test_signed_xml_change_is_an_error(self) -> None:
+        changed = b"different-signed-xml"
+        (self.root / ".lge.upgrade.xml").write_bytes(changed)
+        ver = self.root / f"{PRODUCT}.ver"
+        lines = ver.read_text().splitlines()
+        for index, line in enumerate(lines):
+            fields = line.split("|")
+            if len(fields) >= 6 and fields[1] == ".lge.upgrade.xml":
+                fields[3] = str(crc32(changed))
+                fields[4] = str(len(changed))
+                lines[index] = "|".join(fields)
+        ver.write_text("\n".join(lines) + "\n")
+        result = audit(self.root, self.locks)
+        self.assertFalse(result["ok"])
+        self.assertTrue(any(f["check"] == "xml.lock-hash" and
+                            f["level"] == "error" for f in result["findings"]))
+
     def test_all_rows_checks_extra_entries(self) -> None:
         firmware = self.root / "HU/firmware/update.tar.gz"
         firmware.parent.mkdir(parents=True, exist_ok=True)

@@ -23,8 +23,20 @@ package-id counter and the identity fields):
 ```
 
 Rows verify with `scripts/01b_audit_inputs.py --layout package --root
-<download-dir>`: the rootfs row is `341174|1243982759|879126179`, the wrapper
-row `341142|609028602|10803676`, the XML row `341175|-444740824|17670`.
+<download-dir>`; the EV6 package needs its fixture locks because the default
+locks describe the Ioniq identity:
+
+```sh
+# Ioniq 5 (default config/firmware_locks.env)
+scripts/01b_audit_inputs.py --layout package --root <ion5-download-dir>
+
+# EV6 (fixture locks; payload pins are shared)
+scripts/01b_audit_inputs.py --layout package --root <ev6-download-dir> \
+    --locks config/fixtures/ev6-my22-eu-260128.env
+```
+
+The consumed rows are `341174|1243982759|879126179` (rootfs),
+`341142|609028602|10803676` (wrapper), and `341175|-444740824|17670` (XML).
 
 ## Payload identity
 
@@ -68,7 +80,8 @@ scripts/01b_audit_inputs.py --layout package --root <download-dir>
 nudl download -b kia -m EV6_MY_22_EU -r EU \
     -v CV_E.EUR.S5W_L.001.001.260128 -o <download-dir>
 nudl verify -d <download-dir>
-scripts/01b_audit_inputs.py --layout package --root <download-dir>
+scripts/01b_audit_inputs.py --layout package --root <download-dir> \
+    --locks config/fixtures/ev6-my22-eu-260128.env
 ```
 
 Keep the downloaded packages outside the repository (they are OEM material).

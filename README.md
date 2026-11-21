@@ -69,9 +69,10 @@ No claims are made about other vehicles or platforms (including S5W_M/Android un
 HMG's update server sometimes republishes the same firmware with a new
 package-id counter in the `.ver` header; every row is identical, but the
 file's size/hash changes. That is a **warning** (`ver.sha ... but header
-identity and rows verify`), not a stop. A **row** that disagrees with its
-file or a lock pin is an error, and the audit names the stale pin. Do not
-re-download or edit the package to silence it. Inspect by hand with:
+identity and rows verify`), not a stop — a package-map variant, not a bad
+download. A **row** that disagrees with its file or a lock pin is an error,
+and the audit names the stale pin. Do not re-download or edit the package to
+silence it. Inspect by hand with:
 
 ```sh
 scripts/01b_audit_inputs.py --layout package --root /path/to/IONIQ5_EU

@@ -117,7 +117,11 @@ fetch_nudl() {
     if [ -n "$FROM_ARCHIVE" ] && [ -e "$FROM_ARCHIVE/nudl" ]; then
         echo "== seeding nudl from $FROM_ARCHIVE"
         mkdir -p "$dst"
-        cp -a "$FROM_ARCHIVE/nudl" "$NUDL_BIN"
+        if [ -d "$FROM_ARCHIVE/nudl" ]; then
+            cp -a "$FROM_ARCHIVE/nudl/." "$dst/"
+        else
+            cp -a "$FROM_ARCHIVE/nudl" "$NUDL_BIN"
+        fi
         chmod +x "$NUDL_BIN"
         echo "$NUDL_BIN_SHA256  $NUDL_BIN" | sha256sum -c - || return 1
         return 0

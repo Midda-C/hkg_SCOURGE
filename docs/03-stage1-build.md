@@ -41,6 +41,7 @@ Both builds carry:
 scripts/00_env.sh                    # venv: pycryptodome, deflate, cryptography (PyQt5 optional)
 scripts/00_fetch_third_party.sh      # pinned TOCTOU repo + TE2 key + nudl
 scripts/01_stage_inputs.sh --download   # or --from-dir / --from-zip
+                                     # add --minimal for payload-only builds
 ```
 
 `01_stage_inputs.sh` copies the four inputs, then runs
@@ -49,6 +50,10 @@ consumed rows' CRC32/size against the staged files and the pins. A row/ELF misma
 aborts; an official server repack whose rows all verify (the `.ver`
 package-id counter changed) is a warning, not a stop. Never proceed with a
 different firmware (docs/09).
+
+`--minimal` stages only the four inputs (about 890 MB) and leaves the full
+24 GB tree where it is; export `STOCK_PACKAGE=<tree>` for the package/image
+builds (`06_build_package.sh`, `08_build_usb_image.sh`).
 
 ## Build
 
