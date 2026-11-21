@@ -316,6 +316,8 @@ IGNORE_PROBES = (
     "tools/vm/runs/probe/result.json",
     "config/key.local",
     "config/paths.local.env",
+    "config/target.local.env",
+    "config/targets/probe.local.env",
     "config/reviewer.local",
     "usb.img",
 )

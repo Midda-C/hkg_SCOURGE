@@ -3,6 +3,8 @@
 # --- secrets & local configuration -------------------------------------------
 config/key.local
 config/paths.local.env
+config/target.local.env
+*.local.env
 *.key
 *.local
 

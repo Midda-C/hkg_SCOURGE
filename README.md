@@ -58,9 +58,24 @@ This is likely readily adaptable to other cars & environments, but I am noting t
 | Battery / WiFi+SSH / Tweaks (incl. Reboot) app packages | Work-in-progress; the WiFi package is VM-validated on the vendor kernel/Qt (on-car retest pending). Reboot's clean path and daemon endpoint are host/QML-tested; the micom hard-reset fallback is host-tested with a fake D-Bus helper and derived from the vendor script (car pending) |
 | Rust apps/daemons (host-built static musl) | WIP — host build/package path offline-validated; sample `scourge-statusd` VM-validated on the vendor kernel; car pending. No Rust toolchain or runtime is installed on the unit; see `docs/19-rust-apps.md` |
 | Tweaks: safety-disclaimer auto-accept | Working reliably |
-| Anything beyond the exact firmware above (`NE_E.EUR.S5W_L.001.001.260128`, EU) | Untested — see the porting runbook before trying |
+| Kia EV6 MY22–24 (EU, Gen5W_L), `CV_E.EUR.S5W_L.001.001.260128` | Fixture captured; payload byte-identical to the Ioniq 5 260128 package. Target wiring/build is WIP — not car-validated (docs/20) |
+| Any other firmware, region or vehicle | Untested — see the porting runbook before trying |
 
 No claims are made about other vehicles or platforms (including S5W_M/Android units, which are a fundamentally different architecture, or models whose update schemes are known to differ).
+
+### Firmware package warnings
+
+`scripts/01_stage_inputs.sh` audits the downloaded package before any build.
+HMG's update server sometimes republishes the same firmware with a new
+package-id counter in the `.ver` header; every row is identical, but the
+file's size/hash changes. That is a **warning** (`ver.sha ... but header
+identity and rows verify`), not a stop. A **row** that disagrees with its
+file or a lock pin is an error, and the audit names the stale pin. Do not
+re-download or edit the package to silence it. Inspect by hand with:
+
+```sh
+scripts/01b_audit_inputs.py --layout package --root /path/to/IONIQ5_EU
+```
 
 ## Quick Installation Guidance
 

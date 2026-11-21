@@ -43,8 +43,12 @@ scripts/00_fetch_third_party.sh      # pinned TOCTOU repo + TE2 key + nudl
 scripts/01_stage_inputs.sh --download   # or --from-dir / --from-zip
 ```
 
-`01_stage_inputs.sh` hash-gates every input against `config/firmware_locks.env`.
-A mismatch aborts — never proceed with different firmware (docs/09).
+`01_stage_inputs.sh` copies the four inputs, then runs
+`01b_audit_inputs.py`, which verifies the `.ver` header identity and the
+consumed rows' CRC32/size against the staged files and the pins. A row/ELF mismatch
+aborts; an official server repack whose rows all verify (the `.ver`
+package-id counter changed) is a warning, not a stop. Never proceed with a
+different firmware (docs/09).
 
 ## Build
 
@@ -95,8 +99,16 @@ artifact against this table; any mismatch means stop and investigate.**
 | `out/AppUpgrade.patched.te2` | sha256 | `9a0df0809a3f15c2d5f1d3e83c19ec0a27f336727e57e01bb2c5ae2e82783876` |
 | `out/package_second/IONIQ5_EU.ver` | sha256 | `0850314af773103a8d47eceac2aebcdad1a0d44eca70132639cb935c2b2c8429` |
 | `out/package_wrapper/IONIQ5_EU.ver` | sha256 | `6611fb1f30077adc3305a278078e795f438a0bb4ba3934f8043b9526dcd54657` |
+| `out/package_second/IONIQ5_EU.ver` (current server repack base) | sha256 | `81423b9dcecc15fdb685ccf52667af79dcad357816f1c4bd85bbc6577bbe1459` |
+| `out/package_wrapper/IONIQ5_EU.ver` (current server repack base) | sha256 | `12b691ce800b6b2ff55539e1596ce70db4e0aa8a80b3a049e406faaf78159ecd` |
 | `config/message.txt` (build 5, retired) | sha256 | `a00dd663d6f3cb791dac9b7d3d674df59f97c0f42b615a981d20c256114abb33` |
 | `out/usb.img` | size / sha256 | 28,894,603,490 / `9b55dafbdfe6b2837e2e77b3e539345aff286b5ad919d11f9ef57a190db558c3` |
+
+The two `.ver` rows labelled **current server repack base** are the same build
+with the package map the OEM server serves today (`+|…|101489|1` instead of
+the `2026.01.28` USB-tree `+|…|1489|1`). The row values are identical; only
+the header package-id (and therefore the file hash/size) differs. Compare
+against the matching base — not every mismatch is a bad build.
 
 Build-6 input (WIP): `config/messages.json` sha256
 `f9929bf437ba0bdd763e744b3a1ec47cbfd910973431b88272a346ceb4a266f6`.
