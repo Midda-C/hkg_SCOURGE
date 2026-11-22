@@ -117,6 +117,20 @@ As a general rule of thumb:
 - A QEMU/KVM **VM lab** for bench-testing packages, installers and patches against your own decrypted firmware before they go near the car, with a planned graphics mode for UI work — see `docs/14-vm-lab.md` (WIP: the harness runs today, but is not yet packaged in-repo)
 - Separate-process custom apps: the platform's AppLauncher RSA-verifies the `.sign` section of startup-group/preload spawns (on-demand `request.launch` spawns already skip it), which blocks the "official app" route. A sigstub for those paths ships in stage-1 build 5 and is car-validated (`docs/07-packages.md`), and there is a second route (an own Wayland process outside AppLauncher) that needs no patch at all. See `docs/07-packages.md` and `docs/ui/deployment-modes.md`.
 
+## Rust apps and daemons (WIP)
+
+Rust is a **builder-side** app language, not an on-unit runtime. Apps are
+built on the owner's host into self-contained static-musl binaries and
+installed with the same USB failsafe as the other packages; the unit gets
+no `rustc`, no Cargo and no shared `libstd`. A Tokio sample daemon, a
+project template and a generic SMACK-aware installer live under
+`tools/rust/`; the runbook is `docs/19-rust-apps.md`.
+
+Status: host build/package path offline-validated; the sample
+`scourge-statusd` is VM-validated on the vendor kernel (1 vCPU / 1 GiB);
+car validation is pending. The default build is Cargo release with symbols
+kept; the sample binary is ~1.1 MiB.
+
 ## AI Usage Disclaimer
 
 The entire process of rooting, building a payload deployer, and building plugins / tweaks / apps for the infotainment unit is heavily AI assisted (with extensive human review & steering). If you don't like the usage of AI, or you disagree with this approach, please know that I have a day job & a family that make it unrealistic to lovingly handcraft things for side-projects anymore.
