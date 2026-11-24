@@ -500,9 +500,10 @@ research evidence, not stock UX fidelity. Steps and limits:
   renderer asserts on the app's first 0×0 surface commit.
 - **Input devices.** The vendor rootfs has no `udevadm`/`systemd-udevd`; the
   probe `probes/stock-input.sh` writes `/run/udev/data` tags so Weston creates
-  the QEMU tablet/keyboard. QMP clicks/keys reach the kernel and move the
-  compositor pointer, but the research-injected IVI surface does not receive
-  them.
+  the QEMU tablet/keyboard. QMP clicks reach the app's IVI surface
+  (`wl_surface@16`, IVI surface `11000`); keys remain unverified. The app
+  creates the surface itself; the research helper only places it in a WM layer
+  for capture. See the Focus bullet below for the press-coordinate shim.
 - **Boot info.** AppLauncher passes flags such as `-gui:1`, `-vc:65`, `-dn:2`
   in the child argv. Direct launch with those flags sets LCD/ECO/GUI and
   day-night; language and full boot info still need the `BOOTINFOSTATUS`
@@ -542,14 +543,22 @@ research evidence, not stock UX fidelity. Steps and limits:
   `probes/ivi-focus.c` binds the vendor `ivi_input` global and sets
   acceptance/focus. It takes an optional surface id and defaults to `11000`, the
   launcher surface id, so `ivi-focus` with no argument targets the app surface;
-  pass an id to override. On the event-triggered all-menus frame, a QMP click at
-  `500,365` gave an identical frame and no app item event; Weston still reports
-  pointer entry on `wl_surface@16`. A stock-launcher attempt (`AppLauncher 0/2`
-  with `QT_QPA_PLATFORM=wayland-egl`) timed out and the launcher-child QtQml
-  crash remains unresolved. The stock launcher FG handshake is still the
-  blocker. The `ivi-watch` watcher, the `libvisfilter.so`/`libkeepvisible.so`
-  preloads and the placeholder/qml overlay trees are local scratch artifacts,
-  not repo files.
+  pass an id to override. QMP clicks do reach the app: `WAYLAND_DEBUG` shows
+  `wl_pointer.enter`/`button` on `wl_surface@16` and QML logs `PREVIEW_PRESSED`
+  (run `1795552428638202836`). The press coordinate was the defect: Qt's
+  `pointer_enter` ignores the enter coordinates and uses the stored motion
+  position, so the first press landed at `0,0`. A lab-only `libwlptr.so`
+  preload that wraps the `wl_pointer` listener and rewrites the stored position
+  makes the all-menus click hit a real item (run `1795552582830614177`:
+  `MENU_ITEM_CLICKED id=18`, `MAIN_LIST_ITEMCLICKED_HANDLE(18)`,
+  `AppHomeEngine::request(evetid=304, appid=121, reason=40)`). The screen still
+  does not change because `com.lge.hyundai.avn.appmanager` is not running in
+  the lab VM (`ServiceUnknown`); the app-manager service is the remaining
+  blocker. A stock-launcher attempt (`AppLauncher 0/2` with
+  `QT_QPA_PLATFORM=wayland-egl`) timed out and the launcher-child QtQml crash
+  remains unresolved. The `ivi-watch` watcher, the `libvisfilter.so`/
+  `libkeepvisible.so`/`libwlptr.so` preloads and the placeholder/qml overlay
+  trees are local scratch artifacts, not repo files.
 - **Capture.** Use `--display-size 1920x720` for the full app surface and
   `launch.py screenshot` / `launch.py input --drag` for before/after frames.
   The qml_new2.0 menu preview produces a labelled placeholder frame at

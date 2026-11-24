@@ -353,17 +353,28 @@ research controller helper, but this is not yet stock-equivalent. Current gaps:
   acceptance/focus; it takes an optional surface id argument and defaults to
   `11000`, the app's launcher surface id (`QT_WAYLAND_SET_SURFACE_ID`). Run
   `1795540970918967510` exercises the committed helper with no argument and
-  reports `INPUT 11000`, matching surface `11000`. Weston's pointer trace still
-  enters `wl_surface@16` at the click; the before/after all-menus frames remain
-  pixel-identical and no app item-click event is observed. A stock-launcher
-  attempt (`AppLauncher 0` then `AppLauncher 2` with
-  `QT_QPA_PLATFORM=wayland-egl`) timed out; its logs were empty and the
-  launcher-child QtQml crash was not resolved. QMP clicks still reach the kernel
-  and move the compositor pointer, but the app input path/FG handshake remains
-  WIP. The `ivi-watch` layer watcher, the `libvisfilter.so`/
-  `libkeepvisible.so` preloads and the placeholder/qml overlay trees used for
-  these captures are local scratch artifacts, not part of this repo, so the
-  frames are observation evidence rather than a reproducible stock build.
+  reports `INPUT 11000`, matching surface `11000`. An earlier draft claimed QMP
+  clicks never reached the app; that is wrong. `WAYLAND_DEBUG` from the app
+  shows `wl_pointer.enter`/`button` on `wl_surface@16` (IVI surface `11000`),
+  and QML logs `PREVIEW_PRESSED` (run `1795552428638202836`). The real defect
+  was the press coordinate: Qt's `pointer_enter` ignores the enter coordinates
+  and relies on the stored motion position, so the first press landed at `0,0`.
+  A lab-only `libwlptr.so` preload that wraps the `wl_pointer` listener and
+  rewrites the stored position fixes the press to the real point. With that
+  shim the all-menus click hits a real item (run `1795552582830614177`): the
+  app logs `MENU_ITEM_CLICKED id=18`, `MAIN_LIST_ITEMCLICKED_HANDLE(18)` and
+  `AppHomeEngine::request(evetid=304, appid=121, reason=40)`. The screen still
+  does not change because the request targets the D-Bus service
+  `com.lge.hyundai.avn.appmanager`, which is not running in the lab VM, so
+  D-Bus returns `ServiceUnknown`. The remaining blocker is therefore the
+  app-manager service, not input delivery. A stock-launcher attempt
+  (`AppLauncher 0` then `AppLauncher 2` with `QT_QPA_PLATFORM=wayland-egl`)
+  timed out; its logs were empty and the launcher-child QtQml crash was not
+  resolved. The `ivi-watch` layer watcher, the `libvisfilter.so`/
+  `libkeepvisible.so`/`libwlptr.so` preloads and the placeholder/qml overlay
+  trees used for these captures are local scratch artifacts, not part of this
+  repo, so the frames are observation evidence rather than a reproducible
+  stock build.
 
 TODO ledger (detailed in `docs/14-vm-lab-plan.md` P0.5 S5–S10): launcher
 boot-info shared memory, FG/input focus, menu-grid DB/SMACK, launcher-child
