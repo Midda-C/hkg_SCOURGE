@@ -558,10 +558,15 @@ def resolve_rootfs(path: Path | None) -> Path:
     return resolved
 
 
-def _vendor_cmdline(noapic: bool, init_override: str | None = None) -> str:
+def _vendor_cmdline(noapic: bool, init_override: str | None = None,
+                    root_partition: str | None = None) -> str:
     cmdline = CMDLINE if noapic else CMDLINE.replace(" noapic", "")
     if init_override:
         cmdline = cmdline.replace("init=/init", f"init={init_override}")
+    if root_partition:
+        if not re.fullmatch(r'/dev/mmcblk0p\d+', root_partition):
+            raise ValueError(f'unsupported root partition: {root_partition!r}')
+        cmdline = cmdline.replace("root=/dev/mmcblk0", f"root={root_partition}", 1)
     return cmdline
 
 
@@ -578,6 +583,8 @@ def qemu_argv(run_dir: Path, usb: Path | None = None,
               noapic: bool = True,
               kernel_target: str = "vendor",
               init_override: str | None = None,
+              root_partition: str | None = None,
+              kernel_image: Path | None = None,
               share: Path | None = None,
               display: str = "none",
               vnc_display: str = ":1",
@@ -594,7 +601,12 @@ def qemu_argv(run_dir: Path, usb: Path | None = None,
         kernel = compat_kernel_path()
         initrd = COMPAT_INITRAMFS
     elif kernel_target == "vendor":
-        kernel = KERNEL_PATCHED if patched_kernel else KERNEL
+        if kernel_image is not None:
+            kernel = Path(kernel_image).resolve()
+            if not kernel.is_file():
+                raise ValueError(f'kernel image missing: {kernel}')
+        else:
+            kernel = KERNEL_PATCHED if patched_kernel else KERNEL
         initrd = None
     else:
         raise ValueError(f"unknown kernel target: {kernel_target}")
@@ -657,7 +669,7 @@ def qemu_argv(run_dir: Path, usb: Path | None = None,
             "-drive", drive('rootfs', ROOTFS),
             "-device", "sdhci-pci,id=sdhci0",
             "-device", "sd-card,drive=rootfs",
-            "-append", _vendor_cmdline(noapic, init_override),
+            "-append", _vendor_cmdline(noapic, init_override, root_partition),
         ]
     argv += ["-serial", "stdio", "-monitor", "none", "-no-reboot"]
     if display_device == "std":
@@ -837,7 +849,8 @@ def _run_impl(cmd: str | None, interactive: bool, timeout: float,
         usb_host: list[str] | None = None, cache: str = "writeback",
         pin_cpu: int | None = None, dry_run: bool = False,
         lock_info: dict | None = None, outcome: dict | None = None,
-        rootfs: Path | None = None) -> int:
+        rootfs: Path | None = None, root_partition: str | None = None,
+        kernel_image: Path | None = None) -> int:
     profile = load_profile(profile_name)
     scenario = load_scenario(scenario_name) if scenario_name else None
     checkpoints = (normalize_checkpoints(scenario.get('screenshots'))
@@ -869,6 +882,14 @@ def _run_impl(cmd: str | None, interactive: bool, timeout: float,
     pin_cpu = validate_pin_cpu(pin_cpu)
     if kernel_target not in ('vendor', 'compat'):
         raise ValueError(f'unknown kernel target: {kernel_target}')
+    if root_partition and kernel_target != 'vendor':
+        raise ValueError('--root-partition requires --kernel vendor')
+    if kernel_image is not None and kernel_target != 'vendor':
+        raise ValueError('--kernel-image requires --kernel vendor')
+    if kernel_image is not None:
+        kernel_image = Path(kernel_image).resolve()
+        if not kernel_image.is_file():
+            raise ValueError(f'kernel image missing: {kernel_image}')
     if kernel_target == 'compat':
         if not COMPAT_INITRAMFS.is_file():
             raise ValueError('compat initramfs missing; run sh compat/build-initramfs.sh')
@@ -928,6 +949,8 @@ def _run_impl(cmd: str | None, interactive: bool, timeout: float,
     result['graphics_mode'] = graphics
     result['mode'] = kernel_target
     result['kernel_target'] = kernel_target
+    result['root_partition'] = root_partition
+    result['kernel_image'] = str(kernel_image) if kernel_image else None
     result['fidelity'] = (
         'compat kernel: graphics/UI substrate only; security and policy claims require Mode V'
         if kernel_target == 'compat' else
@@ -1025,7 +1048,8 @@ def _run_impl(cmd: str | None, interactive: bool, timeout: float,
                     raise ValueError(message + ' (or pass --allow-stale-tools for research)')
                 print(f"[vm] WARNING: {message}", flush=True)
         rootfs = resolve_rootfs(rootfs)
-        if kernel_target == 'vendor' and not KERNEL.is_file():
+        if (kernel_target == 'vendor' and kernel_image is None
+                and not KERNEL.is_file()):
             raise ValueError('missing vm/bzImage; prepare inputs explicitly')
         patched = (kernel_target == 'vendor' and kernel_mode == 'vmlinux'
                    and kernel_is_patched(KERNEL_PATCHED))
@@ -1078,7 +1102,7 @@ def _run_impl(cmd: str | None, interactive: bool, timeout: float,
         if qmp_socket is not None:
             result['screenshot']['qmp_socket'] = str(qmp_socket)
         kernel = compat_kernel_path() if kernel_target == 'compat' else (
-            KERNEL_PATCHED if patched else KERNEL)
+            kernel_image or (KERNEL_PATCHED if patched else KERNEL))
         identities = {**inputs, 'kernel': kernel}
         if kernel_target == 'compat':
             identities['initramfs'] = COMPAT_INITRAMFS
@@ -1104,8 +1128,8 @@ def _run_impl(cmd: str | None, interactive: bool, timeout: float,
                          artifact_serial, qmp_socket, display_device, display_size,
                          smp, memory_mb, not apic, kernel_target,
                          scenario.get('init_override') if scenario else None,
-                         share, display, vnc_display, network, audio,
-                         usb_host, cache)
+                         root_partition, kernel_image, share, display, vnc_display,
+                         network, audio, usb_host, cache)
         (run_dir / 'command.json').write_text(json.dumps(argv, indent=2) + '\n')
         if dry_run:
             result.update(verdict='DRY-RUN', rc=0, dry_run=True)
@@ -2021,6 +2045,10 @@ def main() -> int:
                    help='qcow2 cache mode for non-persistent drives')
     r.add_argument('--rootfs', type=Path, default=None,
                    help='base vendor rootfs image (default: vm/rootfs.img; OEM data stays outside git)')
+    r.add_argument('--root-partition', default=None, metavar='PART',
+                   help='vendor GPT image active root, e.g. /dev/mmcblk0p5 (default: whole device)')
+    r.add_argument('--kernel-image', type=Path, default=None,
+                   help='vendor kernel image to boot (default: tools/vm/bzImage)')
     r.add_argument('--allow-stale-tools', action='store_true',
                    help='research only: boot a stale/unmanifested tools image with a warning')
     r.add_argument('--allow-kernel-mismatch', action='store_true',
@@ -2635,7 +2663,8 @@ def main() -> int:
                        args.state, args.reset, args.network, args.audio, args.usb_host,
                        args.cache, pin_cpu=args.pin_cpu,
                        dry_run=args.dry_run, lock_info=lock_info,
-                       rootfs=args.rootfs)
+                       rootfs=args.rootfs, root_partition=args.root_partition,
+                       kernel_image=args.kernel_image)
     except LockTimeout as exc:
         print(f'ERROR: {exc}', file=sys.stderr)
         return 1

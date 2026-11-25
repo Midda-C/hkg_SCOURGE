@@ -47,7 +47,9 @@ instructions.
 
 | Resource | What |
 |---|---|
-| [JaredReabow/ioniq-5-Reverse-Engineering](https://github.com/JaredReabow/ioniq-5-Reverse-Engineering) | Foundational Ioniq 5 RE work (credited by the TOCTOU repo) |
+| [JaredReabow/ioniq-5-Reverse-Engineering](https://github.com/JaredReabow/ioniq-5-Reverse-Engineering) | Foundational Ioniq 5 RE work (credited by the TOCTOU repo) and the public authentic-boot VM notes: `esinit` → systemd, the 17-partition GPT projection, software-GL/pixman substitutions and the Weston input module. No license; SCOURGE reimplements concepts and does not copy code. |
+| [CloudPapi/gen5w-s5w_l-usb2root](https://github.com/CloudPapi/gen5w-s5w_l-usb2root) | Public `VarUpgrade`/TER root-path work and the `esinit` secure-console observation. Reference only; no license and no VM harness. |
+| [coopermarino/2022-cerato-au-jailbreak](https://github.com/coopermarino/2022-cerato-au-jailbreak) | Sibling Gen5W VM/RE notes (engineer-mode PINs, lms/ASF parser findings, QEMU launcher). Background reference only; no license. |
 | The Gen5W Discord | The community behind this work; SCOURGE has a channel there (see README) |
 | Costantino, De Vincenzi, Matteucci — *A vehicle firmware security vulnerability: an IVI exploitation* (2024), DOI `10.1007/s11416-024-00522-4` | Peer-reviewed prior work on this platform family |
 | [xwtk/hmg_nemesis](https://github.com/xwtk/hmg_nemesis) | The (unrelated, unaffiliated) Android-side counterpart for Gen5W S5W_M units; SCOURGE's README credits it as inspiration. Note: per their compatibility table, their approach does not apply to S5W_L or Ioniq 6 |

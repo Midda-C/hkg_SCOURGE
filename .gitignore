@@ -29,10 +29,25 @@ packages/tweaks/artifacts/qml/**/common/
 packages/tweaks/artifacts/qml/AppStandbyClock/
 packages/wifi/bin/
 
-# --- VM-lab run outputs (serial logs, screenshots, result.json; -------------
-# --- runtime artifacts, never committed) --------------------------------------
+# --- VM-lab run/build outputs (serial logs, screenshots, result.json; --------
+# --- runtime/build artifacts and car captures, never committed) --------------
 tools/vm/runs/
 tools/vm/.cache/
+tools/vm/build/
+tools/vm/guest/micom-dbus-sim
+tools/vm/guest/usb-mount-signal
+tools/vm/toolsroot/applauncher-stub
+tools/vm/toolsroot/appmanager-stub
+tools/vm/toolsroot/automount-stub
+tools/vm/toolsroot/credman-stub
+tools/vm/toolsroot/entropy-seed
+tools/vm/payload/tweaks-vm/tweaks-micom-can-sim
+tools/vm/payload/tweaks-vm/mock-dm-shm
+tools/vm/payload/tweaks-vm/mock-oem-queue
+tools/vm/payload/tweaks-vm/mock-dm-server
+/captures/
+/car-assets/
+/car-local/
 # Backing images are prepared from the owner's own staged firmware (docs/14).
 # Symlinks/copies are convenient locally but must never be committed.
 tools/vm/*.img

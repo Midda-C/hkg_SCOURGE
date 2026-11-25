@@ -118,7 +118,8 @@ As a general rule of thumb:
 - A **headless Java 25 runtime** (Temurin, `jlink`-built) for JAR apps and
   daemons, installed under `/rw_data/java`; WIP — VM-validated on the vendor
   and compat kernels, car-pending — see `docs/21-java-runtime.md`
-- A QEMU/KVM **VM lab** for bench-testing packages, installers and patches against your own decrypted firmware before they go near the car, with a planned graphics mode for UI work — see `docs/14-vm-lab.md` (WIP: the harness runs today, but is not yet packaged in-repo)
+- A QEMU/KVM **VM lab** for bench-testing packages, installers and patches against your own decrypted firmware before they go near the car, with a planned graphics mode for UI work — see `docs/14-vm-lab.md` (WIP: the harness runs today, but is not yet packaged in-repo). New WIP build scripts produce fidelity and usable workspaces from your own staged inputs (`docs/22-vm-build.md`, `scripts/22_build_vm.sh`).
+- **Car asset capture/extraction** for runtime UI/QML/theme/database/update data that is not in the nudl package or decompilation; read-only or USB-dump tools, local-only outputs — see `docs/23-car-assets.md`, `tools/car-assets/`, `scripts/23_capture_assets.sh` (WIP; car validation pending).
 - Separate-process custom apps: the platform's AppLauncher RSA-verifies the `.sign` section of startup-group/preload spawns (on-demand `request.launch` spawns already skip it), which blocks the "official app" route. A sigstub for those paths ships in stage-1 build 5 and is car-validated (`docs/07-packages.md`), and there is a second route (an own Wayland process outside AppLauncher) that needs no patch at all. See `docs/07-packages.md` and `docs/ui/deployment-modes.md`.
 
 ## Rust apps and daemons (WIP)
@@ -145,12 +146,12 @@ If a markdown file in this repo is handwritten, I will highlight that. The READM
 
 | Path | What |
 |---|---|
-| `docs/01–21` | The runbooks: TOCTOU explainer, firmware format, stage-1 build, Pi rig, car install, failsafe/packages, post-root updates (confirmed), porting, Ghidra re-derivation, troubleshooting, safety/legal, upstream references, VM lab (WIP), MICOM research, unsigned normal-USB update confirmation, a tentative writable-data reference, host-built Rust apps/daemons (WIP), firmware fixtures, and the headless Java 25 runtime (WIP) |
+| `docs/01–23` | The runbooks: TOCTOU explainer, firmware format, stage-1 build, Pi rig, car install, failsafe/packages, post-root updates (confirmed), porting, Ghidra re-derivation, troubleshooting, safety/legal, upstream references, VM lab (WIP), MICOM research, unsigned normal-USB update confirmation, a tentative writable-data reference, host-built Rust apps/daemons (WIP), firmware fixtures, the headless Java 25 runtime (WIP), VM build scripts, and car asset capture/extraction (WIP) |
 | `docs/ui/` | The Gen5W UI/UX research: styleguide, deployment modes (A–L), UX behavior patterns, design tokens, component library, glossary, and 15 evidence reports |
-| `scripts/` | The build pipeline (fetch → stage → decrypt → patch → repack → verify → package → image → preflight → Pi deploy) |
+| `scripts/` | The build pipeline (fetch → stage → decrypt → patch → repack → verify → package → image → preflight → Pi deploy), plus the VM build and car-asset capture dispatchers |
 | `payload/` | What gets baked into the rootfs: the failsafe, the eleven-stub patch tables, the sample run_stuff.sh |
 | `packages/` | Battery, WiFi (+CarPlay+SSH), Tweaks (incl. the Reboot overlay) — sources, patchers, installers — plus `compose.sh` (the combo-stick builder) |
-| `tools/` | First-party firmware-format tools, the update-debug (dmclient_gate/button_gate) tooling, the optional Ghidra/carve porting aids, and `tools/micom/` (command/signal-table and MCU-image readers) |
+| `tools/` | First-party firmware-format tools, the update-debug (dmclient_gate/button_gate) tooling, the optional Ghidra/carve porting aids, `tools/micom/` (command/signal-table and MCU-image readers), the VM build/fidelity scripts, and `tools/car-assets/` (car runtime asset capture/extraction) |
 | `verify/` | Offline package verification |
 | `config/` | `firmware_locks.env` (the compatibility pins), `third_party.lock` (fetch pins), paths/key examples |
 

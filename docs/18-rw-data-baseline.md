@@ -85,6 +85,10 @@ documented full-filesystem incident and retention fixes see
 
 ## Better future captures
 
+The [car asset capture lane](23-car-assets.md) provides a read-only inventory
+and an optional USB dump with hash manifests; it still requires explicit owner
+approval and keeps raw captures local-only.
+
 Record model, region, installed firmware, capture date, root/tool history,
 mount layout, free blocks and inodes, tool versions, exclusions and any errors.
 Obtain a consistent snapshot or quiesce writers through an owner-approved,

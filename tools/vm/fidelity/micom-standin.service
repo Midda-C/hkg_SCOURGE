@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: 2026 The SCOURGE Project contributors
+# SPDX-License-Identifier: AGPL-3.0-only
+# TARGET: Ioniq 5 Gen5W_L, firmware NE_E.EUR.S5W_L.001.001.260128 (EU).
+#
+# Projection-only systemd override for the vendor MICOM service. It satisfies
+# com.lge.car.micom with the lab /micom-dbus-sim helper because QEMU has no
+# live SPI MICOM. This is not part of the shipped system and is not a
+# stock-equivalence claim.
+#
+# The helper binary is built by tools/vm/build_research_tools.sh and injected
+# by build_partitioned_image.py --micom-standin. dlt.service is optional: the
+# lab image may not ship it, and the helper has no hard DLT dependency.
+
+[Unit]
+Description=System service for micommanager (projection stand-in)
+Requires=dbus.service
+After=dbus.service
+
+[Service]
+Type=dbus
+BusName=com.lge.car.micom
+ExecStart=/bin/sh -c 'exec /micom-dbus-sim 00000826050000051302000003c8140000000000000000000000020001000000000000 >> /tmp/micom-dbus-sim.log 2>&1'

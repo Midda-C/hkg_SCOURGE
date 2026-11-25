@@ -101,6 +101,8 @@ repo.
 | To debug a failure | docs/11; rig issues also docs/04 + the upstream field journal (docs/13) |
 | To investigate writable-data usage | docs/18 for the tentative reference and read-only report |
 | To bench-test something in the VM lab before the car | docs/14 (WIP — the lab is not yet packaged in-repo) |
+| To build a fidelity or usable VM from your own firmware | docs/22 → `scripts/22_build_vm.sh` → `tools/vm/build_vm.py` |
+| To capture runtime assets from your own car | docs/23 → `tools/car-assets/` (read-only inventory or USB dump) |
 | To understand the exploit | docs/01 (no mitigation content in ours; upstream's is linked via docs/13) |
 | Legal/safety framing | docs/12 |
 
@@ -111,17 +113,21 @@ repo.
 - The TE2 key if `00_fetch_third_party.sh` could not fetch it.
 - The Pi host/user for rig deployment.
 - Which packages to put on a combo stick (`packages/compose.sh` prompts).
+- The car host/user/port and access route for asset capture (docs/23); do
+  not guess LAN details or credentials.
 - An alternative reviewer only if the rule-11 DeepSeek 4.1 Flash-Max reviewer
   is unavailable. Do not silently fall back to another model or add a second
   required reviewer.
-- Confirmation before `14_format_usb.sh`, Pi deployment, and every car step.
+- Confirmation before `14_format_usb.sh`, Pi deployment, and every car step,
+  including the asset inventory, USB dump and any sensitive/map/log opt-in.
 
 ## Environment
 
 - Build deps: bash, Python venv (`scripts/00_env.sh`: pycryptodome,
-  deflate, cryptography; PyQt5 optional), standard binutils. A container
-  runtime (docker/podman) only for the dropbear static-musl build.
-  **Ghidra is porting-only, never a build dep.**
+  deflate, cryptography; PyQt5 optional), standard binutils. VM builds also
+  need `parted`, `mkfs.ext4`, `debugfs`, `fakeroot`, `losetup`, `truncate` and
+  QEMU. A container runtime (docker/podman) only for the dropbear static-musl
+  build. **Ghidra is porting-only, never a build dep.**
 - First setup: `scripts/00_fetch_third_party.sh` → `scripts/00_env.sh` →
   `scripts/01_stage_inputs.sh`. The last step runs
   `scripts/01b_audit_inputs.py`; read its findings before changing anything. Rust app/daemon builds additionally need
@@ -154,7 +160,10 @@ repo.
     material never gets our header.
 - Package installers follow the docs/06 house rules (manifest, stock-hash
   guards, backups, idempotency, explicit status lines).
-- Docs are numbered `docs/01–21`; UI research lives in `docs/ui/`.
+- Docs are numbered `docs/01–23`; UI research lives in `docs/ui/`.
+- `tools/car-assets/` is a first-party capture/extraction lane. Its outputs
+  (`captures/`, `car-assets/`) are local-only and gitignored; tests live under
+  `tools/vm/tests/` so the VM gate covers them.
 - Scripts are run with `sh`/`bash`/`python3` (do not rely on +x bits) —
   except the hooks under `scripts/githooks/`, which git itself executes
   and therefore must stay executable (`scripts/install_hooks.sh` restores

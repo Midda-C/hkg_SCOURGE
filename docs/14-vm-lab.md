@@ -240,7 +240,11 @@ Car-only (never VM claims):
 
 Nothing OEM ships in this repo (AGENTS.md). The lab consumes artifacts you
 already staged for the stage-1 build. After `scripts/01_stage_inputs.sh` and
-`scripts/02_decrypt_rootfs.sh`:
+`scripts/02_decrypt_rootfs.sh`, the new WIP build lane can produce a fidelity
+GPT projection or a usable compat workspace:
+[`docs/22-vm-build.md`](22-vm-build.md) and `scripts/22_build_vm.sh`. Runtime
+UI/theme/database assets that are not in the package can be captured from the
+owner's car through [`docs/23-car-assets.md`](23-car-assets.md).
 
 ```sh
 # Mode V
