@@ -51,6 +51,11 @@ static void test_convert(void)
     /* exit family uses 457 window: native at 400 m */
     n = hn_convert(&(hn_turn){SRC_AA, HN_MAN_EXIT_RIGHT, -1, 8, 2, -1}, 400, &c);
     CHECK(n.type == HN_TYPE_EXIT_R && n.near);
+    CHECK(n.f2_icon == 0xA4);   /* HUD sweep 2026-11-28: 45-deg right exit */
+    n = hn_convert(&(hn_turn){SRC_CP, HN_MAN_EXIT_LEFT, -1, -1, -1, -1}, 400, &c);
+    CHECK(n.f2_icon == 0xA5);
+    n = hn_convert(&(hn_turn){SRC_CP, HN_MAN_EXIT_GENERIC, -1, -1, -1, -1}, 400, &c);
+    CHECK(n.f2_icon == 0xA5);   /* sideless OFF_RAMP, LHT -> left exit */
     /* street turn beyond 200 m -> icon */
     n = hn_convert(&(hn_turn){SRC_AA, HN_MAN_TURN_RIGHT, -1, 4, 2, -1}, 300, &c);
     CHECK(n.type == HN_TYPE_ICON && !n.near);

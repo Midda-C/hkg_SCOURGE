@@ -128,9 +128,13 @@ static int far_icon(const hn_turn *t, const hn_config *c)
     case HN_MAN_SHARP_LEFT:    return 69;
     case HN_MAN_UTURN_LEFT:    return 72;   /* 0x48 left U-turn, 0x49 right: HUD sweep 2026-11-25 */
     case HN_MAN_UTURN_RIGHT:   return 73;
-    case HN_MAN_EXIT_RIGHT:    return 81;
-    case HN_MAN_EXIT_LEFT:     return 82;
-    case HN_MAN_EXIT_GENERIC:  return 86;
+    /* Highway exits: AppNavi hw_ic_exit_right/left (RG 28/27), HUD sweep 2026-11-28:
+     * 0xA4 = 45-deg right exit, 0xA5 = 45-deg left exit, 0xA3 = straight. 0x51/0x52 are
+     * overpass-diverge glyphs and 0x56 drew a plain straight arrow on a motorway exit. A
+     * sideless OFF_RAMP takes the traffic-side exit (left in LHT). */
+    case HN_MAN_EXIT_RIGHT:    return 164;
+    case HN_MAN_EXIT_LEFT:     return 165;
+    case HN_MAN_EXIT_GENERIC:  return c->lht ? 165 : 164;
     case HN_MAN_FORK_RIGHT:    return 147;  /* 0x93 right at a Y fork (HUD sweep 2026-11-25) */
     case HN_MAN_FORK_LEFT:     return 149;  /* 0x95 left at a Y fork */
     case HN_MAN_ON_RAMP:       return 172;

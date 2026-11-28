@@ -3,9 +3,13 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 #
 # TARGET: AU Linux Gen5W 260319 head unit, run as root by hudnav-aa.service at every boot.
-# Persistent Android Auto -> HUD: at boot, start hudnavd (tx) and put the session-only overlay in place
-# (aa-session.sh: bind mount of the DT_NEEDED-patched AppProjection copy, restart of AppProjection).
-# Nothing here writes to / ; the bind mount vanishes at every reboot and is re-made by this script.
+# Persistent Android Auto -> HUD: this script starts hudnavd (tx) once the session bus exists.
+# The two overlay bind mounts are ALREADY in place at this point: hudnav-premount.service
+# ordered them Before=carplay_iAP2.service / ApplicationLauncher.service, so the vendor
+# services exec the patched copies on their first start. This script never restarts a
+# service at boot (a phone plugged in before boot would be lost by a restart).
+# Nothing here writes to / ; the bind mounts vanish at every reboot and are re-made by
+# the premount unit. aa-session.sh / cp-session.sh keep their manual start/stop behaviour.
 #
 # It does NOTHING (exit 0, car boots stock) unless ALL of:
 #   /rw_data/hudnav/enabled exists (master switch; delete it to disable without SSH tooling)
@@ -26,6 +30,9 @@ LOG="$KIT/boot.log"
 WAIT="${HUDNAV_WAIT_S:-240}"
 SLP="${HUDNAV_SLEEP:-1}"
 SESSION_FILE="$R/tmp/session_appmgr"
+MOUNTS="$R/proc/mounts"
+AP="$R/app/bin/AppProjection"
+CP="$R/app/bin/iAP2Service-2.0"
 
 log() {
     [ -d "$KIT" ] || return 0
@@ -49,6 +56,15 @@ have_ap()      { [ -n "$(pidof AppProjection 2>/dev/null)" ]; }
 have_session() { [ -s "$SESSION_FILE" ]; }
 have_iap2()    { [ -n "$(pidof iAP2Service-2.0 2>/dev/null)" ]; }
 
+# True when hudnav-premount.service already bound the patched copy over TARGET.
+bound() {
+    [ -r "$MOUNTS" ] || return 1
+    while read -r dev mp rest; do
+        [ "$mp" = "$1" ] && return 0
+    done < "$MOUNTS"
+    return 1
+}
+
 case "${1:-}" in
     start) ;;
     *) echo "usage: $0 start" >&2; exit 2 ;;
@@ -69,12 +85,14 @@ else
     log "no session bus: not starting hudnavd, not mounting"; exit 0
 fi
 
-# 2. the overlay: only on a UI boot (AppProjection running); aa-session.sh rolls itself back on failure.
+# 2. AA overlay: premount did it before ApplicationLauncher started AppProjection.
+#    NO restart here: on a boot with the phone already attached, restarting would
+#    orphan the iAP2 session and the user would have to replug.
 if waitfor "AppProjection" have_ap; then
-    out=$(sh "$BIN/aa-session.sh" start --yes 2>&1); rc=$?
-    log "aa-session start rc=$rc: $(printf '%s' "$out" | tail -n 3 | tr '\n' ' ')"
-    if [ "$rc" != 0 ]; then
-        out=$(sh "$BIN/hudnav-run.sh" stop 2>&1); log "overlay failed, hudnavd stopped: $out"
+    if bound "$AP"; then
+        log "AA overlay already active (hudnav-premount); no restart"
+    else
+        log "AA overlay not active (premount refused or aa-nav-enable off): AppProjection left stock, no restart"
     fi
 else
     log "no AppProjection (background wake?): stopping hudnavd"
@@ -82,16 +100,19 @@ else
     exit 0
 fi
 
-# 3. CarPlay (added 2026-11-27, car-proven on the owner's car): only with its own switch
-# /rw_data/hudnav/cp-enabled. cp-session.sh refuses unless the stock iAP2Service hash matches and
-# the kit verifies against SHA256SUMS.cp, and rolls itself back on any failure. A CarPlay failure
-# never stops hudnavd (Android Auto keeps working).
+# 3. CarPlay: same rule, only with its own switch /rw_data/hudnav/cp-enabled.
+#    hudnav-premount.service verified the stock hash, the kit and the CP gate and
+#    mounted the patched copy before carplay_iAP2.service started. If it refused,
+#    leave the stock service running; never stop/start it here.
 if [ -f "$KIT/cp-enabled" ]; then
-    if [ -f "$BIN/cp-session.sh" ] && waitfor "iAP2Service" have_iap2; then
-        out=$(sh "$BIN/cp-session.sh" start --yes 2>&1); rc=$?
-        log "cp-session start rc=$rc: $(printf '%s' "$out" | tail -n 2 | tr '\n' ' ')"
+    if waitfor "iAP2Service" have_iap2; then
+        if bound "$CP"; then
+            log "CarPlay overlay already active (hudnav-premount); no restart"
+        else
+            log "CarPlay overlay not active (premount refused): iAP2Service left stock, no restart"
+        fi
     else
-        log "CarPlay enabled but cp-session.sh or iAP2Service missing: CarPlay left stock"
+        log "CarPlay enabled but iAP2Service missing: CarPlay left stock"
     fi
 fi
 exit 0

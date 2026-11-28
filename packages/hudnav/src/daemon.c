@@ -39,7 +39,7 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 
-#define HUDNAV_VERSION "2026-11-27+projplus1"
+#define HUDNAV_VERSION "2026-11-28+exits1"
 
 /* ---- Projection+ runtime switches and settings ---- */
 typedef struct {

@@ -20,6 +20,8 @@ python3 tests/test_profile_to_header.py
 python3 tests/test_port_check.py
 sh tests/test_replay.sh
 sh tests/test_installer.sh
+sh tests/test_persist.sh
+sh tests/test_premount.sh
 sh tests/test_ld_preload.sh
 sh tests/test_aa_nav.sh
 rm -f /tmp/hudnav-cp-hook-test.sock
