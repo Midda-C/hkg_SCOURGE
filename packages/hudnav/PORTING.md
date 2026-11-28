@@ -8,7 +8,7 @@ wants to reproduce or extend HUD Nav. This is a guide, not a claim of support.
 - **Proven:** exactly one car and one firmware — the owner's **AU Hyundai Ioniq 5,
   `NE_E.AUS.S5W_L.001.001.260319`, HUD fitted, RHD/LHT**. Later 2026-11-25/26/27 notes record
   car-proven HUD display (CAN `0x4E8` + CAN-TP `F2` arrow), a working Android Auto event path,
-  CarPlay guidance (Apple Maps) in regular use by the owner, and the Projection+ tile and live status page on that car
+  CarPlay guidance (Apple Maps) tested over a few days of owner drives, and the Projection+ tile and live status page on that car
   (changing settings from the page is not yet car-tested).
   See `docs/hudnav/HUD_NAV_REPORT.md`, `README.md`, and
   `packages/projection/docs/STATUS.md`.
